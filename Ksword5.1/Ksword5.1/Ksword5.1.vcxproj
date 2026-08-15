@@ -172,6 +172,7 @@
     <ClCompile Include="句柄\HandleDock.Filter.cpp" />
     <ClCompile Include="句柄\HandleDock.Icon.cpp" />
     <ClCompile Include="句柄\HandleDock.Native.cpp" />
+    <ClCompile Include="句柄\HandleFilterConfig.cpp" />
     <ClCompile Include="句柄\HandleObjectTypeWorker.cpp" />
     <ClCompile Include="..\..\shared\ui\KsPainterChart.cpp" />
     <ClCompile Include="HardwareDock\HardwareDock.cpp" />
@@ -610,6 +611,7 @@
     <QtMoc Include="FileDock\FileDock.h" />
     <ClInclude Include="ScannerDock\ScannerDock.h" />
     <QtMoc Include="句柄\HandleDock.h" />
+    <ClInclude Include="句柄\HandleFilterConfig.h" />
     <ClInclude Include="句柄\HandleObjectTypeWorker.h" />
     <QtMoc Include="HardwareDock\HardwareDock.h" />
     <QtMoc Include="HardwareDock\DiskMonitorPage.h" />

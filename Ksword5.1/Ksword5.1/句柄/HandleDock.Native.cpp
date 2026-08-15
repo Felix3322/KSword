@@ -15,6 +15,8 @@
 HandleDock::HandleRefreshResult HandleDock::buildHandleRefreshResult(const HandleRefreshOptions& options)
 {
     HandleRefreshResult result{};
+    result.snapshotScopedToPid = options.hasPidFilter;
+    result.scopedProcessId = options.hasPidFilter ? options.pidFilter : 0U;
 
     // Translate the UI-facing refresh options into the shared ks::file backend contract.
     // Keyword, only-named, and diff filters remain local UI filters in HandleDock.Filter.cpp.

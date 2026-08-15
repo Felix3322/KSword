@@ -74,17 +74,22 @@ HandleDock::HandleRow* HandleDock::selectedHandleRow()
     {
         return nullptr;
     }
-    const QVariant rowIndexValue = currentItem->data(static_cast<int>(HandleTableColumn::ProcessId), Qt::UserRole);
+    if (currentItem->data(0, ks::handle::HandleTreeItemKindRole).toInt() !=
+        static_cast<int>(ks::handle::HandleTreeItemKind::HandleRow))
+    {
+        return nullptr;
+    }
+    const QVariant rowIndexValue = currentItem->data(0, ks::handle::HandleTreeSourceRowIndexRole);
     if (!rowIndexValue.isValid())
     {
         return nullptr;
     }
     const std::size_t rowIndex = static_cast<std::size_t>(rowIndexValue.toULongLong());
-    if (rowIndex >= m_rows.size())
+    if (rowIndex >= m_allRows.size())
     {
         return nullptr;
     }
-    return &m_rows[rowIndex];
+    return &m_allRows[rowIndex];
 }
 
 void HandleDock::copyCurrentHandleCell()

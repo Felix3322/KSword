@@ -10,6 +10,7 @@
 // ============================================================
 
 #include "../Framework.h"
+#include "./HandleFilterConfig.h"
 #include "HandleObjectTypeWorker.h"
 #include "../../../shared/driver/KswordArkHandleIoctl.h"
 
@@ -36,9 +37,24 @@ class QShowEvent;
 class QSpinBox;
 class QTabWidget;
 class QTreeWidget;
-class QTreeWidget;
 class QTreeWidgetItem;
 class QVBoxLayout;
+
+namespace ks::handle
+{
+    enum class HandleTreeItemKind : int
+    {
+        RuleSummary = 1,
+        HandleRow,
+        LoadMore,
+        LazyPlaceholder
+    };
+
+    constexpr int HandleTreeItemKindRole = Qt::UserRole + 101;
+    constexpr int HandleTreeRuleIdRole = Qt::UserRole + 102;
+    constexpr int HandleTreeRuleOrderRole = Qt::UserRole + 103;
+    constexpr int HandleTreeSourceRowIndexRole = Qt::UserRole + 104;
+}
 
 class HandleDock final : public QWidget
 {
@@ -200,6 +216,8 @@ private:
         std::size_t bothCount = 0;                 // bothCount：差异视图中双源均可见数量。
         std::uint64_t elapsedMs = 0;               // elapsedMs：后台耗时毫秒。
         QString diagnosticText;                    // diagnosticText：诊断信息（失败/降级/预算等）。
+        bool snapshotScopedToPid = false;          // snapshotScopedToPid：本轮快照是否只枚举单个 PID。
+        std::uint32_t scopedProcessId = 0;         // scopedProcessId：单 PID 快照的目标 PID。
     };
 
     // ObjectTypeRefreshResult 作用：
@@ -232,6 +250,16 @@ private:
         std::uint64_t elapsedMs = 0;           // elapsedMs：详情查询耗时。
     };
 
+    struct HandleRuleMatchState
+    {
+        QString ruleId;
+        QString ruleName;
+        bool enabled = true;
+        std::vector<std::size_t> rowIndices;
+        std::size_t loadedCount = 0;
+        QTreeWidgetItem* summaryItem = nullptr;
+    };
+
 private:
     // initializeUi 作用：
     // - 创建页面布局与多 Tab 容器；
@@ -241,7 +269,7 @@ private:
     void initializeUi();
 
     // initializeHandleListTab 作用：
-    // - 构建 Handle Table Tab 的工具栏、状态栏、表格；
+    // - 构建 Handle Table Tab 的规则工具栏、全局采集设置、状态栏和结果树；
     // - 绑定图标按钮与控件样式。
     // 调用方法：initializeUi 内部调用。
     // 传入/传出：无。
@@ -323,8 +351,8 @@ private:
     void applyObjectTypeRefreshResult(std::uint64_t refreshTicket, const ObjectTypeRefreshResult& refreshResult);
 
     // rebuildHandleTable 作用：
-    // - 根据 m_rows 重建句柄列表表格；
-    // - 同步每行 UserRole 元数据供右键动作使用。
+    // - 根据规则匹配状态重建摘要树，不自动创建完整句柄行；
+    // - 明细由规则展开事件按 300 条批量创建。
     // 调用方法：applyHandleRefreshResult / syncHandleTypeNamesFromObjectTypeMap 内部调用。
     // 传入/传出：无。
     void rebuildHandleTable();
@@ -344,6 +372,35 @@ private:
     // 传出：无。
     void applyLocalHandleFilters(bool rebuildTable);
 
+    void rebuildRuleSummaryTree();
+    void appendNextRuleResultBatch(const QString& ruleId);
+    QTreeWidgetItem* createHandleTreeRow(std::size_t sourceRowIndex);
+    void scheduleProcessIconResolution(
+        const QVector<qulonglong>& sourceRowIndices,
+        const QVector<QTreeWidgetItem*>& itemList);
+    HandleRuleMatchState* findRuleMatchState(const QString& ruleId);
+    const HandleRuleMatchState* findRuleMatchState(const QString& ruleId) const;
+    const ks::handle::HandleFilterRule* findActiveRule(const QString& ruleId) const;
+    bool handleRowMatchesRule(
+        const HandleRow& row,
+        const ks::handle::HandleFilterRule& rule) const;
+    void updateHandleSummaryStatus();
+    void sortLoadedRuleRows(int column, Qt::SortOrder order);
+
+    void loadFilterConfiguration();
+    void saveFilterConfiguration() const;
+    void applyFilterGlobalSettingsToControls();
+    void collectFilterGlobalSettingsFromControls();
+    void showRuleManagerDialog(const QString& initiallySelectedRuleId = QString());
+    bool showRuleEditorDialog(
+        ks::handle::HandleFilterRule* ruleInOut,
+        const QVector<ks::handle::HandleFilterRule>& existingRules);
+    void importFilterConfiguration();
+    void exportFilterConfiguration() const;
+    void exportRuleResults(const QString& ruleId = QString()) const;
+    void returnToSavedFilters();
+    QString buildRuleConditionSummary(const ks::handle::HandleFilterRule& rule) const;
+
     // rebuildObjectTypeTable 作用：
     // - 根据 m_objectTypeRows 重建对象类型表；
     // - 支持按关键词过滤类型名与编号。
@@ -353,8 +410,8 @@ private:
     void rebuildObjectTypeTable(const QString& filterKeyword);
 
     // collectHandleRefreshOptions 作用：
-    // - 从句柄列表控件读取当前筛选配置并封装线程安全结构；
-    // - 对 PID 文本做合法性校验。
+    // - 从持久化全局设置读取采集配置并封装线程安全结构；
+    // - 仅临时单 PID 筛选允许收窄后台枚举范围。
     // 调用方法：requestAsyncRefresh 内部调用。
     // 传入/传出：无，返回 HandleRefreshOptions。
     HandleRefreshOptions collectHandleRefreshOptions() const;
@@ -619,12 +676,12 @@ private:
     QVBoxLayout* m_handleListLayout = nullptr;   // m_handleListLayout：Handle Table 页布局。
     QHBoxLayout* m_toolbarLayout = nullptr;      // m_toolbarLayout：Handle Table 顶部工具栏布局。
     QPushButton* m_refreshButton = nullptr;      // m_refreshButton：句柄刷新按钮（图标化）。
-    QLineEdit* m_pidFilterEdit = nullptr;        // m_pidFilterEdit：PID 过滤输入框。
-    QLineEdit* m_keywordFilterEdit = nullptr;    // m_keywordFilterEdit：关键字过滤输入框。
-    QComboBox* m_typeFilterCombo = nullptr;      // m_typeFilterCombo：对象类型过滤下拉。
+    QPushButton* m_manageFilterButton = nullptr;
+    QPushButton* m_importFilterButton = nullptr;
+    QPushButton* m_exportFilterButton = nullptr;
+    QPushButton* m_exportResultsButton = nullptr;
+    QPushButton* m_returnSavedFilterButton = nullptr;
     QComboBox* m_enumModeCombo = nullptr;        // m_enumModeCombo：枚举模式下拉。
-    QComboBox* m_diffFilterCombo = nullptr;      // m_diffFilterCombo：差异状态过滤下拉。
-    QCheckBox* m_onlyNamedCheckBox = nullptr;    // m_onlyNamedCheckBox：仅显示有对象名句柄。
     QCheckBox* m_resolveNameCheckBox = nullptr;  // m_resolveNameCheckBox：是否开启对象名解析。
     QSpinBox* m_nameBudgetSpinBox = nullptr;     // m_nameBudgetSpinBox：对象名解析预算。
     QLabel* m_statusLabel = nullptr;             // m_statusLabel：句柄刷新状态文本。
@@ -659,7 +716,23 @@ private:
     int m_handleDetailRefreshProgressPid = 0;    // m_handleDetailRefreshProgressPid：句柄详情刷新 kPro 任务 PID。
 
     std::vector<HandleRow> m_allRows;            // m_allRows：完整句柄快照缓存。
-    std::vector<HandleRow> m_rows;               // m_rows：当前过滤后的句柄列表缓存。
+    std::vector<HandleRow> m_rows;               // 兼容旧的整表渲染路径；规则树使用 m_allRows 索引。
+    ks::handle::HandleFilterDocument m_filterDocument;
+    ks::handle::HandleFilterRule m_temporaryFilterRule;
+    bool m_temporaryFilterActive = false;
+    bool m_snapshotScopedToTemporarySinglePid = false;
+    std::uint32_t m_snapshotScopedProcessId = 0;
+    std::vector<HandleRuleMatchState> m_ruleMatchStates;
+    std::vector<QString> m_availableHandleTypeList;
+    std::size_t m_totalRuleMatchCount = 0;
+    std::size_t m_lastEnumeratedHandleCount = 0;
+    std::size_t m_lastResolvedNameCount = 0;
+    std::size_t m_lastObjectTypeMappedCount = 0;
+    std::size_t m_lastKernelHandleCount = 0;
+    std::uint64_t m_lastRefreshElapsedMs = 0;
+    QString m_lastRefreshDiagnosticText;
+    int m_handleSortColumn = -1;
+    Qt::SortOrder m_handleSortOrder = Qt::AscendingOrder;
     std::vector<HandleObjectTypeEntry> m_objectTypeRows; // m_objectTypeRows：对象类型行缓存。
     std::unordered_map<std::uint16_t, std::string> m_typeNameCacheByIndex; // m_typeNameCacheByIndex：句柄刷新阶段生成的类型缓存。
     std::unordered_map<std::uint16_t, std::string> m_typeNameMapByIndexFromObjectTab; // m_typeNameMapByIndexFromObjectTab：对象类型页映射缓存。
@@ -667,5 +740,5 @@ private:
     QHash<QString, QString> m_processImagePathCacheByIdentity; // m_processImagePathCacheByIdentity：PID + 创建时间 -> 路径缓存。
     std::uint64_t m_processIconResolveGeneration = 0; // m_processIconResolveGeneration：进程图标后台解析代次，重建句柄表时递增以淘汰在途结果。
     std::shared_ptr<std::atomic_bool> m_processIconResolveCancelFlag; // m_processIconResolveCancelFlag：进程图标后台解析取消位，重建句柄表时置位让上一轮扫描尽快退出。
-    std::vector<QTreeWidgetItem*> m_handleTableItemsByRowIndex; // m_handleTableItemsByRowIndex：按 m_rows 下标记录句柄表项指针，仅供图标异步回填定位，不持有所有权。
+    std::vector<QTreeWidgetItem*> m_handleTableItemsByRowIndex; // 兼容旧整表图标回填路径。
 };
