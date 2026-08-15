@@ -26,6 +26,8 @@
 class QScreen;
 class QStackedLayout;
 class QGraphicsColorizeEffect;
+class QVariantAnimation;
+class QResizeEvent;
 class TaskbarSettingsDialog;
 class GlowIconButton;
 
@@ -53,7 +55,7 @@ private:
     QVector<QLabel*> cpuBars;            // CPU 每核心柱子集合
     QTimer* timer;                       // 时间刷新定时器
     QLabel* timeLabel;                   // 时间文本标签
-    QLabel* contentLabel;                // 左侧当前用户名文本，地震时需要同步改为黑色。
+    QLabel* contentLabel;                // 左侧当前用户名文本，警报态与其它 Taskbar 文本同步变为白色。
     QLabel* logoLabel;                   // 左侧 Logo，地震时通过图形效果整体着黑。
     QGraphicsColorizeEffect* logoColorEffect; // 左侧 Logo 的警报态黑色着色效果。
 
@@ -77,8 +79,11 @@ private:
     TaskbarNotificationView displayedNotification; // 已渲染通知，用于忽略重复刷新。
     bool notificationVisible;             // 当前中央区域是否已切换到通知页。
     bool earthquakePresentation;          // 当前是否由地震预警无淡入地接管中央区域。
-    QTimer* alertFlashTimer;              // 地震期间在红色和红黑色之间闪烁背景。
-    bool alertFlashBright;                // 当前闪烁相位，true 代表亮红背景。
+    QVariantAnimation* alertFlashAnimation; // 地震期间从亮红到暗红的 500ms 渐变动画。
+    bool alertFlashBright;                   // 当前闪烁相位，true 代表刚瞬时切换到亮红背景。
+    QWidget* notificationFlashWidget;       // 新消息产生时覆盖整条 Taskbar 的轻微提亮层。
+    QGraphicsOpacityEffect* notificationFlashOpacity; // 提亮层的透明度效果。
+    QPropertyAnimation* notificationFlashAnimation;  // 提亮层从亮到暗的 500ms 动画。
 
     QWidget* rightBtnContainer;          // 右侧按钮组容器
     QHBoxLayout* rightBtnLayout;         // 右侧按钮组布局
@@ -124,12 +129,15 @@ private:
         const std::function<void()>& completed);
     void stopCentralAnimations();
     void applyTaskbarTheme(bool earthquakeAlert, const QColor& backgroundColor);
-    void updateAlertFlash();
+    void startAlertFlashCycle();
+    void flashNotificationBackground();
     void showSettingsDialog();
 
 protected:
     // 在窗口关闭时确保注销 AppBar 并安全停止后台线程。
     void closeEvent(QCloseEvent* event) override;
+    // 窗口尺寸变化时同步整条 Taskbar 提亮层的覆盖范围。
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void onSpectrumDataReady(const QVector<float>& spectrumData);

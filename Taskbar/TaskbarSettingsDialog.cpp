@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -19,6 +20,7 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
     , m_clipboardCheckBox(nullptr)
     , m_deviceCheckBox(nullptr)
     , m_earthquakeCheckBox(nullptr)
+    , m_notificationDurationSpinBox(nullptr)
     , m_sourceStatusLabel(nullptr)
     , m_testEarthquakeButton(nullptr)
     , m_refreshTimer(nullptr)
@@ -32,7 +34,11 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
         QDialog { background: #111820; color: #dff8ff; }
         QGroupBox { border: 1px solid #31566a; margin-top: 12px; padding: 10px; color: #91dfff; }
         QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; }
-        QCheckBox { spacing: 7px; padding: 3px; }
+        QCheckBox { spacing: 7px; padding: 3px; color: #dff8ff; }
+        QCheckBox:disabled { color: #6f8790; }
+        QLabel { color: #dff8ff; }
+        QSpinBox { background: #0b1015; border: 1px solid #4fbed9; border-radius: 3px; padding: 3px 6px; color: #e9fbff; }
+        QSpinBox:focus { border-color: #91dfff; }
         QPushButton { background: #153542; border: 1px solid #4fbed9; border-radius: 3px; padding: 6px 10px; color: #e9fbff; }
         QPushButton:hover { background: #1b4a5d; }
         QLabel#sourceStatus { color: #a8c9d2; background: #0b1015; border: 1px solid #263e49; padding: 8px; }
@@ -51,6 +57,18 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
     notificationLayout->addWidget(m_clipboardCheckBox);
     notificationLayout->addWidget(m_deviceCheckBox);
     notificationLayout->addWidget(m_earthquakeCheckBox);
+
+    // 消息滞留时间使用秒为单位，范围与服务层一致并在配置文件中持久化。
+    QHBoxLayout* durationLayout = new QHBoxLayout();
+    QLabel* durationLabel = new QLabel(QStringLiteral("消息滞留时间"), notificationGroup);
+    m_notificationDurationSpinBox = new QSpinBox(notificationGroup);
+    m_notificationDurationSpinBox->setRange(1, 60);
+    m_notificationDurationSpinBox->setSuffix(QStringLiteral(" 秒"));
+    m_notificationDurationSpinBox->setToolTip(QStringLiteral("设置每条普通消息正文完整显示的时间，范围为 1 到 60 秒。"));
+    durationLayout->addWidget(durationLabel);
+    durationLayout->addWidget(m_notificationDurationSpinBox);
+    durationLayout->addStretch(1);
+    notificationLayout->addLayout(durationLayout);
     rootLayout->addWidget(notificationGroup);
 
     QGroupBox* earthquakeGroup = new QGroupBox(QStringLiteral("地震预警诊断"), this);
@@ -77,6 +95,8 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
     connect(m_clipboardCheckBox, &QCheckBox::toggled, this, &TaskbarSettingsDialog::applyClipboardSetting);
     connect(m_deviceCheckBox, &QCheckBox::toggled, this, &TaskbarSettingsDialog::applyDeviceSetting);
     connect(m_earthquakeCheckBox, &QCheckBox::toggled, this, &TaskbarSettingsDialog::applyEarthquakeSetting);
+    connect(m_notificationDurationSpinBox, qOverload<int>(&QSpinBox::valueChanged), this,
+        &TaskbarSettingsDialog::applyNotificationDuration);
     connect(m_testEarthquakeButton, &QPushButton::clicked, this, [this]() {
         if (m_notificationService != nullptr)
         {
@@ -128,6 +148,15 @@ void TaskbarSettingsDialog::applyEarthquakeSetting(bool enabled)
     }
 }
 
+void TaskbarSettingsDialog::applyNotificationDuration(int seconds)
+{
+    // 仅把设置值交给全局服务，配置文件写入和当前轮播计时由服务统一处理。
+    if (m_notificationService != nullptr)
+    {
+        m_notificationService->setNotificationDurationSeconds(seconds);
+    }
+}
+
 void TaskbarSettingsDialog::refreshFromService()
 {
     // 阻断信号以避免 setChecked 在刷新阶段又写回同一个 QSettings 值。
@@ -138,9 +167,11 @@ void TaskbarSettingsDialog::refreshFromService()
     const QSignalBlocker clipboardBlocker(m_clipboardCheckBox);
     const QSignalBlocker deviceBlocker(m_deviceCheckBox);
     const QSignalBlocker earthquakeBlocker(m_earthquakeCheckBox);
+    const QSignalBlocker durationBlocker(m_notificationDurationSpinBox);
     m_clipboardCheckBox->setChecked(m_notificationService->clipboardNotificationsEnabled());
     m_deviceCheckBox->setChecked(m_notificationService->deviceNotificationsEnabled());
     m_earthquakeCheckBox->setChecked(m_notificationService->earthquakeNotificationsEnabled());
+    m_notificationDurationSpinBox->setValue(m_notificationService->notificationDurationSeconds());
 }
 
 void TaskbarSettingsDialog::refreshSourceDiagnostics()

@@ -128,6 +128,7 @@
     <ClCompile Include="TaskbarEarthquakeClient.cpp" />
     <ClCompile Include="TaskbarNotificationService.cpp" />
     <ClCompile Include="TaskbarSettingsDialog.cpp" />
+    <ClCompile Include="TaskbarPresentationEffects.cpp" />
     <ClCompile Include="SpectrumWidget.cpp">
       <DynamicSource Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">input</DynamicSource>
       <QtMocFileName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(Filename).moc</QtMocFileName>
