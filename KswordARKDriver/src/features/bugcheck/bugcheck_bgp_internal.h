@@ -93,6 +93,11 @@ typedef struct _KSWORD_ARK_BGP_CONTEXT
     ULONG RequiredWidth;
     ULONG RequiredHeight;
     volatile LONG State;
+    volatile LONG PreparationStage;
+    volatile LONG PreparationStatus;
+    ULONG ProbeWidth;
+    ULONG ProbeHeight;
+    ULONG ProbeBpp;
     volatile LONG Stage;
     volatile LONG DrawStarted;
     volatile LONG LockHeld;

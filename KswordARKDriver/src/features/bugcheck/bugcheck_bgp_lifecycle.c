@@ -14,35 +14,17 @@ Abstract:
 #include "bugcheck_bgp.h"
 #include "bugcheck_bgp_internal.h"
 
-#if defined(_M_IX86) || defined(_M_AMD64)
-#include <intrin.h>
-#pragma intrinsic(__cpuid)
-#endif
-
-static BOOLEAN
-KswordARKBugcheckBgpIsVmwareGuest(
-    VOID
+VOID
+KswordARKBugcheckBgpRecordPreparation(
+    _In_ KSWORD_ARK_BGP_PREPARATION_STAGE Stage,
+    _In_ NTSTATUS Status
     )
 {
-#if defined(_M_IX86) || defined(_M_AMD64)
-    static const CHAR vmwareVendor[] = "VMwareVMware";
-    CHAR hypervisorVendor[sizeof(vmwareVendor)];
-    int registers[4];
-
-    RtlZeroMemory(registers, sizeof(registers));
-    RtlZeroMemory(hypervisorVendor, sizeof(hypervisorVendor));
-    __cpuid(registers, (int)0x40000000UL);
-    RtlCopyMemory(hypervisorVendor + 0, &registers[1], sizeof(ULONG));
-    RtlCopyMemory(hypervisorVendor + 4, &registers[2], sizeof(ULONG));
-    RtlCopyMemory(hypervisorVendor + 8, &registers[3], sizeof(ULONG));
-
-    return RtlCompareMemory(
-        hypervisorVendor,
-        vmwareVendor,
-        sizeof(vmwareVendor) - 1U) == sizeof(vmwareVendor) - 1U;
-#else
-    return FALSE;
-#endif
+    // Publish the status first so a reader that observes the new stage also
+    // observes the status belonging to that operation.
+    InterlockedExchange(&g_KswordArkBgp.PreparationStatus, (LONG)Status);
+    KeMemoryBarrier();
+    InterlockedExchange(&g_KswordArkBgp.PreparationStage, (LONG)Stage);
 }
 
 NTSTATUS
@@ -61,30 +43,26 @@ KswordARKBugcheckBgpInitialize(
     InterlockedExchange(
         &g_KswordArkBgp.State,
         KswordArkBgpStateUninitialized);
+    KswordARKBugcheckBgpRecordPreparation(
+        KswordArkBgpPreparationResolveFunctions,
+        STATUS_PENDING);
     InterlockedExchange(&g_KswordArkBgp.ClearStatus, STATUS_PENDING);
     InterlockedExchange(&g_KswordArkBgp.DrawStatus, STATUS_PENDING);
 
-    // The VMware SVGA path is intentionally inactive. Do not let the physical
-    // BGP path acquire display ownership in a VMware guest: after ownership is
-    // taken there is no supported rollback, and a rejected draw would hide the
-    // Windows bugcheck screen. Dump callbacks remain registered by the caller.
-    if (KswordARKBugcheckBgpIsVmwareGuest()) {
-        status = STATUS_NOT_SUPPORTED;
-        InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
-        InterlockedExchange(
-            &g_KswordArkBgp.State,
-            KswordArkBgpStateQueryOnly);
-        KswordARKBugcheckBgpRecordStage(
-            (LONG)(KswordArkBgpStageRejected | 4UL),
-            status);
-        return status;
-    }
-
     status = KswordARKBugcheckBgpResolveFunctions();
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
+    KswordARKBugcheckBgpRecordPreparation(
+        KswordArkBgpPreparationResolveFunctions,
+        status);
     if (NT_SUCCESS(status)) {
+        KswordARKBugcheckBgpRecordPreparation(
+            KswordArkBgpPreparationReadScreen,
+            STATUS_PENDING);
         status = KswordARKBugcheckBgpReadScreen(&screen);
         InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
+        KswordARKBugcheckBgpRecordPreparation(
+            KswordArkBgpPreparationReadScreen,
+            status);
         if (NT_SUCCESS(status)) {
             g_KswordArkBgp.Screen = screen;
         }
@@ -98,6 +76,9 @@ KswordARKBugcheckBgpInitialize(
     }
 
     InterlockedExchange(&g_KswordArkBgp.State, KswordArkBgpStateReady);
+    KswordARKBugcheckBgpRecordPreparation(
+        KswordArkBgpPreparationBackendReady,
+        STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 
@@ -196,9 +177,16 @@ KswordARKBugcheckBgpArm(
             0,
             0) != KswordArkBgpStateReady ||
         RequiredWidth == 0 ||
-        RequiredHeight == 0 ||
-        RequiredWidth > g_KswordArkBgp.Screen.Width ||
-        RequiredHeight > g_KswordArkBgp.Screen.Height) {
+        RequiredHeight == 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    // Defer the size check when BGP deliberately hides the screen mode until
+    // InbvAcquireDisplayOwnership runs inside the bugcheck callback.
+    if (g_KswordArkBgp.Screen.BitsPerPixel !=
+            KSWORD_ARK_BGP_UNOWNED_BPP &&
+        (RequiredWidth > g_KswordArkBgp.Screen.Width ||
+         RequiredHeight > g_KswordArkBgp.Screen.Height)) {
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -222,6 +210,7 @@ KswordARKBugcheckBgpRejectPreparation(
     )
 {
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)Status);
+    InterlockedExchange(&g_KswordArkBgp.PreparationStatus, (LONG)Status);
     InterlockedExchange(&g_KswordArkBgp.State, KswordArkBgpStateRejected);
     KswordARKBugcheckBgpRecordStage(
         (LONG)(KswordArkBgpStageRejected | 3UL),
@@ -240,10 +229,18 @@ KswordARKBugcheckBgpSnapshot(
     }
 
     RtlZeroMemory(Snapshot, sizeof(*Snapshot));
-    Snapshot->Version = 1UL;
+    Snapshot->Version = 2UL;
     Snapshot->Size = sizeof(*Snapshot);
     Snapshot->State = (ULONG)InterlockedCompareExchange(
         &g_KswordArkBgp.State,
+        0,
+        0);
+    Snapshot->PreparationStage = (ULONG)InterlockedCompareExchange(
+        &g_KswordArkBgp.PreparationStage,
+        0,
+        0);
+    Snapshot->PreparationStatus = (ULONG)InterlockedCompareExchange(
+        &g_KswordArkBgp.PreparationStatus,
         0,
         0);
     Snapshot->Stage = (ULONG)InterlockedCompareExchange(

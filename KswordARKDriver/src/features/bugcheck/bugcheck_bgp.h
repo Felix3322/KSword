@@ -11,6 +11,7 @@
 #define KSWORD_ARK_BGP_FEATURE_PARSE       0x00000040UL
 #define KSWORD_ARK_BGP_FEATURE_DESTROY     0x00000080UL
 #define KSWORD_ARK_BGP_FEATURE_INBV        0x00000100UL
+#define KSWORD_ARK_BGP_UNOWNED_BPP         1UL
 
 #define KSWORD_ARK_BGP_SIGNATURE_COUNT 8UL
 #define KSWORD_ARK_BGP_TIMELINE_COUNT 16UL
@@ -46,6 +47,22 @@ typedef enum _KSWORD_ARK_BGP_STAGE
     KswordArkBgpStageRejected = 0x80000000UL
 } KSWORD_ARK_BGP_STAGE;
 
+// These values identify the exact PASSIVE_LEVEL preparation operation that
+// most recently ran, so a load-time report can distinguish resolver, display,
+// bitmap, glyph, and arming failures without doing file I/O during a bugcheck.
+typedef enum _KSWORD_ARK_BGP_PREPARATION_STAGE
+{
+    KswordArkBgpPreparationIdle = 0,
+    KswordArkBgpPreparationResolveFunctions,
+    KswordArkBgpPreparationReadScreen,
+    KswordArkBgpPreparationBackendReady,
+    KswordArkBgpPreparationValidatePanelScreen,
+    KswordArkBgpPreparationPrepareLogo,
+    KswordArkBgpPreparationPrepareGlyphs,
+    KswordArkBgpPreparationArm,
+    KswordArkBgpPreparationComplete
+} KSWORD_ARK_BGP_PREPARATION_STAGE;
+
 typedef struct _KSWORD_ARK_BGP_SCREEN_INFO
 {
     ULONG Width;
@@ -65,6 +82,8 @@ typedef struct _KSWORD_ARK_BGP_DUMP_STATE
     ULONG Version;
     ULONG Size;
     ULONG State;
+    ULONG PreparationStage;
+    ULONG PreparationStatus;
     ULONG Stage;
     ULONG LastStatus;
     ULONG ClearStatus;
@@ -117,6 +136,21 @@ KswordARKBugcheckBgpArm(
 VOID
 KswordARKBugcheckBgpRejectPreparation(
     _In_ NTSTATUS Status
+    );
+
+// Record one load-time preparation operation in nonpaged BGP state. The
+// caller supplies the operation and its current or final NTSTATUS value.
+VOID
+KswordARKBugcheckBgpRecordPreparation(
+    _In_ KSWORD_ARK_BGP_PREPARATION_STAGE Stage,
+    _In_ NTSTATUS Status
+    );
+
+// Return the latest BGP BPP value cached by the crash-time screen probe.
+// The caller uses it only after display ownership has been acquired.
+ULONG
+KswordARKBugcheckBgpGetCurrentBpp(
+    VOID
     );
 
 NTSTATUS

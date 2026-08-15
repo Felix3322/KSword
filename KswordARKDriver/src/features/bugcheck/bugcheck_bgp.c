@@ -654,6 +654,19 @@ KswordARKBugcheckBgpReadScreen(
     }
 
     bitsPerPixel = g_KswordArkBgp.GetBpp();
+    g_KswordArkBgp.ProbeWidth = resolution[0];
+    g_KswordArkBgp.ProbeHeight = resolution[1];
+    g_KswordArkBgp.ProbeBpp = bitsPerPixel;
+    // Treat the pre-ownership BPP sentinel as a deferred screen probe because
+    // some BGP implementations also hide the resolution until ownership.
+    if (bitsPerPixel == KSWORD_ARK_BGP_UNOWNED_BPP) {
+        Screen->Width = resolution[0];
+        Screen->Height = resolution[1];
+        Screen->BitsPerPixel = bitsPerPixel;
+        return STATUS_SUCCESS;
+    }
+
+    // Require a complete supported mode after BGP exposes the real screen.
     if (resolution[0] == 0 ||
         resolution[1] == 0 ||
         (bitsPerPixel != 24UL && bitsPerPixel != 32UL)) {
@@ -664,6 +677,14 @@ KswordARKBugcheckBgpReadScreen(
     Screen->Height = resolution[1];
     Screen->BitsPerPixel = bitsPerPixel;
     return STATUS_SUCCESS;
+}
+
+ULONG
+KswordARKBugcheckBgpGetCurrentBpp(
+    VOID
+    )
+{
+    return g_KswordArkBgp.Screen.BitsPerPixel;
 }
 
 NTSTATUS
@@ -701,11 +722,12 @@ KswordARKBugcheckBgpValidateBitmap(
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
-    if (g_KswordArkBgp.Screen.Width == 0 ||
-        g_KswordArkBgp.Screen.Height == 0 ||
-        g_KswordArkBgp.Screen.BitsPerPixel != infoHeader->BitsPerPixel ||
-        (ULONG)infoHeader->Width > g_KswordArkBgp.Screen.Width ||
-        (ULONG)infoHeader->Height > g_KswordArkBgp.Screen.Height) {
+    if (g_KswordArkBgp.Screen.Width != 0 &&
+        g_KswordArkBgp.Screen.Height != 0 &&
+        (g_KswordArkBgp.Screen.BitsPerPixel == 24UL ||
+         g_KswordArkBgp.Screen.BitsPerPixel == 32UL) &&
+        ((ULONG)infoHeader->Width > g_KswordArkBgp.Screen.Width ||
+         (ULONG)infoHeader->Height > g_KswordArkBgp.Screen.Height)) {
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -776,13 +798,15 @@ KswordARKBugcheckBgpBeginDraw(
         STATUS_PENDING);
     status = KswordARKBugcheckBgpReadScreen(&crashScreen);
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
+    if (NT_SUCCESS(status)) {
+        g_KswordArkBgp.Screen = crashScreen;
+    }
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageScreenAfter,
         status);
     if (!NT_SUCCESS(status) ||
-        crashScreen.Width != g_KswordArkBgp.Screen.Width ||
-        crashScreen.Height != g_KswordArkBgp.Screen.Height ||
-        crashScreen.BitsPerPixel != g_KswordArkBgp.Screen.BitsPerPixel ||
+        (crashScreen.BitsPerPixel != 24UL &&
+         crashScreen.BitsPerPixel != 32UL) ||
         g_KswordArkBgp.RequiredWidth > crashScreen.Width ||
         g_KswordArkBgp.RequiredHeight > crashScreen.Height) {
         status = NT_SUCCESS(status) ? STATUS_NOT_SUPPORTED : status;

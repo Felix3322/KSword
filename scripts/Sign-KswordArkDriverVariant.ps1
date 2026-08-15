@@ -235,8 +235,17 @@ function Assert-FinalKernelSignature {
         [bool] $Strict
     )
 
-    $fileHash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
-    Write-Host "Final driver SHA256: $($fileHash.Hash)"
+    $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+    $hashStream = [System.IO.File]::OpenRead($Path)
+    try {
+        $hashBytes = $hashAlgorithm.ComputeHash($hashStream)
+    }
+    finally {
+        $hashStream.Dispose()
+        $hashAlgorithm.Dispose()
+    }
+    $hashText = [System.BitConverter]::ToString($hashBytes).Replace('-', '')
+    Write-Host "Final driver SHA256: $hashText"
 
     # Windows PowerShell may promote native stderr to NativeCommandError when
     # $ErrorActionPreference is Stop. Capture the kernel-policy exit code

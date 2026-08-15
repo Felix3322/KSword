@@ -14,6 +14,7 @@ Abstract:
 #include "bugcheck_internal.h"
 #include "bugcheck_bgp.h"
 #include "bugcheck_panel.h"
+#include "bugcheck_preparation_log.h"
 #include "../../platform/pool_compat.h"
 
 #include <aux_klib.h>
@@ -75,7 +76,7 @@ KswordARKBugcheckUpdateSecondaryData(
 {
     g_KswordArkBugcheckSecondaryData.Signature =
         KSWORD_ARK_BUGCHECK_SECONDARY_SIGNATURE;
-    g_KswordArkBugcheckSecondaryData.Version = 2UL;
+    g_KswordArkBugcheckSecondaryData.Version = 3UL;
     g_KswordArkBugcheckSecondaryData.Size =
         sizeof(g_KswordArkBugcheckSecondaryData);
     RtlCopyMemory(
@@ -225,6 +226,7 @@ KswordARKBugcheckName(
     case 0x000000D1: return "DRIVER_IRQL_NOT_LESS_OR_EQUAL";
     case 0x000000D5: return "DRIVER_PAGE_FAULT_IN_FREED_SPECIAL_POOL";
     case 0x000000EA: return "THREAD_STUCK_IN_DEVICE_DRIVER";
+    case 0x000000EF: return "CRITICAL_PROCESS_DIED";
     case 0x000000F7: return "DRIVER_OVERRAN_STACK_BUFFER";
     case 0x00000109: return "CRITICAL_STRUCTURE_CORRUPTION";
     case 0x00000116: return "VIDEO_TDR_FAILURE";
@@ -708,6 +710,9 @@ KswordARKBugcheckInitialize(
     )
 {
     NTSTATUS bgpStatus;
+    NTSTATUS callbackStatus;
+    NTSTATUS logStatus;
+    NTSTATUS panelStatus;
 
     if (DriverObject == NULL || ControlDevice == WDF_NO_HANDLE) {
         return STATUS_INVALID_PARAMETER;
@@ -722,9 +727,12 @@ KswordARKBugcheckInitialize(
         WdfDeviceWdmGetDeviceObject(ControlDevice);
     g_KswordArkBugcheckState.Bitmap.BrandColorRgb = 0x0078D4UL;
 
+    panelStatus = STATUS_DEVICE_NOT_READY;
     bgpStatus = KswordARKBugcheckBgpInitialize();
     if (NT_SUCCESS(bgpStatus)) {
-        (VOID)KswordARKBugcheckPanelInitialize();
+        panelStatus = KswordARKBugcheckPanelInitialize();
+    } else {
+        panelStatus = bgpStatus;
     }
 
     KswordARKBugcheckRefreshModuleCache();
@@ -762,6 +770,29 @@ KswordARKBugcheckInitialize(
             KswordARKBugcheckReasonCallback,
             KbCallbackTriageDumpData,
             g_KswordArkBugcheckComponent);
+
+    // Persist both successful and failed preparation results before a target
+    // machine can be crashed for display testing.
+    callbackStatus =
+        g_KswordArkBugcheckState.ClassicRegistered &&
+        g_KswordArkBugcheckState.SecondaryRegistered &&
+        g_KswordArkBugcheckState.DumpIoRegistered &&
+        g_KswordArkBugcheckState.TriageRegistered
+            ? STATUS_SUCCESS
+            : STATUS_UNSUCCESSFUL;
+    logStatus = KswordARKBugcheckWritePreparationLog(
+        bgpStatus,
+        panelStatus,
+        callbackStatus);
+    DbgPrintEx(
+        DPFLTR_IHVDRIVER_ID,
+        NT_SUCCESS(logStatus) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+        "KswordARK: BGP preparation=0x%08lX panel=0x%08lX "
+        "callbacks=0x%08lX report=0x%08lX\n",
+        (ULONG)bgpStatus,
+        (ULONG)panelStatus,
+        (ULONG)callbackStatus,
+        (ULONG)logStatus);
 
     if (!g_KswordArkBugcheckState.ClassicRegistered ||
         !g_KswordArkBugcheckState.SecondaryRegistered ||

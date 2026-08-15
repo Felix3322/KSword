@@ -209,6 +209,9 @@
     <ClInclude Include="src\features\bugcheck\bugcheck_panel.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_preparation_log.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="src\features\bugcheck\Generated\AsciiFont8x12.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -741,6 +744,9 @@
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_panel.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_preparation_log.c">
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_svga.c">
