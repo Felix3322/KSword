@@ -3,6 +3,7 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 #include "TableFreezeSupport.h"
+#include "TableHeaderSortingSupport.h"
 #include "TableSnapshotCompare.h"
 #include "VisibleTableWidget.h"
 
@@ -2498,6 +2499,8 @@ namespace
         }
 
         tableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        ks::ui::InstallTableHeaderClickSorting(
+            qobject_cast<QTableWidget*>(tableView));
         installActionBar(tableView);
         installDefaultContextMenu(tableView);
     }

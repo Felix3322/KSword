@@ -430,6 +430,7 @@
     <ClCompile Include="UI\SvgThemeIconManager.cpp" />
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
     <ClCompile Include="UI\TableFreezeSupport.cpp" />
+    <ClCompile Include="UI\TableHeaderSortingSupport.cpp" />
     <ClCompile Include="UI\TableInteractionSupport.cpp" />
     <ClCompile Include="UI\TextSearchReplaceSupport.cpp" />
     <ClCompile Include="UI\TableSnapshotCompare.cpp" />
@@ -597,6 +598,7 @@
     <ClInclude Include="UI\SmoothScrollSupport.h" />
     <ClInclude Include="UI\TableColumnAutoFit.h" />
     <ClInclude Include="UI\TableFreezeSupport.h" />
+    <ClInclude Include="UI\TableHeaderSortingSupport.h" />
     <ClInclude Include="UI\TableInteractionSupport.h" />
     <ClInclude Include="UI\TextSearchReplaceSupport.h" />
     <ClInclude Include="UI\TableSnapshotCompare.h" />

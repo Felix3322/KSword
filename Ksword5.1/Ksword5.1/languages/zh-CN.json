@@ -7054,6 +7054,7 @@
     "SmoothScrollSupport.h": "SmoothScrollSupport.h",
     "调整全局滚动，以及滚轮是否直接调整滑块。": "调整全局滚动，以及滚轮是否直接调整滑块。",
     "TableFreezeSupport.h": "TableFreezeSupport.h",
+    "TableHeaderSortingSupport.h": "TableHeaderSortingSupport.h",
     "TableSnapshotCompare.h": "TableSnapshotCompare.h",
     "Time": "Time",
     "kswordSnapshotKeyColumns": "kswordSnapshotKeyColumns",

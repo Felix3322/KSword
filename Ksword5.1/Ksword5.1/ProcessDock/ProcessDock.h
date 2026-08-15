@@ -1036,6 +1036,7 @@ private:
     QHash<QString, bool> m_friendlyExpandedStateByKey; // 友好视图分类/应用聚合行展开状态；缺省按展开处理。
     int m_friendlySortColumn = static_cast<int>(TableColumn::Name); // 友好视图内部排序列，默认按进程名 A-Z。
     Qt::SortOrder m_friendlySortOrder = Qt::AscendingOrder; // 友好视图内部排序方向，点击表头切换。
+    bool m_friendlySortActive = false; // 是否已经点击表头排序；首次点击任意列固定使用升序。
     mutable std::vector<ks::process::ProcessRecord> m_friendlySyntheticRecords; // 友好视图合成标题/聚合行记录缓存。
 
     // ======== 线程页控件 ========

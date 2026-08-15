@@ -5200,6 +5200,11 @@ void ProcessDock::initializeConnections()
     connect(m_friendlyViewCheck, &QCheckBox::toggled, this, [this](const bool checked) {
         m_activityTableSnapshotIndex = -1;
         m_activityTableSnapshotRecords.clear();
+        if (!checked)
+        {
+            // 重新进入树状视图后结束上一轮友好视图排序会话；下次点表头从升序开始。
+            m_friendlySortActive = false;
+        }
         kLogEvent logEvent;
         info << logEvent
             << "[ProcessDock] 进程友好视图开关变更, friendlyView="
@@ -5415,10 +5420,9 @@ void ProcessDock::initializeConnections()
     });
 
     // 友好视图需要保留“应用/后台/系统”分组结构，不能让 QSortFilterProxyModel 直接打散源顺序。
-    // 因此表头点击在友好视图中只记录排序列/方向并重建分组；普通列表/历史快照继续走 Qt 默认排序。
+    // 表头首次点击固定升序、同列再次点击降序；树状视图会先自动切回友好视图再排序。
     connect(m_processTable->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](const int logicalIndex) {
-        if (!isFriendlyViewEnabled() ||
-            isProcessActivityTableSnapshotActive() ||
+        if (isProcessActivityTableSnapshotActive() ||
             !currentProcessSearchText().isEmpty())
         {
             return;
@@ -5428,7 +5432,15 @@ void ProcessDock::initializeConnections()
             return;
         }
 
-        if (m_friendlySortColumn == logicalIndex)
+        // 树状行的父子顺序不能直接交给普通列排序。记录本次升序后切回友好视图，
+        // QCheckBox::toggled 会使用同一组排序状态重建一次表格，无需重复刷新。
+        const bool treeModeWasEnabled = isTreeModeEnabled();
+        if (treeModeWasEnabled)
+        {
+            m_friendlySortActive = false;
+        }
+
+        if (m_friendlySortActive && m_friendlySortColumn == logicalIndex)
         {
             m_friendlySortOrder = (m_friendlySortOrder == Qt::AscendingOrder)
                 ? Qt::DescendingOrder
@@ -5437,9 +5449,19 @@ void ProcessDock::initializeConnections()
         else
         {
             m_friendlySortColumn = logicalIndex;
-            m_friendlySortOrder = logicalIndex == toColumnIndex(TableColumn::Name)
-                ? Qt::AscendingOrder
-                : Qt::DescendingOrder;
+            m_friendlySortOrder = Qt::AscendingOrder;
+        }
+        m_friendlySortActive = true;
+
+        if (treeModeWasEnabled && m_friendlyViewCheck != nullptr)
+        {
+            m_friendlyViewCheck->setChecked(true);
+            return;
+        }
+
+        if (!isFriendlyViewEnabled())
+        {
+            return;
         }
 
         if (m_processSortProxy != nullptr)
@@ -7491,7 +7513,10 @@ void ProcessDock::rebuildTable()
     const int horizontalScrollValueBeforeRebuild = (horizontalScrollBar != nullptr) ? horizontalScrollBar->value() : 0;
 
     const bool activitySnapshotActive = isProcessActivityTableSnapshotActive();
-    const bool enableSorting = activitySnapshotActive || (!isTreeModeEnabled() && !isFriendlyViewEnabled());
+    const bool searchResultActive = !currentProcessSearchText().isEmpty();
+    // 历史快照和搜索结果都是扁平行，可直接使用代理排序；树状/友好分组保留各自的行序语义。
+    const bool enableSorting = activitySnapshotActive || searchResultActive ||
+        (!isTreeModeEnabled() && !isFriendlyViewEnabled());
     if (m_processSortProxy != nullptr)
     {
         auto* processSortProxy = static_cast<ProcessTableSortProxy*>(m_processSortProxy);

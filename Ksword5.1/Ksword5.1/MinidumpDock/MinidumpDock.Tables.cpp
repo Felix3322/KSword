@@ -19,6 +19,7 @@
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpFormat.h"
 #include "UI/CodeEditorWidget.h"
+#include "UI/TableHeaderSortingSupport.h"
 #include "theme.h"
 
 #include <QAction>
@@ -106,6 +107,8 @@ QTableWidget* MinidumpDock::createReadOnlyTable(QWidget* parent) const
     // 表头左对齐：末列被拉伸后会很宽，居中的表头文字会飘到列中央，
     // 和左对齐的数据完全对不上。数据表的惯例本来也是左对齐。
     table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // 转储解析表的帧序、加载序和采集序本身属于证据，禁用通用表头排序。
+    ks::ui::SetTableHeaderClickSortingEnabled(table, false);
     return table;
 }
 

@@ -811,6 +811,9 @@
     <ClCompile Include="UI\TableFreezeSupport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\TableHeaderSortingSupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\TableInteractionSupport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1457,6 +1460,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableFreezeSupport.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\TableHeaderSortingSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableInteractionSupport.h">

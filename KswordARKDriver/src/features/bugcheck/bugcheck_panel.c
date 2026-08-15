@@ -889,7 +889,6 @@ KswordARKBugcheckPanelDrawCompactBody(
     _Inout_ PLONG Y
     )
 {
-    KSWORD_ARK_BGP_DUMP_STATE bgpState;
     LONG leftY;
     LONG rightY;
     NTSTATUS status;
@@ -898,6 +897,7 @@ KswordARKBugcheckPanelDrawCompactBody(
         return STATUS_INVALID_PARAMETER;
     }
     UNREFERENCED_PARAMETER(CallbackMask);
+    UNREFERENCED_PARAMETER(ModuleCount);
 
     leftY = *Y;
     rightY = *Y;
@@ -1046,17 +1046,6 @@ KswordARKBugcheckPanelDrawCompactBody(
             (PVOID)Diagnostics->Parameter2);
     }
     if (NT_SUCCESS(status)) {
-        KswordARKBugcheckBgpSnapshot(&bgpState);
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "BGP SCREEN: %lux%lux%lu",
-            bgpState.ScreenWidth,
-            bgpState.ScreenHeight,
-            bgpState.ScreenBpp);
-    }
-    if (NT_SUCCESS(status)) {
         status = KswordARKBugcheckPanelDrawCompactLine(
             KSWORD_ARK_PANEL_COMPACT_LEFT_X,
             &leftY,
@@ -1085,14 +1074,6 @@ KswordARKBugcheckPanelDrawCompactBody(
             &rightY,
             KSWORD_ARK_PANEL_COLOR_BLACK,
             "NEXT: REVIEW DUMP");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "MODULES: %lu",
-            ModuleCount);
     }
     if (NT_SUCCESS(status)) {
         status = KswordARKBugcheckPanelDrawCompactLine(
@@ -1299,24 +1280,6 @@ KswordARKBugcheckPanelDraw(
             Diagnostics->Irql,
             Diagnostics->Cpu);
     }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PERF CTR  : 0x%p",
-            (PVOID)(ULONG_PTR)Diagnostics->PerfCounter.QuadPart);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "DUMP I/O  : offset=0x%p length=0x%lX",
-            (PVOID)(ULONG_PTR)Diagnostics->DumpOffset,
-            Diagnostics->DumpBufferLength);
-    }
-
     diagnosticY += 6L;
     if (NT_SUCCESS(status)) {
         status = KswordARKBugcheckPanelDrawFormattedLine(
@@ -1380,61 +1343,6 @@ KswordARKBugcheckPanelDraw(
             g_KswordArkBugcheckState.DriverObject,
             g_KswordArkBugcheckState.DeviceObject);
     }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CALLBACKS : BC=%lu TRIAGE=%lu DUMP=%lu SECONDARY=%lu",
-            (CallbackMask & 0x1UL) != 0,
-            (CallbackMask & 0x8UL) != 0,
-            (CallbackMask & 0x4UL) != 0,
-            (CallbackMask & 0x2UL) != 0);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "MODULES   : cached=%lu",
-            ModuleCount);
-    }
-
-    KswordARKBugcheckBgpSnapshot(&bgpState);
-    diagnosticY += 6L;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "BGP STATE : state=%lu stage=0x%08lX features=0x%08lX",
-            bgpState.State,
-            bgpState.Stage,
-            bgpState.FeatureMask);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "BGP STATUS: last=0x%08lX clear=0x%08lX draw=0x%08lX",
-            bgpState.LastStatus,
-            bgpState.ClearStatus,
-            bgpState.DrawStatus);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "BGP SCREEN: %lux%lux%lu required=%lux%lu",
-            bgpState.ScreenWidth,
-            bgpState.ScreenHeight,
-            bgpState.ScreenBpp,
-            bgpState.RequiredWidth,
-            bgpState.RequiredHeight);
-    }
-
     KswordARKBugcheckBgpFinishDraw(status);
     return status;
 }
