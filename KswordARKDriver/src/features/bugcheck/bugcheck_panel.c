@@ -95,6 +95,11 @@ typedef struct _KSWORD_ARK_PANEL_VARIANT
     PVOID LogoRectangle;
     PVOID CompactLogoRectangle;
     PVOID GlyphRectangles[KSWORD_ARK_PANEL_COLOR_COUNT][DRIVERGUI_FONT_COUNT];
+    // Keep the source BMPs resident for the lifetime of the parsed glyphs.
+    // BgpGxParseBitmap is private and its ownership contract is not documented.
+    // A persistent nonpaged backing buffer prevents a small-rectangle parser
+    // from retaining a reused preparation stack buffer.
+    PUCHAR GlyphBitmaps[KSWORD_ARK_PANEL_COLOR_COUNT][DRIVERGUI_FONT_COUNT];
 } KSWORD_ARK_PANEL_VARIANT, *PKSWORD_ARK_PANEL_VARIANT;
 
 typedef struct _KSWORD_ARK_PANEL_STATE
@@ -348,7 +353,7 @@ KswordARKBugcheckPanelPrepareGlyph(
     _In_ ULONG GlyphIndex
     )
 {
-    UCHAR bitmap[1024];
+    PUCHAR bitmap;
     PUCHAR pixels;
     ULONG bitmapLength;
     ULONG bitmapStride;
@@ -356,6 +361,7 @@ KswordARKBugcheckPanelPrepareGlyph(
     ULONG bitmapRowIndex;
     ULONG bitmapColumnIndex;
     ULONG rowIndex;
+    PVOID* rectangle;
     NTSTATUS status;
 
     if (VariantIndex >= KSWORD_ARK_PANEL_BPP_VARIANT_COUNT ||
@@ -363,10 +369,17 @@ KswordARKBugcheckPanelPrepareGlyph(
         return STATUS_INVALID_PARAMETER;
     }
 
+    bitmap = (PUCHAR)KswordARKAllocateNonPagedPool(
+        1024UL,
+        KSWORD_ARK_PANEL_POOL_TAG);
+    if (bitmap == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
     pixels = NULL;
     status = KswordARKBugcheckPanelInitializeBitmap(
         bitmap,
-        sizeof(bitmap),
+        1024UL,
         KSWORD_ARK_PANEL_GLYPH_BITMAP_WIDTH,
         KSWORD_ARK_PANEL_GLYPH_BITMAP_HEIGHT,
         BitsPerPixel,
@@ -374,6 +387,7 @@ KswordARKBugcheckPanelPrepareGlyph(
         &bitmapStride,
         &pixels);
     if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(bitmap, KSWORD_ARK_PANEL_POOL_TAG);
         return status;
     }
 
@@ -429,11 +443,20 @@ KswordARKBugcheckPanelPrepareGlyph(
         }
     }
 
-    return KswordARKBugcheckBgpParseBitmap(
+    rectangle = &g_KswordArkPanel.Variants[VariantIndex]
+        .GlyphRectangles[ColorIndex][GlyphIndex];
+    status = KswordARKBugcheckBgpParseBitmap(
         bitmap,
         bitmapLength,
-        &g_KswordArkPanel.Variants[VariantIndex]
-            .GlyphRectangles[ColorIndex][GlyphIndex]);
+        rectangle);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(bitmap, KSWORD_ARK_PANEL_POOL_TAG);
+        return status;
+    }
+
+    g_KswordArkPanel.Variants[VariantIndex]
+        .GlyphBitmaps[ColorIndex][GlyphIndex] = bitmap;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS
@@ -598,6 +621,15 @@ KswordARKBugcheckPanelShutdown(
                         .GlyphRectangles[colorIndex][glyphIndex]);
                 g_KswordArkPanel.Variants[variantIndex]
                     .GlyphRectangles[colorIndex][glyphIndex] = NULL;
+                if (g_KswordArkPanel.Variants[variantIndex]
+                        .GlyphBitmaps[colorIndex][glyphIndex] != NULL) {
+                    ExFreePoolWithTag(
+                        g_KswordArkPanel.Variants[variantIndex]
+                            .GlyphBitmaps[colorIndex][glyphIndex],
+                        KSWORD_ARK_PANEL_POOL_TAG);
+                    g_KswordArkPanel.Variants[variantIndex]
+                        .GlyphBitmaps[colorIndex][glyphIndex] = NULL;
+                }
             }
         }
     }
