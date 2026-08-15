@@ -14,6 +14,37 @@ Abstract:
 #include "bugcheck_bgp.h"
 #include "bugcheck_bgp_internal.h"
 
+#if defined(_M_IX86) || defined(_M_AMD64)
+#include <intrin.h>
+#pragma intrinsic(__cpuid)
+#endif
+
+static BOOLEAN
+KswordARKBugcheckBgpIsVmwareGuest(
+    VOID
+    )
+{
+#if defined(_M_IX86) || defined(_M_AMD64)
+    static const CHAR vmwareVendor[] = "VMwareVMware";
+    CHAR hypervisorVendor[sizeof(vmwareVendor)];
+    int registers[4];
+
+    RtlZeroMemory(registers, sizeof(registers));
+    RtlZeroMemory(hypervisorVendor, sizeof(hypervisorVendor));
+    __cpuid(registers, (int)0x40000000UL);
+    RtlCopyMemory(hypervisorVendor + 0, &registers[1], sizeof(ULONG));
+    RtlCopyMemory(hypervisorVendor + 4, &registers[2], sizeof(ULONG));
+    RtlCopyMemory(hypervisorVendor + 8, &registers[3], sizeof(ULONG));
+
+    return RtlCompareMemory(
+        hypervisorVendor,
+        vmwareVendor,
+        sizeof(vmwareVendor) - 1U) == sizeof(vmwareVendor) - 1U;
+#else
+    return FALSE;
+#endif
+}
+
 NTSTATUS
 KswordARKBugcheckBgpInitialize(
     VOID
@@ -32,6 +63,22 @@ KswordARKBugcheckBgpInitialize(
         KswordArkBgpStateUninitialized);
     InterlockedExchange(&g_KswordArkBgp.ClearStatus, STATUS_PENDING);
     InterlockedExchange(&g_KswordArkBgp.DrawStatus, STATUS_PENDING);
+
+    // The VMware SVGA path is intentionally inactive. Do not let the physical
+    // BGP path acquire display ownership in a VMware guest: after ownership is
+    // taken there is no supported rollback, and a rejected draw would hide the
+    // Windows bugcheck screen. Dump callbacks remain registered by the caller.
+    if (KswordARKBugcheckBgpIsVmwareGuest()) {
+        status = STATUS_NOT_SUPPORTED;
+        InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
+        InterlockedExchange(
+            &g_KswordArkBgp.State,
+            KswordArkBgpStateQueryOnly);
+        KswordARKBugcheckBgpRecordStage(
+            (LONG)(KswordArkBgpStageRejected | 4UL),
+            status);
+        return status;
+    }
 
     status = KswordARKBugcheckBgpResolveFunctions();
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
