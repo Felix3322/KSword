@@ -667,6 +667,9 @@
     <ClCompile Include="ProcessDock\ProcessDock.ThreadTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ProcessDock\ProcessMessageHookWindow.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ProcessDock\ThreadStackWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1347,6 +1350,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ProcessDock\ProcessAffinityModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ProcessDock\ProcessMessageHookWindow.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ProcessDock\ProcessHotkeyEnumerator.h">

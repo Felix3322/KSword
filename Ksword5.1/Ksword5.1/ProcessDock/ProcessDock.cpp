@@ -6,6 +6,7 @@
 
 #include "../theme.h"
 #include "ProcessDetailWindow.h"
+#include "ProcessMessageHookWindow.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/FlatTableModel.h"
@@ -10276,10 +10277,23 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         blueTintedIcon(":/Icon/process_main.svg"), QStringLiteral("网络"));
     QAction* openWindowAction = gotoSubMenu->addAction(
         blueTintedIcon(":/Icon/process_tree.svg"), QStringLiteral("窗口"));
+    QAction* openMessageHooksAction = gotoSubMenu->addAction(
+        blueTintedIcon(":/Icon/process_list.svg"),
+        processContextText("process.menu.message_hooks", QStringLiteral("消息 Hook")));
+    openMessageHooksAction->setToolTip(processContextText(
+        "process.menu.message_hooks.tooltip",
+        QStringLiteral("显示作用于该进程线程的消息 Hook，排除全局 Hook。")));
     openMemoryAction->setEnabled(!hasBatchSelection);
+    openMessageHooksAction->setEnabled(
+        !hasBatchSelection &&
+        contextProcessRecord != nullptr &&
+        contextProcessRecord->pid != 0U);
     if (hasBatchSelection)
     {
         openMemoryAction->setToolTip(QStringLiteral("内存页一次只能附加一个进程。"));
+        openMessageHooksAction->setToolTip(processContextText(
+            "process.menu.message_hooks.single.tooltip",
+            QStringLiteral("消息 Hook 窗口一次只能绑定一个进程。")));
     }
     QAction* injectionPageAction = contextMenu.addAction(
         blueTintedIcon(":/Icon/process_priority.svg"),
@@ -10874,6 +10888,10 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         else if (selectedAction == openMemoryAction) { executeOpenMemoryOperationAction(); }
         else if (selectedAction == openNetworkAction) { executeFocusNetworkAction(); }
         else if (selectedAction == openWindowAction) { executeFocusWindowAction(); }
+        else if (selectedAction == openMessageHooksAction && !contextActionTargets.empty())
+        {
+            executeOpenMessageHooksAction(contextActionTargets.front().record);
+        }
         else if (selectedAction == injectionPageAction) { openSelectedProcessInjectionPage(); }
         else if (selectedAction == scanHotkeyAction) { openSelectedProcessHotkeyScanner(); }
         else if (selectedAction == detailsAction) { openProcessDetailsPlaceholder(); }
@@ -14469,6 +14487,34 @@ void ProcessDock::executeFocusWindowAction()
         }
     }
     (void)invokeMainWindowPidListSlot("focusWindowDockByPids", pidTextList.join(','));
+}
+
+void ProcessDock::executeOpenMessageHooksAction(
+    const ks::process::ProcessRecord& targetRecord)
+{
+    if (targetRecord.pid == 0U)
+    {
+        return;
+    }
+
+    // 使用右键菜单打开时冻结的进程快照，避免菜单关闭后选择变化导致查询错进程。
+    ProcessMessageHookTarget target;
+    target.processId = targetRecord.pid;
+    target.sessionId = targetRecord.sessionId;
+    target.processName = QString::fromStdString(targetRecord.processName);
+
+    auto* hookWindow = new ProcessMessageHookWindow(target, nullptr);
+    hookWindow->show();
+    hookWindow->raise();
+    hookWindow->activateWindow();
+
+    kLogEvent actionEvent;
+    info << actionEvent
+        << "[ProcessDock] open process message hooks window, pid="
+        << target.processId
+        << ", sessionId="
+        << target.sessionId
+        << eol;
 }
 
 void ProcessDock::requestOpenProcessDetailByPid(const std::uint32_t pid)

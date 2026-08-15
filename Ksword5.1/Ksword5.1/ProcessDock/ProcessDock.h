@@ -843,6 +843,8 @@ private:
     void executeFocusHandleAction();
     void executeFocusNetworkAction();
     void executeFocusWindowAction();
+    // executeOpenMessageHooksAction：打开非模态窗口，展示作用于目标进程线程的消息 Hook。
+    void executeOpenMessageHooksAction(const ks::process::ProcessRecord& targetRecord);
 
     // ======== 工具函数 ========
     std::string selectedIdentityKey() const;
