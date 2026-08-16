@@ -125,6 +125,16 @@ namespace ks::process
         std::string privilegeName;                         // Windows SDK 定义的 Se*Privilege 名称。
         TokenPrivilegeState state = TokenPrivilegeState::Unknown;
         std::uint32_t attributes = 0;                      // TOKEN_PRIVILEGES 中的原始 Attributes。
+        std::uint32_t luidLowPart = 0;                     // LookupPrivilegeValue 返回的 LUID 低 32 位。
+        std::int32_t luidHighPart = 0;                     // LookupPrivilegeValue 返回的 LUID 高 32 位。
+        bool luidKnown = false;                            // false 表示名称无法解析为 LUID。
+    };
+
+    struct TokenPrivilegeLuidEntry
+    {
+        std::uint32_t luidLowPart = 0;
+        std::int32_t luidHighPart = 0;
+        std::uint32_t attributes = 0;
     };
 
     // SecurityAttributesInput：CreateProcessW 两个 SECURITY_ATTRIBUTES 参数的输入镜像。
@@ -851,6 +861,14 @@ namespace ks::process
     // - 返回当前 Windows SDK 定义的完整 Se*Privilege 目录；
     // - 启动期申请、创建进程页、进程列表和详细信息页必须复用该目录。
     const std::vector<std::string>& KnownTokenPrivilegeNames();
+
+    // BuildKnownTokenPrivilegeSnapshot 作用：
+    // - 把 R3 TOKEN_PRIVILEGES 或 R0 IOCTL 返回的 LUID/Attributes 条目映射到统一 SDK 目录；
+    // - 不依赖私有 Token 布局，未出现在条目中的已知特权标记为 NotPresent。
+    bool BuildKnownTokenPrivilegeSnapshot(
+        const std::vector<TokenPrivilegeLuidEntry>& entries,
+        std::vector<TokenPrivilegeInfo>* privilegesOut,
+        std::string* errorMessage);
 
     // QueryTokenPrivilegesByPid 作用：
     // - 通过 Win32 Token API 查询指定进程的完整特权快照；

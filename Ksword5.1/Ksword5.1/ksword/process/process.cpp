@@ -7294,6 +7294,39 @@ namespace ks::process
         }
         ::CloseHandle(tokenHandle);
 
+        std::vector<TokenPrivilegeLuidEntry> privilegeEntries;
+        privilegeEntries.reserve(tokenPrivileges->PrivilegeCount);
+        for (DWORD privilegeIndex = 0; privilegeIndex < tokenPrivileges->PrivilegeCount; ++privilegeIndex)
+        {
+            const LUID_AND_ATTRIBUTES& tokenPrivilege = tokenPrivileges->Privileges[privilegeIndex];
+            TokenPrivilegeLuidEntry privilegeEntry{};
+            privilegeEntry.luidLowPart = tokenPrivilege.Luid.LowPart;
+            privilegeEntry.luidHighPart = tokenPrivilege.Luid.HighPart;
+            privilegeEntry.attributes = static_cast<std::uint32_t>(tokenPrivilege.Attributes);
+            privilegeEntries.push_back(privilegeEntry);
+        }
+
+        return BuildKnownTokenPrivilegeSnapshot(
+            privilegeEntries,
+            privilegesOut,
+            errorMessage);
+    }
+
+    bool BuildKnownTokenPrivilegeSnapshot(
+        const std::vector<TokenPrivilegeLuidEntry>& entries,
+        std::vector<TokenPrivilegeInfo>* const privilegesOut,
+        std::string* const errorMessage)
+    {
+        if (privilegesOut == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "QueryTokenPrivilegesByPid::privilegesOut cannot be null.";
+            }
+            return false;
+        }
+
+        privilegesOut->clear();
         privilegesOut->reserve(KnownTokenPrivilegeNames().size());
         for (const std::string& privilegeName : KnownTokenPrivilegeNames())
         {
@@ -7309,18 +7342,20 @@ namespace ks::process
                 continue;
             }
 
+            privilegeInfo.luidLowPart = privilegeLuid.LowPart;
+            privilegeInfo.luidHighPart = privilegeLuid.HighPart;
+            privilegeInfo.luidKnown = true;
             privilegeInfo.state = TokenPrivilegeState::NotPresent;
-            for (DWORD privilegeIndex = 0; privilegeIndex < tokenPrivileges->PrivilegeCount; ++privilegeIndex)
+            for (const TokenPrivilegeLuidEntry& tokenPrivilege : entries)
             {
-                const LUID_AND_ATTRIBUTES& tokenPrivilege = tokenPrivileges->Privileges[privilegeIndex];
-                if (tokenPrivilege.Luid.LowPart != privilegeLuid.LowPart
-                    || tokenPrivilege.Luid.HighPart != privilegeLuid.HighPart)
+                if (tokenPrivilege.luidLowPart != privilegeLuid.LowPart
+                    || tokenPrivilege.luidHighPart != privilegeLuid.HighPart)
                 {
                     continue;
                 }
 
-                privilegeInfo.attributes = static_cast<std::uint32_t>(tokenPrivilege.Attributes);
-                privilegeInfo.state = (tokenPrivilege.Attributes & SE_PRIVILEGE_ENABLED) != 0
+                privilegeInfo.attributes = tokenPrivilege.attributes;
+                privilegeInfo.state = (tokenPrivilege.attributes & SE_PRIVILEGE_ENABLED) != 0
                     ? TokenPrivilegeState::Enabled
                     : TokenPrivilegeState::Disabled;
                 break;
