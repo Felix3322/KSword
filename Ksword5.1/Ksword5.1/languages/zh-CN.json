@@ -8422,6 +8422,7 @@
     ", queued=": ", queued=",
     ", queuedBefore=": ", queuedBefore=",
     ", r0=": ", r0=",
+    ", r0FallbackCount=": ", r0FallbackCount=",
     ", r0OnlyAppended=": ", r0OnlyAppended=",
     ", r0ThreadExtensionMerged=": ", r0ThreadExtensionMerged=",
     ", ranges=": ", ranges=",
