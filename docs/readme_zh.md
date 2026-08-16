@@ -140,7 +140,7 @@ Ksword5.1 是面向 Windows 的源码公开（“开源”仅表示源码可见�
 - R0/R3 共享协议统一位于 `shared/driver/`；新增 IOCTL 头、结构体和版本字段不要散落在 UI 或驱动私有目录。
 - 驱动 IOCTL 分发通过 `KswordARKDriver/src/dispatch/ioctl_registry.c` 注册 handler；`ioctl_dispatch.c` 只负责查表、校验、调用、日志和完成请求。
 - 用户态访问 KswordARK 驱动统一通过 `Ksword5.1/Ksword5.1/ArkDriverClient/` 或轻量版对应封装，Dock/UI 不直接打开设备或调用 `DeviceIoControl`。
-- PDB/DynData 当前以 `tools/pdb_offset_generator/` 生成的 profile pack 为基础；发行包优先同步 `ark_dyndata_pack_v3.json`，驱动侧支持 v4 typed item apply/query 与 capability/missing item 诊断。
+- PDB/DynData 当前以 `tools/pdb_offset_generator/` 生成的 v4 profile pack 为基础；发行包只携带压缩后的 `ark_dyndata_pack_v4.json.qz`。旧 v1/v2/v3 偏移矩阵不再发布，v4 core item 在 R3 内存中投影到 EX 请求以保持现有功能。
 - 依赖未公开字段的 R0 功能必须声明所需 capability，dispatch 层在 handler 前执行 gate；DynData 缺失或 profile 不匹配时应降级或 fail closed。
 - 默认审计页应只读；卸载、删除、patch、bypass、磁盘写入等 mutation 类能力必须走独立入口、风险提示和回滚/审计策略。
 - DynData 第一阶段使用 `third_party/systeminformer_dyn/` 中 vendored System Informer 动态偏移数据；Ksword 只接入 `KphDynConfig` 数据和轻量解析器，不引入 KPH 通信层、对象系统或 session token。

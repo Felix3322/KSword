@@ -558,9 +558,6 @@ std::vector<std::filesystem::path> ProfilePackSearchPaths() {
             continue;
         }
         AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v4.json");
-        AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v3.json");
-        AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v2.json");
-        AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v1.json");
     }
     return paths;
 }
@@ -963,9 +960,7 @@ bool IsSupportedV4ItemId(const std::uint32_t itemId) {
     case KSW_DYN_V4_ITEM_ID_ETH_ACTIVE_EX_WORKER:
     case KSW_DYN_V4_ITEM_ID_KPRCB_TIMER_TABLE:
     case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_TIMER_ENTRIES:
-    case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_LOCK:
     case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_ENTRY:
-    case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_TIME:
     case KSW_DYN_V4_ITEM_ID_KTIMER_TIMER_LIST_ENTRY:
     case KSW_DYN_V4_ITEM_ID_KTIMER_DUE_TIME:
     case KSW_DYN_V4_ITEM_ID_KTIMER_DPC:
@@ -977,6 +972,39 @@ bool IsSupportedV4ItemId(const std::uint32_t itemId) {
     case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_TYPE_SIZE:
     case KSW_DYN_V4_ITEM_ID_KTIMER_TYPE_SIZE:
     case KSW_DYN_V4_ITEM_ID_KDPC_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_FLT_FILTER_OPERATIONS:
+    case KSW_DYN_V4_ITEM_ID_CI_KERNEL_HASH_BUCKET_LIST:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_CACHE_LOCK:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_NEXT:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_DRIVER_NAME:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TIME_DATE_STAMP:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_LOAD_STATUS:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_BASE:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_PSP_SYSTEM_PARTITION:
+    case KSW_DYN_V4_ITEM_ID_WQ_EXP_BUILTIN_PRIORITIES:
+    case KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_EX_PARTITION:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_WORK_QUEUES:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_WORK_PRI_QUEUE:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_QUEUE_INDEX:
+    case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_ENTRY_LIST_HEAD:
+    case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_THREAD_LIST_HEAD:
+    case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE:
+    case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE_LIST_ENTRY:
+    case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_LIST:
+    case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_ROUTINE:
+    case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_PARAMETER:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_POOL_UNTRUSTED:
+    case KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_START_ADDRESS:
+    case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TYPE_SIZE:
+    case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TCB:
         return true;
     default:
         return false;
@@ -1107,6 +1135,45 @@ bool ParseV4Profile(
     return true;
 }
 
+// AppendV4CoreExProjection derives the historical EX apply items in memory
+// from v4 core item IDs.  The release pack carries each offset only once, while
+// existing Light apply actions continue to populate legacy field consumers.
+void AppendV4CoreExProjection(
+    const ksword::ark::DynDataV4ApplyInput& profileV4,
+    ksword::ark::DynDataProfileApplyExInput& profileEx) {
+    std::set<std::uint32_t> seen;
+    for (const auto& existing : profileEx.items) {
+        seen.insert(existing.itemId);
+    }
+    for (const KSW_DYN_V4_ITEM_PACKET& item : profileV4.items) {
+        if (item.itemId == 0U || item.itemId > KSW_DYN_FIELD_ID_MAX ||
+            !seen.insert(item.itemId).second) {
+            continue;
+        }
+        std::uint32_t exKind = 0U;
+        if (item.itemKind == KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA ||
+            item.itemKind == KSW_DYN_V4_ITEM_KIND_LIST_HEAD_GLOBAL) {
+            exKind = KSW_DYN_PROFILE_EX_ITEM_KIND_GLOBAL_RVA;
+        } else if (item.itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET ||
+                   item.itemKind == KSW_DYN_V4_ITEM_KIND_TYPE_SIZE) {
+            exKind = KSW_DYN_PROFILE_EX_ITEM_KIND_STRUCT_OFFSET;
+        }
+        if (exKind == 0U) {
+            continue;
+        }
+        std::uint32_t flags = (item.flags & KSW_DYN_V4_ITEM_FLAG_REQUIRED) != 0U
+            ? KSW_DYN_PROFILE_EX_ITEM_FLAG_REQUIRED : 0U;
+        if ((item.itemId >= KSW_DYN_FIELD_ID_CB_PSP_CREATE_PROCESS_NOTIFY_ROUTINE &&
+             item.itemId <= KSW_DYN_FIELD_ID_CB_CALLBACK_ENTRY_REGISTRATION_CONTEXT)) {
+            flags |= KSW_DYN_PROFILE_EX_ITEM_FLAG_CALLBACK;
+        }
+        profileEx.items.push_back({ item.itemId, exKind, item.valueLow, flags });
+        if (profileEx.items.size() >= KSW_DYN_PROFILE_EX_MAX_ITEMS) {
+            break;
+        }
+    }
+}
+
 // ProfileArrayCount returns a compact count for diagnostics. Input is a JSON
 // object and member key; processing checks array shape only; output is 0 when the
 // member is missing or malformed.
@@ -1189,22 +1256,16 @@ DynDataProfileMatch BuildMatchedProfileResult(
     result.profileCount = profileCount;
     result.scannedProfileCount = scannedProfileCount;
     result.packVersion = packVersion;
-    result.fieldCount = ProfileArrayCount(profileObject, "fields");
-    result.typedItemCount = ProfileArrayCount(profileObject, packVersion == 4U ? "legacyItems" : "items");
-    if (result.typedItemCount == 0U) {
-        result.typedItemCount = ProfileArrayCount(profileObject, "typedItems");
-    }
-    result.callbackItemCount = ProfileArrayCount(profileObject, "callbackItems");
+    (void)rootObject;
+    result.fieldCount = 0U;
+    result.typedItemCount = 0U;
+    result.callbackItemCount = 0U;
     result.v4ItemCount = packVersion == 4U ? ProfileArrayCount(profileObject, "items") : 0U;
     result.v4CapabilityGroupCount = packVersion == 4U ? ProfileArrayCount(profileObject, "capabilityGroups") : 0U;
     const JsonValue* coverage = profileObject.member("coveragePercent");
     result.coveragePercent = coverage != nullptr && coverage->isNumber() ? coverage->numberValue : -1.0;
 
     FillProfileMetadata(identity, profileObject, result.profile, result.profileEx);
-    const std::vector<std::uint32_t> dictionary = BuildFieldDictionary(rootObject);
-    ParseProfileFields(profileObject, dictionary, result.profile);
-    ParseProfileItems(profileObject, result.profileEx, packVersion == 4U ? "legacyItems" : "items");
-
     if (packVersion == 4U) {
         std::wstring v4Error;
         if (!ParseV4Profile(
@@ -1219,6 +1280,8 @@ DynDataProfileMatch BuildMatchedProfileResult(
             result.message = L"本地 DynData v4 profile 命中 identity，但数据校验失败。 " + v4Error;
             return result;
         }
+        AppendV4CoreExProjection(result.profileV4, result.profileEx);
+        result.typedItemCount = static_cast<std::uint32_t>(result.profileEx.items.size());
     }
 
     result.valid = !result.profile.fields.empty() || !result.profileEx.items.empty() || !result.profileV4.items.empty();
@@ -1354,7 +1417,7 @@ DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleId
         }
         if (!ParseUInt32(rootObject.member("packVersion"), packVersion) ||
             schemaVersion != 1U ||
-            (packVersion != 1U && packVersion != 2U && packVersion != 3U && packVersion != 4U)) {
+            packVersion != 4U) {
             AppendDiagnostic(diagnostics, L"pack schemaVersion/packVersion 不支持: " + candidatePath.wstring());
             continue;
         }

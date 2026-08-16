@@ -405,13 +405,7 @@ namespace
         QStringList paths;
         appendUniquePath(paths, qEnvironmentVariable("KSWORD_ARK_PROFILE_PACK"));
         appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
-        appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-        appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v2.json")));
-        appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v1.json")));
         appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
-        appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-        appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v2.json")));
-        appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v1.json")));
         return paths;
     }
 
@@ -470,47 +464,18 @@ namespace
         return match.hasMatch() ? match.captured(1) : QString();
     }
 
-    // fieldDictionaryIndex：
-    // - 输入 fieldDictionary/fieldNames：compact pack 的字段字典和允许的字段名别名；
-    // - 处理：线性查找字段索引，pack 字典很小，保持逻辑直观且避免额外 map 状态；
-    // - 返回：命中返回 true 并写出 index，否则返回 false。
-    bool fieldDictionaryIndex(const QJsonArray& fieldDictionary, const QStringList& fieldNames, std::uint32_t& indexOut)
-    {
-        indexOut = 0U;
-        for (int index = 0; index < fieldDictionary.size(); ++index)
-        {
-            const QString fieldName = fieldDictionary.at(index).toString().trimmed();
-            if (fieldNames.contains(fieldName, Qt::CaseSensitive))
-            {
-                indexOut = static_cast<std::uint32_t>(index);
-                return true;
-            }
-        }
-        return false;
-    }
-
     // extractActiveProcessLinksFromPackEntry：
     // - 输入 profileObject/fieldDictionary：已命中当前 ntoskrnl identity 的 compact profile；
-    // - 处理：优先解析 v3 items/typedItems 中的 EpActiveProcessLinks StructOffset；
-    //   若不存在，再回退解析 fields 的 [fieldIndex, offset] pair。
+    // - 处理：解析 v4 items 中的 EpActiveProcessLinks StructOffset。
     // - 返回：成功提取可用偏移 true，并写出 offsetOut；否则 false。
     bool extractActiveProcessLinksFromPackEntry(
         const QJsonObject& profileObject,
-        const QJsonArray& fieldDictionary,
         std::uint32_t& offsetOut)
     {
         offsetOut = 0xFFFFFFFFU;
 
-        QJsonArray typedItemsArray = profileObject.value(QStringLiteral("legacyItems")).toArray();
-        if (typedItemsArray.isEmpty())
-        {
-            typedItemsArray = profileObject.value(QStringLiteral("items")).toArray();
-        }
-        if (typedItemsArray.isEmpty())
-        {
-            typedItemsArray = profileObject.value(QStringLiteral("typedItems")).toArray();
-        }
-        for (const QJsonValue& itemValue : typedItemsArray)
+        const QJsonArray itemsArray = profileObject.value(QStringLiteral("items")).toArray();
+        for (const QJsonValue& itemValue : itemsArray)
         {
             if (!itemValue.isObject())
             {
@@ -519,52 +484,21 @@ namespace
 
             const QJsonObject itemObject = itemValue.toObject();
             const QString itemName = itemObject.value(QStringLiteral("name")).toString().trimmed();
-            const QString itemKind = itemObject.value(QStringLiteral("kind")).toString().trimmed();
-            if (itemName != QStringLiteral("EpActiveProcessLinks") &&
-                itemName != QStringLiteral("_EPROCESS.ActiveProcessLinks"))
-            {
-                continue;
-            }
-            if (itemKind.compare(QStringLiteral("StructOffset"), Qt::CaseInsensitive) != 0)
+            std::uint32_t itemId = 0U;
+            std::uint32_t itemKind = 0U;
+            if (!parseProfileUInt32(itemObject.value(QStringLiteral("itemId")), itemId) ||
+                !parseProfileUInt32(itemObject.value(QStringLiteral("itemKind")), itemKind) ||
+                itemId != KSW_DYN_FIELD_ID_EP_ACTIVE_PROCESS_LINKS ||
+                itemKind != KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET ||
+                (itemName != QStringLiteral("EpActiveProcessLinks") &&
+                 itemName != QStringLiteral("_EPROCESS.ActiveProcessLinks")))
             {
                 continue;
             }
 
             std::uint32_t parsedOffset = 0U;
-            if (parseProfileUInt32(itemObject.value(QStringLiteral("value")), parsedOffset) &&
+            if (parseProfileUInt32(itemObject.value(QStringLiteral("valueLow")), parsedOffset) &&
                 offsetAvailable(parsedOffset))
-            {
-                offsetOut = parsedOffset;
-                return true;
-            }
-        }
-
-        std::uint32_t activeProcessLinksIndex = 0U;
-        if (!fieldDictionaryIndex(
-            fieldDictionary,
-            QStringList{ QStringLiteral("EpActiveProcessLinks"), QStringLiteral("_EPROCESS.ActiveProcessLinks") },
-            activeProcessLinksIndex))
-        {
-            return false;
-        }
-
-        const QJsonArray fieldsArray = profileObject.value(QStringLiteral("fields")).toArray();
-        for (const QJsonValue& fieldValue : fieldsArray)
-        {
-            const QJsonArray pairArray = fieldValue.toArray();
-            if (pairArray.size() != 2)
-            {
-                continue;
-            }
-
-            std::uint32_t fieldIndex = 0U;
-            std::uint32_t parsedOffset = 0U;
-            if (!parseProfileUInt32(pairArray.at(0), fieldIndex) ||
-                !parseProfileUInt32(pairArray.at(1), parsedOffset))
-            {
-                continue;
-            }
-            if (fieldIndex == activeProcessLinksIndex && offsetAvailable(parsedOffset))
             {
                 offsetOut = parsedOffset;
                 return true;
@@ -619,7 +553,7 @@ namespace
             if (!parseProfileUInt32(rootObject.value(QStringLiteral("schemaVersion")), schemaVersion) ||
                 !parseProfileUInt32(rootObject.value(QStringLiteral("packVersion")), packVersion) ||
                 schemaVersion != 1U ||
-                (packVersion != 1U && packVersion != 2U && packVersion != 3U && packVersion != 4U))
+                packVersion != 4U)
             {
                 diagnostics << kernelText("kernel.driver_status.pdb.version_unsupported", QStringLiteral("pack schemaVersion/packVersion 不支持: %1")).arg(result.pathText);
                 continue;
@@ -662,21 +596,14 @@ namespace
                     continue;
                 }
 
-                const QJsonArray fieldsArray = profileObject.value(QStringLiteral("fields")).toArray();
-                QJsonArray typedItemsArray = profileObject.value(QStringLiteral("items")).toArray();
-                if (typedItemsArray.isEmpty())
-                {
-                    typedItemsArray = profileObject.value(QStringLiteral("typedItems")).toArray();
-                }
-                const QJsonArray callbackItemsArray = profileObject.value(QStringLiteral("callbackItems")).toArray();
+                const QJsonArray itemsArray = profileObject.value(QStringLiteral("items")).toArray();
                 result.matched = true;
-                result.valid = !fieldsArray.isEmpty() || !typedItemsArray.isEmpty();
-                result.fieldCount = static_cast<std::uint32_t>(fieldsArray.size());
-                result.typedItemCount = static_cast<std::uint32_t>(typedItemsArray.size());
-                result.callbackItemCount = static_cast<std::uint32_t>(callbackItemsArray.size());
+                result.valid = !itemsArray.isEmpty();
+                result.fieldCount = 0U;
+                result.typedItemCount = static_cast<std::uint32_t>(itemsArray.size());
+                result.callbackItemCount = 0U;
                 result.activeProcessLinksPresent = extractActiveProcessLinksFromPackEntry(
                     profileObject,
-                    rootObject.value(QStringLiteral("fieldDictionary")).toArray(),
                     result.activeProcessLinksOffset);
                 const double coveragePercent = profileObject.value(QStringLiteral("coveragePercent")).toDouble(-1.0);
                 result.coveragePercent = coveragePercent >= 0.0 ? coveragePercent : -1.0;

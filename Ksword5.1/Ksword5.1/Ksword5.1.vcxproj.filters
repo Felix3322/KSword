@@ -1864,12 +1864,6 @@
     <None Include="..\..\tools\i18n_language_pack.py">
       <Filter>Profile Files</Filter>
     </None>
-    <None Include="profiles\ark_dyndata_pack_v2.json">
-      <Filter>Profile Files</Filter>
-    </None>
-    <None Include="profiles\ark_dyndata_pack_v3.json">
-      <Filter>Profile Files</Filter>
-    </None>
     <None Include="profiles\ark_dyndata_pack_v4.json">
       <Filter>Profile Files</Filter>
     </None>

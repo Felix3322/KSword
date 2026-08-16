@@ -2,9 +2,9 @@
 
 ## 结论先行
 
-当前 DynData v1/v2/v3 已经能支撑 `ntoskrnl.exe` / `ntkrnlmp.exe` / `ntkrla57.exe` 的结构偏移、部分全局 RVA、callback 相关 RVA/结构偏移下发，并且 R0 侧具备基本的 capability 派生、字段查询、profile 精确匹配和 copy-on-success 应用机制。但是现有设计仍然是“单主模块 ntoskrnl 视角”，不能稳定覆盖 GUI、网络、文件过滤、BitLocker 等跨模块 R0 审计场景。
+当前发行链路只发布 DynData v4。v1/v2/v3 内容保留在本文件作为历史审计记录，不再进入 Release，也不参与运行时 fallback。v4 通过稳定 item ID 和 capability group 支撑 `ntoskrnl`、`ntkrla57`、`fltmgr`、`ci` 等模块的精确匹配；R3 从 v4 core items 内存投影 EX 请求，保持已有字段消费者可用。
 
-建议新增并行存在的 profile v4，而不是扩展 v3 原语义：v4 应以“pack -> moduleProfiles[] -> items[]”为核心，按模块身份精确匹配已加载模块，并以 capability group 为单位向 R0 暴露可用性。v4 必须继续由 R3 解析 JSON/PDB 产物，R0 只接收已验证的紧凑二进制请求；R0 不解析 JSON、不读取 PDB、不猜测跨版本字段。
+v4 pack 以 `pack -> profiles[] -> items[]` 为核心，按模块身份精确匹配已加载模块，并以 capability group 为单位向 R0 暴露可用性。v4 必须继续由 R3 解析 JSON/PDB 产物，R0 只接收已验证的紧凑二进制请求；R0 不解析 JSON、不读取 PDB、不猜测跨版本字段。
 
 v4 的关键变化：
 
@@ -551,7 +551,7 @@ R0/R3/UI 统一降级语义：
 
 | 条件 | R0 行为 | R3 行为 | UI 展示 |
 | --- | --- | --- | --- |
-| v4 pack 不存在 | 不变 | 继续 v3 apply | `v4 unavailable, v3 active` |
+| v4 pack 不存在 | 不变 | 不下发动态 profile | `v4 pack unavailable` |
 | v4 module absent | 不 apply | 跳过该 module | `Absent` |
 | v4 profile missing | 不 apply | 记录 miss | `No matching profile` |
 | identity mismatch | 拒绝该 module | 不重试错误 profile | `Rejected: identity mismatch` |
@@ -560,17 +560,15 @@ R0/R3/UI 统一降级语义：
 | unknown item kind | 拒绝该 module profile | 报告协议不兼容 | `Rejected: unsupported kind` |
 | item out of range | 拒绝该 module profile | 报告 bad profile | `Rejected: invalid value` |
 | one module apply failed | 不影响其它已成功模块 | 继续其它模块 | 单模块红/黄，整体部分可用 |
-| R0 protocol old | 不下发 v4 | 回退 v3 | `Driver does not support v4` |
+| R0 protocol old | 不下发 v4 | 报告协议不兼容 | `Driver does not support v4` |
 
 关键原则：稳定审计宁可少报能力，也不能用错 offset/RVA 造成误读或崩溃。
 
-## 兼容迁移路线
+## 历史迁移路线
 
 ### 阶段 0：文档与 schema 固化
 
-- 保留 v3 pack、v3 R3 loader、v3 R0 apply。
-- 新增 v4 schema 文档、item dictionary 规划、module class dictionary。
-- generator 先 dry-run 生成 v4 草案，不进入 Release。
+- 本节记录 v4 设计阶段的历史步骤；当前发行链路已完成 v4 单矩阵切换。
 
 ### 阶段 1：R3 只读识别 v4 pack
 
@@ -597,14 +595,12 @@ R0/R3/UI 统一降级语义：
 - 先接入只读审计：cross-view、module integrity、callback consistency、network topology、minifilter topology。
 - mutation/patch 类功能继续独立 gating，不因 v4 profile 存在自动开放。
 
-### 阶段 5：发布并行
+### 阶段 5：v4 单矩阵发布
 
-- Release 同时携带：
-  - `ark_dyndata_pack_v3.json`
-  - `ark_dyndata_pack_v4.json`
-- 老驱动/老 R3 忽略 v4。
-- 新 R3 + 老 R0 自动回退 v3。
-- 新 R3 + 新 R0 优先 v4，必要时 v3 补齐现有字段。
+- Release 只携带 `ark_dyndata_pack_v4.json.qz`。
+- R3/Light 只接受 `packVersion: 4`，不扫描 v1/v2/v3 或散装 profile。
+- v4 core item 在 R3 内存中投影到既有 EX apply 请求，磁盘不保存重复字段矩阵。
+- 不完整的固定 capability group 整组省略，R0 不接收虚假的完整能力声明。
 
 ## UI 命中状态建议
 
@@ -687,20 +683,20 @@ UI 不应把整体状态简化为一个绿灯。v4 的价值正是显示“哪�
 
 文档/方案验收：
 
-- 明确审计了当前 v1/v2/v3 的支持范围和限制。
+- 历史章节明确记录 v1/v2/v3 的支持范围和限制。
 - 明确给出 v4 多模块 profile 的 identity 字段。
 - 明确覆盖目标模块：ntoskrnl、win32k、win32kbase、win32kfull、tcpip、ndis、netio、fltMgr、fvevol。
 - 明确设计 7 类 item：StructOffset、GlobalRva、FunctionRva、EnumValue、TypeSize、BitField、ListHeadGlobal。
 - 包含 JSON 示例。
 - 包含 capability 分组建议。
 - 包含失败降级规则。
-- 包含 v3 不破坏、v4 并存、UI 可见每模块状态的迁移路线。
+- 包含 v4 单矩阵发布与 UI 可见每模块状态的规则。
 - 包含后续编码任务清单。
 
 后续代码实现验收：
 
-- 老 v3 pack 和老 R0/R3 流程完全不受影响。
-- 新 R3 在老 R0 上自动回退 v3，不误报 v4 失败为驱动异常。
+- Release 不包含 v1/v2/v3 pack，R3 不执行旧矩阵 fallback。
+- R3 在不支持 v4 的 R0 上报告协议不兼容，不应用旧 profile。
 - 新 R0 能返回多模块 identity。
 - v4 能按模块独立 apply，单模块失败不影响其它模块。
 - R0 capability 只由已验证 item 派生。

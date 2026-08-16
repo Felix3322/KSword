@@ -511,7 +511,7 @@ def parse_summary(summary_text: str, pdb_path: Path) -> dict[str, Any]:
     - summary Age 记录为 pdbSummaryAge；
     - 若 PDB 来自 symbol-cache，优先使用父目录 GUID+Age 作为 runtime/RSDS 匹配用的 pdbAge。
     返回：
-    - source 字典；pdbAge 字段用于和 ark_dyndata_pack_v3.json profile identity 匹配。
+    - source 字典；pdbAge 字段用于和 ark_dyndata_pack_v4.json profile identity 匹配。
     """
     guid_match = SUMMARY_GUID_RE.search(summary_text)
     age_match = SUMMARY_AGE_RE.search(summary_text)

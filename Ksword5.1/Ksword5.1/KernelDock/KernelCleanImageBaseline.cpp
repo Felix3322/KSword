@@ -1155,43 +1155,15 @@ namespace
         for (const QString& root : roots)
         {
             const QDir directory(root);
-            const QStringList packNames = {
-                QStringLiteral("ark_dyndata_pack_v4.json"),
-                QStringLiteral("ark_dyndata_pack_v3.json"),
-                QStringLiteral("ark_dyndata_pack_v2.json"),
-                QStringLiteral("ark_dyndata_pack_v1.json")
-            };
-            for (const QString& packName : packNames)
+            const QString path =
+                QFileInfo(directory.filePath(QStringLiteral("ark_dyndata_pack_v4.json")))
+                    .absoluteFilePath();
+            const QString key =
+                QDir::cleanPath(path).toLower();
+            if (!seen.contains(key) && QFileInfo::exists(path))
             {
-                const QString path =
-                    QFileInfo(directory.filePath(packName))
-                        .absoluteFilePath();
-                const QString key =
-                    QDir::cleanPath(path).toLower();
-                if (!seen.contains(key) && QFileInfo::exists(path))
-                {
-                    seen.insert(key);
-                    paths.push_back(path);
-                }
-            }
-            const QDir scattered(
-                directory.filePath(QStringLiteral("ark_dyndata")));
-            const QStringList profileFiles = scattered.entryList(
-                { QStringLiteral("*.json") },
-                QDir::Files,
-                QDir::Name);
-            for (const QString& profileName : profileFiles)
-            {
-                const QString path =
-                    QFileInfo(scattered.filePath(profileName))
-                        .absoluteFilePath();
-                const QString key =
-                    QDir::cleanPath(path).toLower();
-                if (!seen.contains(key))
-                {
-                    seen.insert(key);
-                    paths.push_back(path);
-                }
+                seen.insert(key);
+                paths.push_back(path);
             }
         }
         return paths;

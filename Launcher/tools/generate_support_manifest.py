@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Launcher identity index from a published DynData v3-or-newer pack."""
+"""Generate the Launcher identity index from the published DynData v4 pack."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def validate_source(source: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def profile_is_complete(profile: dict[str, Any]) -> bool:
-    """判断发布 profile 是否完整；输入 v3/v4 profile，输出 Launcher 使用的完整性标记。"""
+    """判断发布 v4 profile 是否完整，输出 Launcher 使用的完整性标记。"""
     if int(profile.get("moduleClassId", -1)) == CI_MODULE_CLASS_ID:
         items = profile.get("items", [])
         if not isinstance(items, list):
@@ -132,10 +132,10 @@ def identity_key(profile: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def generate(source: dict[str, Any], pack: dict[str, Any]) -> dict[str, Any]:
-    """合并目录与已发布矩阵；输入源目录和 v3 或更高版本 pack，输出 Launcher 清单。"""
+    """合并目录与已发布 v4 矩阵，输出 Launcher 清单。"""
     modules_by_id = validate_source(source)
-    if int(pack.get("packVersion", 0)) < 3 or not isinstance(pack.get("profiles"), list):
-        raise ValueError("Launcher support manifest requires a v3-or-newer profile pack")
+    if int(pack.get("packVersion", 0)) != 4 or not isinstance(pack.get("profiles"), list):
+        raise ValueError("Launcher support manifest requires a v4 profile pack")
 
     deduplicated: dict[tuple[Any, ...], dict[str, Any]] = {}
     for raw_profile in pack["profiles"]:

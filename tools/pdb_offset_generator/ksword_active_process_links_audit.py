@@ -3,18 +3,17 @@
 Audit KswordARK ActiveProcessLinks DynData profile coverage.
 
 Inputs:
-- A compact DynData v3 pack JSON, normally
-  Ksword5.1\\Ksword5.1\\x64\\Release\\profiles\\ark_dyndata_pack_v3.json.
+- A compact DynData v4 pack JSON, normally the uncompressed generator output
+  Ksword5.1\\Ksword5.1\\profiles\\ark_dyndata_pack_v4.json.
 - A local ntoskrnl.exe image used only for PE identity matching.
 
 Processing:
 - Parses the PE machine, TimeDateStamp, and SizeOfImage tuple from ntoskrnl.exe.
 - Finds the exact matching ntoskrnl profile in the compact pack.
-- Reports EpActiveProcessLinks values from both legacy fields pairs and v3
-  typed StructOffset items.
+- Reports EpActiveProcessLinks values from v4 items.
 
 Return behavior:
-- Exits 0 only when the pack is v3-compatible, the local kernel profile matches,
+- Exits 0 only when the pack is v4-compatible, the local kernel profile matches,
   and EpActiveProcessLinks is present with at least one non-sentinel offset.
 - Exits non-zero with a concise diagnostic when evidence is missing.
 """
@@ -30,9 +29,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PACK = Path(r"Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json")
+DEFAULT_PACK = Path(r"Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v4.json")
 DEFAULT_KERNEL = Path(r"C:\Windows\System32\ntoskrnl.exe")
 ACTIVE_PROCESS_LINKS_NAMES = {"EpActiveProcessLinks", "_EPROCESS.ActiveProcessLinks"}
+ACTIVE_PROCESS_LINKS_ITEM_ID = 58
+STRUCT_OFFSET_ITEM_KIND = 1
 UNAVAILABLE_OFFSETS = {0xFFFFFFFF, 0x0000FFFF}
 
 
@@ -105,73 +106,33 @@ def parse_pe_identity(path: Path) -> PeIdentity:
     return PeIdentity(machine=machine, time_date_stamp=time_date_stamp, size_of_image=size_of_image)
 
 
-def field_dictionary_index(field_dictionary: list[Any], names: set[str]) -> int | None:
-    """Find one field dictionary index by accepted names.
-
-    Inputs:
-    - field_dictionary: pack fieldDictionary array.
-    - names: Accepted field spellings.
-
-    Processing:
-    - Performs a small linear scan; dictionaries are tiny and deterministic.
-
-    Return behavior:
-    - Returns the index on success; returns None when absent.
-    """
-    for index, item in enumerate(field_dictionary):
-        if isinstance(item, str) and item.strip() in names:
-            return index
-    return None
-
-
-def extract_field_offsets(profile: dict[str, Any], field_index: int | None) -> list[int]:
-    """Extract EpActiveProcessLinks from legacy fields pairs.
-
-    Inputs:
-    - profile: Matching compact profile object.
-    - field_index: Dictionary index for EpActiveProcessLinks.
-
-    Processing:
-    - Scans fields entries of the form [fieldIndex, offset].
-
-    Return behavior:
-    - Returns all valid uint32 offsets matching the requested index.
-    """
-    if field_index is None:
-        return []
-    offsets: list[int] = []
-    for item in profile.get("fields", []):
-        if not isinstance(item, list) or len(item) != 2:
-            continue
-        index = parse_uint32(item[0])
-        offset = parse_uint32(item[1])
-        if index == field_index and offset is not None:
-            offsets.append(offset)
-    return offsets
-
-
 def extract_typed_offsets(profile: dict[str, Any]) -> list[int]:
-    """Extract EpActiveProcessLinks from v3 typed items.
+    """Extract EpActiveProcessLinks from v4 items.
 
     Inputs:
     - profile: Matching compact profile object.
 
     Processing:
-    - Scans items/typedItems for StructOffset entries whose name matches
+    - Scans v4 items for StructOffset entries whose name matches
       EpActiveProcessLinks.
 
     Return behavior:
     - Returns all valid uint32 typed offsets.
     """
     offsets: list[int] = []
-    typed_items = profile.get("items") or profile.get("typedItems") or []
-    for item in typed_items:
+    for item in profile.get("items", []):
         if not isinstance(item, dict):
             continue
         name = str(item.get("name", "")).strip()
-        kind = str(item.get("kind", "")).strip().lower()
-        offset = parse_uint32(item.get("value"))
-        if name in ACTIVE_PROCESS_LINKS_NAMES and kind == "structoffset" and offset is not None:
+        item_id = parse_uint32(item.get("itemId"))
+        item_kind = parse_uint32(item.get("itemKind"))
+        offset = parse_uint32(item.get("valueLow"))
+        if (
+            item_id == ACTIVE_PROCESS_LINKS_ITEM_ID
+            and name in ACTIVE_PROCESS_LINKS_NAMES
+            and item_kind == STRUCT_OFFSET_ITEM_KIND
+            and offset is not None
+        ):
             offsets.append(offset)
     return offsets
 
@@ -218,14 +179,17 @@ def main() -> int:
     Return behavior:
     - Returns process exit code 0 on success; non-zero on missing evidence.
     """
-    parser = argparse.ArgumentParser(description="Audit EpActiveProcessLinks coverage in a KswordARK DynData v3 pack.")
-    parser.add_argument("--pack", default=str(DEFAULT_PACK), help="Path to ark_dyndata_pack_v3.json.")
+    parser = argparse.ArgumentParser(description="Audit EpActiveProcessLinks coverage in a KswordARK DynData v4 pack.")
+    parser.add_argument("--pack", default=str(DEFAULT_PACK), help="Path to ark_dyndata_pack_v4.json.")
     parser.add_argument("--kernel", default=str(DEFAULT_KERNEL), help="Path to local ntoskrnl.exe.")
     args = parser.parse_args()
 
     pack_path = Path(args.pack)
     kernel_path = Path(args.kernel)
     pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    if not isinstance(pack, dict) or pack.get("packVersion") != 4:
+        print("ERROR: packVersion must be 4", file=sys.stderr)
+        return 2
     identity = parse_pe_identity(kernel_path)
 
     print(f"pack={pack_path}")
@@ -235,25 +199,16 @@ def main() -> int:
         f"timeDateStamp=0x{identity.time_date_stamp:08X}, sizeOfImage=0x{identity.size_of_image:X}"
     )
 
-    field_dictionary = pack.get("fieldDictionary", [])
-    if not isinstance(field_dictionary, list):
-        print("ERROR: fieldDictionary is not an array", file=sys.stderr)
-        return 2
-    field_index = field_dictionary_index(field_dictionary, ACTIVE_PROCESS_LINKS_NAMES)
-    print(f"fieldDictionaryIndex={field_index if field_index is not None else '<missing>'}")
-
     profile = find_matching_profile(pack, identity)
     if profile is None:
         print("ERROR: no exact ntoskrnl profile matches the local kernel identity", file=sys.stderr)
         return 3
 
-    fields_offsets = extract_field_offsets(profile, field_index)
     typed_offsets = extract_typed_offsets(profile)
-    usable_offsets = [value for value in [*fields_offsets, *typed_offsets] if value not in UNAVAILABLE_OFFSETS]
+    usable_offsets = [value for value in typed_offsets if value not in UNAVAILABLE_OFFSETS]
 
     print(f"profileName={profile.get('profileName', '<unnamed>')}")
-    print(f"fieldsOffsets={fields_offsets}")
-    print(f"typedOffsets={typed_offsets}")
+    print(f"v4Offsets={typed_offsets}")
     if not usable_offsets:
         print("ERROR: EpActiveProcessLinks is absent or unavailable in the matching profile", file=sys.stderr)
         return 4
