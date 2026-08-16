@@ -1,24 +1,24 @@
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ ⚖  KSwordDEV/KSword is licensed under the                                                                                                  │
-│    KSword Community Source License v1.6                                                                                                     │
-│                                                                                                                                              │
-│    A source-available license allowing use, modification, free distribution and SaaS.                                                       │
-│    The software itself may not be sold. Modified public versions must disclose corresponding source and clearly identify themselves.         │
-│                                                                                                                                              │
-│  Permissions                              Limitations                              Conditions                                                │
-│                                                                                                                                              │
-│  ✔ Commercial use                         ✘ Software sale                          ⓘ License & copyright notice                              │
-│  ✔ Private use                            ✘ Disguised / indirect sale              ⓘ Disclose corresponding source                          │
-│  ✔ Study & research                       ✘ Trademark license                      ⓘ State significant changes                              │
-│  ✔ Modification                           ✘ Patent license                         ⓘ Mark unofficial versions                               │
-│  ✔ Free distribution                      ✘ Official branding                      ⓘ Preserve attribution & project link                     │
-│  ✔ Paid services & support                ✘ Official infrastructure                ⓘ Keep source available ≥ 3 years                        │
-│  ✔ Hosted / SaaS use                      ✘ Warranty                               ⓘ Separate plugin licenses apply                          │
-│                                            ✘ Liability*                            ⓘ Follow third-party licenses                             │
-│                                                                                                                                              │
+│    KSword Community Source License v1.6                                                                                                    │
+│                                                                                                                                            │
+│    A source-available license allowing use, modification, free distribution and SaaS.                                                      │
+│    The software itself may not be sold. Modified public versions must disclose corresponding source and clearly identify themselves.       │
+│                                                                                                                                            │
+│  Permissions                              Limitations                              Conditions                                              │
+│                                                                                                                                            │
+│  ✔ Commercial use                         ✘ Software sale                          ⓘ License & copyright notice                           │
+│  ✔ Private use                            ✘ Disguised / indirect sale              ⓘ Disclose corresponding source                        │
+│  ✔ Study & research                       ✘ Trademark license                      ⓘ State significant changes                            │
+│  ✔ Modification                           ✘ Patent license                         ⓘ Mark unofficial versions                             │
+│  ✔ Free distribution                      ✘ Official branding                      ⓘ Preserve attribution & project link                  │
+│  ✔ Paid services & support                ✘ Official infrastructure                ⓘ Keep source available ≥ 3 years                      │
+│  ✔ Hosted / SaaS use                      ✘ Warranty                               ⓘ Separate plugin licenses apply                       │
+│                                           ✘ Liability*                             ⓘ Follow third-party licenses                          │
+│                                                                                                                                            │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ⓘ This summary is for convenience only. It grants no rights and imposes no restrictions or obligations.                                    │
-│    Only the full License is legally binding. The Chinese text controls.                                                                     │
+│ ⓘ This summary is for convenience only. It grants no rights and imposes no restrictions or obligations.                                   │
+│    Only the full License is legally binding. The Chinese text controls.                                                                    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 KSword Community Source License 1.6
