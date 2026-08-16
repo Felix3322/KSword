@@ -6,7 +6,8 @@
 // 1) 为所有 QTableView/QTableWidget 自动安装表格搜索入口；
 // 2) 只在内容超过一屏且页面没有专属搜索框时显示；
 // 3) 根据可用空间在“搜索框 -> 搜索按钮 -> 隐藏”之间降级；
-// 4) 提供表格名称解析、模型匹配与结果定位，供顶部搜索复用。
+// 4) 支持“仅显示搜索结果”，并精确恢复启用前的行隐藏状态；
+// 5) 提供表格名称解析、模型匹配与结果定位，供顶部搜索复用。
 // ============================================================
 
 #include <QPersistentModelIndex>
@@ -33,6 +34,22 @@ namespace ks::ui
 
     // RefreshTableSearchSupport：重新判断滚动状态、专属搜索框和可用空间。
     void RefreshTableSearchSupport(QTableView* tableView);
+
+    // IsGenericTableSearchEligible：仅允许没有遗留外部搜索框的表格使用通用过滤。
+    bool IsGenericTableSearchEligible(QTableView* tableView);
+
+    // ApplyTableSearchResultFilter：隐藏不匹配行并保留原始行隐藏快照，成功时返回 true。
+    bool ApplyTableSearchResultFilter(
+        QTableView* tableView,
+        const QString& queryText);
+
+    // ClearTableSearchResultFilter：撤销通用过滤并恢复启用前的行隐藏状态。
+    void ClearTableSearchResultFilter(QTableView* tableView);
+
+    // SetTableSearchResultsOnlyChecked：无信号同步表格内嵌勾选框状态。
+    void SetTableSearchResultsOnlyChecked(
+        QTableView* tableView,
+        bool checked);
 
     // ResolveTableSearchDisplayName：从显式属性、分组标题、页签和对象名解析表格名。
     QString ResolveTableSearchDisplayName(const QTableView* tableView);

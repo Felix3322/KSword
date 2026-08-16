@@ -30129,6 +30129,9 @@
     "搜索%1": "Search %1",
     "搜索当前表格：%1": "Search current table: %1",
     "搜索范围：%1。聚焦输入框后按 Tab 切换范围。": "Search scope: %1. Focus the input and press Tab to switch scope.",
-    "表格": "Table"
+    "表格": "Table",
+    "ksTitleSearchResultsOnlyCheck": "ksTitleSearchResultsOnlyCheck",
+    "仅显示搜索结果": "Show search results only",
+    "勾选后隐藏通用表格中不匹配的行；取消勾选后恢复原有可见状态": "Hide nonmatching rows in generic tables; clear to restore their previous visibility"
   }
 }

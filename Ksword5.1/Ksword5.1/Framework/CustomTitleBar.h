@@ -16,6 +16,7 @@
 #include <QWidget>
 
 class QAction;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QMenu;
@@ -120,6 +121,9 @@ namespace ks::ui
         // setSearchScopeDisplayText：刷新顶部搜索范围标签与 Tab 切换提示。
         void setSearchScopeDisplayText(const QString& displayText);
 
+        // setSearchResultsOnlyChecked：同步“仅显示搜索结果”状态，不回发用户切换信号。
+        void setSearchResultsOnlyChecked(bool checked);
+
     signals:
         // requestTogglePinned：
         // - 作用：请求切换置顶状态；
@@ -163,6 +167,9 @@ namespace ks::ui
         // - 触发：用户在模式菜单中切换搜索/CMD 时触发；
         // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
         void inputModeChanged(bool searchModeActive);
+
+        // searchResultsOnlyChanged：用户切换顶部通用搜索的结果专显状态。
+        void searchResultsOnlyChanged(bool checked);
 
     protected:
         // resizeEvent：
@@ -278,13 +285,14 @@ namespace ks::ui
         QLabel* m_titleTextLabel = nullptr;       // m_titleTextLabel：标题文本（含编译日期）。
         QPushButton* m_userBadgeButton = nullptr; // m_userBadgeButton：用户名展示按钮（禁用态仅展示）。
 
-        QWidget* m_centerInputGroup = nullptr;    // m_centerInputGroup：中间输入组容器（模式按钮+输入框一体外观）。
+        QWidget* m_centerInputGroup = nullptr;    // m_centerInputGroup：中间输入组容器（模式按钮+输入框+结果专显）。
         QHBoxLayout* m_centerInputLayout = nullptr; // m_centerInputLayout：中间输入组水平布局。
         QToolButton* m_inputModeButton = nullptr; // m_inputModeButton：输入模式切换按钮（搜索/CMD）。
         QMenu* m_inputModeMenu = nullptr;         // m_inputModeMenu：输入模式选择菜单。
         QAction* m_searchModeAction = nullptr;    // m_searchModeAction：菜单“搜索”模式选项。
         QAction* m_commandModeAction = nullptr;   // m_commandModeAction：菜单“CMD 命令”模式选项。
         QLineEdit* m_commandLineEdit = nullptr;   // m_commandLineEdit：标题栏中间输入框（搜索/命令共用）。
+        QCheckBox* m_searchResultsOnlyCheck = nullptr; // m_searchResultsOnlyCheck：只保留通用搜索命中行的开关。
 
         QWidget* m_rightWidget = nullptr;         // m_rightWidget：右侧按钮区容器。
         QHBoxLayout* m_rightLayout = nullptr;     // m_rightLayout：右侧按钮区布局。

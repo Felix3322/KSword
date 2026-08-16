@@ -811,7 +811,17 @@ namespace ks::ui
         }
         QTimer::singleShot(0, this, [this]() {
             refreshSearchScopeDisplayText();
+            emit searchResultsOnlyChanged(m_searchResultsOnly);
         });
+    }
+
+    GlobalUiSearchController::~GlobalUiSearchController()
+    {
+        clearSearchResultFilters();
+        if (g_activeSearchController == this)
+        {
+            g_activeSearchController.clear();
+        }
     }
 
     void GlobalUiSearchController::setDockListProvider(DockListProvider dockListProvider)
@@ -832,7 +842,8 @@ namespace ks::ui
     void GlobalUiSearchController::activateForTable(
         QTableView* tableView,
         const QString& queryText,
-        const bool focusTopInput)
+        const bool focusTopInput,
+        const bool searchResultsOnly)
     {
         if (tableView == nullptr)
         {
@@ -843,6 +854,10 @@ namespace ks::ui
         m_recentTableView = tableView;
         m_recentPageDockWidget = dockWidgetForWidget(tableView);
         setSearchScope(UiSearchScope::CurrentTable);
+        setSearchResultsOnly(searchResultsOnly);
+        ks::ui::SetTableSearchResultsOnlyChecked(
+            tableView,
+            searchResultsOnly);
         emit requestSearchInputActivation(focusTopInput);
 
         if (m_searchInputEdit != nullptr && !queryText.isNull())
@@ -886,6 +901,7 @@ namespace ks::ui
         if (!isCurrentQueryLongEnough(queryText.trimmed()))
         {
             dismissPopup();
+            clearSearchResultFilters();
             return;
         }
         m_searchDebounceTimer->start();
@@ -897,8 +913,41 @@ namespace ks::ui
         if (!searchModeActive)
         {
             dismissPopup();
+            clearSearchResultFilters();
         }
         else if (isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
+        {
+            m_searchDebounceTimer->start();
+        }
+    }
+
+    void GlobalUiSearchController::setSearchResultsOnly(const bool checked)
+    {
+        if (m_searchResultsOnly == checked)
+        {
+            emit searchResultsOnlyChanged(checked);
+            if (m_searchScope == UiSearchScope::CurrentTable)
+            {
+                ks::ui::SetTableSearchResultsOnlyChecked(
+                    resolveCurrentTable(),
+                    checked);
+            }
+            return;
+        }
+
+        dismissPopup();
+        clearSearchResultFilters();
+        m_searchResultsOnly = checked;
+        emit searchResultsOnlyChanged(checked);
+        if (m_searchScope == UiSearchScope::CurrentTable)
+        {
+            ks::ui::SetTableSearchResultsOnlyChecked(
+                resolveCurrentTable(),
+                checked);
+        }
+        if (checked
+            && m_searchModeActive
+            && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
         {
             m_searchDebounceTimer->start();
         }
@@ -1004,9 +1053,15 @@ namespace ks::ui
                 {
                     m_recentTableView = tableView;
                     m_recentPageDockWidget = dockWidgetForWidget(tableView);
-                    if (m_searchScope == UiSearchScope::CurrentTable)
+                    if (m_searchScope == UiSearchScope::CurrentTable
+                        && m_targetTableView != tableView)
                     {
+                        dismissPopup();
+                        clearSearchResultFilters();
                         m_targetTableView = tableView;
+                        ks::ui::SetTableSearchResultsOnlyChecked(
+                            tableView,
+                            m_searchResultsOnly);
                         refreshSearchScopeDisplayText();
                         if (m_searchModeActive
                             && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
@@ -1017,7 +1072,20 @@ namespace ks::ui
                 }
                 else if (ads::CDockWidget* dockWidget = dockWidgetForWidget(contextWidget))
                 {
+                    const bool currentPageChanged = m_searchScope == UiSearchScope::CurrentPage
+                        && m_recentPageDockWidget != dockWidget;
+                    if (currentPageChanged)
+                    {
+                        dismissPopup();
+                        clearSearchResultFilters();
+                    }
                     m_recentPageDockWidget = dockWidget;
+                    if (currentPageChanged
+                        && m_searchModeActive
+                        && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
+                    {
+                        m_searchDebounceTimer->start();
+                    }
                 }
             }
         }
@@ -1124,6 +1192,7 @@ namespace ks::ui
         if (!m_searchModeActive || !isCurrentQueryLongEnough(queryText))
         {
             dismissPopup();
+            clearSearchResultFilters();
             return;
         }
         if (m_searchScope != UiSearchScope::CurrentTable && !m_dockListProvider)
@@ -1138,7 +1207,8 @@ namespace ks::ui
             return;
         }
 
-        // 新代数使仍在事件队列中的旧扫描分片全部作废。
+        // 新代数使仍在事件队列中的旧扫描分片全部作废；先撤销上一轮附加行过滤。
+        clearSearchResultFilters();
         ++m_searchGeneration;
         m_activeQueryText = queryText;
         m_activeSearchScope = m_searchScope;
@@ -1224,7 +1294,8 @@ namespace ks::ui
             ? 1
             : static_cast<int>(m_pendingSearchDockList.size());
         if (m_nextSearchDockIndex >= workItemCount
-            || m_currentHitList.size() >= kMaxTotalHits)
+            || (!m_searchResultsOnly
+                && m_currentHitList.size() >= kMaxTotalHits))
         {
             finishAsyncSearch();
             return;
@@ -1236,6 +1307,8 @@ namespace ks::ui
                 m_pendingDirectTableView.data(),
                 m_activeQueryText,
                 m_currentHitList);
+            applySearchResultFilterToTable(
+                m_pendingDirectTableView.data());
         }
         else
         {
@@ -1254,6 +1327,9 @@ namespace ks::ui
                     dockWidget,
                     m_activeQueryText,
                     m_currentHitList,
+                    m_activeSearchScope == UiSearchScope::CurrentPage);
+                applySearchResultFiltersToDock(
+                    dockWidget,
                     m_activeSearchScope == UiSearchScope::CurrentPage);
             }
         }
@@ -1542,10 +1618,14 @@ namespace ks::ui
         }
 
         dismissPopup();
+        clearSearchResultFilters();
         m_searchScope = searchScope;
         if (m_searchScope == UiSearchScope::CurrentTable)
         {
             m_targetTableView = resolveCurrentTable();
+            ks::ui::SetTableSearchResultsOnlyChecked(
+                m_targetTableView.data(),
+                m_searchResultsOnly);
         }
         refreshSearchScopeDisplayText();
         if (m_searchModeActive && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
@@ -1568,6 +1648,71 @@ namespace ks::ui
             m_targetTableView = resolveCurrentTable();
         }
         setSearchScope(static_cast<UiSearchScope>(nextScopeIndex));
+    }
+
+    void GlobalUiSearchController::clearSearchResultFilters()
+    {
+        for (const QPointer<QTableView>& tableView : m_filteredTableViewList)
+        {
+            if (!tableView.isNull())
+            {
+                ks::ui::ClearTableSearchResultFilter(tableView.data());
+            }
+        }
+        m_filteredTableViewList.clear();
+    }
+
+    void GlobalUiSearchController::applySearchResultFilterToTable(
+        QTableView* tableView)
+    {
+        if (!m_searchResultsOnly
+            || tableView == nullptr
+            || m_activeQueryText.trimmed().isEmpty()
+            || !ks::ui::IsGenericTableSearchEligible(tableView))
+        {
+            return;
+        }
+
+        if (!ks::ui::ApplyTableSearchResultFilter(
+                tableView,
+                m_activeQueryText))
+        {
+            return;
+        }
+
+        const QPointer<QTableView> guardedTable(tableView);
+        if (!m_filteredTableViewList.contains(guardedTable))
+        {
+            m_filteredTableViewList.push_back(guardedTable);
+        }
+    }
+
+    void GlobalUiSearchController::applySearchResultFiltersToDock(
+        ads::CDockWidget* dockWidget,
+        const bool visiblePageOnly)
+    {
+        if (!m_searchResultsOnly
+            || dockWidget == nullptr
+            || dockWidget->widget() == nullptr)
+        {
+            return;
+        }
+
+        QWidget* contentWidget = dockWidget->widget();
+        QList<QTableView*> tableViewList = contentWidget->findChildren<QTableView*>();
+        if (QTableView* rootTableView = qobject_cast<QTableView*>(contentWidget))
+        {
+            tableViewList.prepend(rootTableView);
+        }
+        for (QTableView* tableView : tableViewList)
+        {
+            if (tableView == nullptr
+                || (visiblePageOnly && !tableView->isVisibleTo(contentWidget)))
+            {
+                continue;
+            }
+            applySearchResultFilterToTable(tableView);
+        }
     }
 
     ads::CDockWidget* GlobalUiSearchController::resolveCurrentPageDock() const
@@ -1670,14 +1815,16 @@ namespace ks::ui
     void ActivateGlobalUiSearchForTable(
         QTableView* tableView,
         const QString& queryText,
-        const bool focusTopInput)
+        const bool focusTopInput,
+        const bool searchResultsOnly)
     {
         if (!g_activeSearchController.isNull())
         {
             g_activeSearchController->activateForTable(
                 tableView,
                 queryText,
-                focusTopInput);
+                focusTopInput,
+                searchResultsOnly);
         }
     }
 }
