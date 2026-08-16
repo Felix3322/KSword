@@ -21,6 +21,7 @@
 #include "UI/SmoothScrollSupport.h"
 #include "UI/TextSearchReplaceSupport.h"
 #include "Internationalization/LanguageManager.h"
+#include "../../shared/crash/WinCrashHandler.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1321,13 +1322,23 @@ int main(int argc, char* argv[])
     // 3) 按配置处理自动提权；
     // 4) 设置 QT_SCALE_FACTOR；
     // 5) 显示 Framework 启动页并创建主窗口。
+    ks::crash::Configuration crashConfiguration;
+    crashConfiguration.productName = L"KswordARK";
+    crashConfiguration.dumpFilePrefix = L"Ksword5.1";
+    crashConfiguration.preferLauncherReporter = true;
+    ks::crash::InstallCrashHandler(crashConfiguration);
+    const bool crashRestartWait =
+        ks::crash::WaitForCrashRestartTargetFromCommandLine();
     startupTraceRaw("startup trace initialized without console binding");
     initializeProcessDpiAwareness();
     startupTraceRaw("initializeProcessDpiAwareness finished");
 
     const std::vector<std::wstring> startupUnlockPathList = collectUnlockPathsFromCommandLine();
     const bool privilegeRestartLaunch = hasCommandLineArgument(kPrivilegeRestartArgument);
-    if (!privilegeRestartLaunch)
+    const bool skipSingleInstanceLaunch =
+        crashRestartWait
+        || ks::crash::CommandLineHasArgument(ks::crash::kSkipSingleInstanceArgument);
+    if (!privilegeRestartLaunch && !skipSingleInstanceLaunch)
     {
         if (HWND existingWindowHandle = findExistingKswordMainWindow())
         {
@@ -1365,7 +1376,11 @@ int main(int argc, char* argv[])
             return 0;
         }
     }
-    else
+    else if (privilegeRestartLaunch)
+    {
+        startupTraceRaw("privilege restart marker found, skipping single-instance check");
+    }
+    else if (skipSingleInstanceLaunch)
     {
         startupTraceRaw("privilege restart marker found, skipping single-instance check");
     }
@@ -1562,6 +1577,44 @@ int main(int argc, char* argv[])
             << languageLoadMessage
             << eol;
     }
+    const std::wstring crashTitle = localizedStartupText(
+        QStringLiteral("main.crash.title"),
+        QStringLiteral("KswordARK 崩溃")).toStdWString();
+    const std::wstring crashInstruction = localizedStartupText(
+        QStringLiteral("main.crash.instruction"),
+        QStringLiteral("KswordARK 因未处理的异常停止运行。")).toStdWString();
+    const std::wstring crashExceptionCode = localizedStartupText(
+        QStringLiteral("main.crash.exception_code"),
+        QStringLiteral("异常")).toStdWString();
+    const std::wstring crashExceptionAddress = localizedStartupText(
+        QStringLiteral("main.crash.exception_address"),
+        QStringLiteral("地址")).toStdWString();
+    const std::wstring crashDumpPath = localizedStartupText(
+        QStringLiteral("main.crash.dump_path"),
+        QStringLiteral("转储文件")).toStdWString();
+    const std::wstring crashDumpUnavailable = localizedStartupText(
+        QStringLiteral("main.crash.dump_unavailable"),
+        QStringLiteral("转储文件未能写入。")).toStdWString();
+    const std::wstring crashRestartQuestion = localizedStartupText(
+        QStringLiteral("main.crash.restart_question"),
+        QStringLiteral("选择“是”重新启动 KswordARK，选择“否”退出。")).toStdWString();
+    const std::wstring crashRepeated = localizedStartupText(
+        QStringLiteral("main.crash.repeated"),
+        QStringLiteral("程序刚刚重启后再次崩溃，建议先退出并检查转储文件。")).toStdWString();
+    const std::wstring crashRestartFailed = localizedStartupText(
+        QStringLiteral("main.crash.restart_failed"),
+        QStringLiteral("重新启动 KswordARK 失败，程序即将退出。")).toStdWString();
+    ks::crash::DialogText crashDialogText;
+    crashDialogText.title = crashTitle.c_str();
+    crashDialogText.instruction = crashInstruction.c_str();
+    crashDialogText.exceptionCodeLabel = crashExceptionCode.c_str();
+    crashDialogText.exceptionAddressLabel = crashExceptionAddress.c_str();
+    crashDialogText.dumpPathLabel = crashDumpPath.c_str();
+    crashDialogText.dumpUnavailableText = crashDumpUnavailable.c_str();
+    crashDialogText.restartQuestion = crashRestartQuestion.c_str();
+    crashDialogText.repeatedCrashText = crashRepeated.c_str();
+    crashDialogText.restartFailedText = crashRestartFailed.c_str();
+    ks::crash::UpdateCrashDialogText(crashDialogText);
     ks::ui::InstallGlobalMessageBoxTheme(&app);
     startupTraceRaw("InstallGlobalMessageBoxTheme finished");
     ks::ui::InstallGlobalDialogTheme(&app);

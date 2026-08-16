@@ -1612,6 +1612,15 @@
     "main.unlocker.dialog.path_failed": "The application path could not be read, so the Windows context menu cannot be registered.",
     "main.unlocker.dialog.registered": "The Windows context menu was registered. You can invoke it from files, folders, drives, and folder backgrounds.",
     "main.unlocker.dialog.register_failed": "Failed to register the Windows context menu. Verify that the current account can write to HKCU\\Software\\Classes.",
+    "main.crash.title": "KswordARK crashed",
+    "main.crash.instruction": "KswordARK stopped because of an unhandled exception.",
+    "main.crash.exception_code": "Exception",
+    "main.crash.exception_address": "Address",
+    "main.crash.dump_path": "Dump file",
+    "main.crash.dump_unavailable": "The dump file could not be written.",
+    "main.crash.restart_question": "Choose Yes to restart KswordARK, or No to exit.",
+    "main.crash.repeated": "The program crashed again immediately after a restart. Exit and inspect the dump file.",
+    "main.crash.restart_failed": "KswordARK could not be restarted and will now exit.",
     "main.startup.progress.starting": "Starting...",
     "main.startup.progress.qt_runtime": "Preparing the runtime...",
     "main.startup.progress.prepare_environment": "Preparing the runtime...",
@@ -30129,6 +30138,12 @@
     "搜索%1": "Search %1",
     "搜索当前表格：%1": "Search current table: %1",
     "搜索范围：%1。聚焦输入框后按 Tab 切换范围。": "Search scope: %1. Focus the input and press Tab to switch scope.",
-    "表格": "Table"
+    "表格": "Table",
+    "KswordARK 崩溃": "KswordARK crashed",
+    "KswordARK 因未处理的异常停止运行。": "KswordARK stopped because of an unhandled exception.",
+    "转储文件未能写入。": "The dump file could not be written.",
+    "选择“是”重新启动 KswordARK，选择“否”退出。": "Choose Yes to restart KswordARK, or No to exit.",
+    "程序刚刚重启后再次崩溃，建议先退出并检查转储文件。": "The program crashed again immediately after a restart. Exit and inspect the dump file.",
+    "重新启动 KswordARK 失败，程序即将退出。": "KswordARK could not be restarted and will now exit."
   }
 }

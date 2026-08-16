@@ -1,4 +1,5 @@
 #include "Launcher.h"
+#include "../shared/crash/WinCrashHandler.h"
 
 #include <shellapi.h>
 #include <sstream>
@@ -40,6 +41,38 @@ LauncherOptions ParseOptions() {
         if (argument == L"--launcher-check-only") { options.checkOnly = true; continue; }
         if (argument == L"--launcher-internal-upload") { options.internalUpload = true; continue; }
         if (argument == L"--launcher-internal-marker") { options.internalMarker = true; continue; }
+        if (argument == L"--launcher-crash-report") { options.crashReport = true; continue; }
+        if (argument == L"--launcher-crash-repeat") { options.crashRepeat = true; continue; }
+        if (argument == L"--launcher-crash-pid" && index + 1 < argc) {
+            options.crashProcessId = static_cast<DWORD>(wcstoul(argv[++index], nullptr, 0));
+            continue;
+        }
+        if (argument == L"--launcher-crash-code" && index + 1 < argc) {
+            options.crashExceptionCode = static_cast<DWORD>(wcstoul(argv[++index], nullptr, 0));
+            continue;
+        }
+        if (argument == L"--launcher-crash-address" && index + 1 < argc) {
+            options.crashExceptionAddress = _wcstoui64(argv[++index], nullptr, 0);
+            continue;
+        }
+        if (argument == L"--launcher-crash-dump" && index + 1 < argc) {
+            options.crashDumpPath = argv[++index];
+            continue;
+        }
+        if (argument == L"--launcher-crash-dump-written" && index + 1 < argc) {
+            options.crashDumpWritten = wcstoul(argv[++index], nullptr, 0) != 0;
+            continue;
+        }
+        if (argument == L"--launcher-crash-ready-event" && index + 1 < argc) {
+            options.crashReadyEventName = argv[++index];
+            continue;
+        }
+        if (argument == ks::crash::kSkipSingleInstanceArgument
+            || argument == ks::crash::kCrashRestartedArgument) { continue; }
+        if (argument == ks::crash::kCrashRestartWaitPidArgument && index + 1 < argc) {
+            ++index;
+            continue;
+        }
         options.forwardedArguments.push_back(argument);
     }
     LocalFree(argv);
@@ -87,10 +120,33 @@ bool LaunchTarget(const RuntimePaths& paths, const LauncherOptions& options) {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     using namespace launcher;
+    ks::crash::Configuration crashConfiguration;
+    crashConfiguration.productName = L"Ksword Launcher";
+    crashConfiguration.dumpFilePrefix = L"Launcher";
+    crashConfiguration.preferLauncherReporter = false;
+    ks::crash::InstallCrashHandler(crashConfiguration);
+    ks::crash::DialogText launcherCrashText;
+    if (IsChineseUi()) {
+        launcherCrashText.title = L"Ksword Launcher 崩溃";
+        launcherCrashText.instruction = L"Ksword Launcher 因未处理的异常停止运行。";
+        launcherCrashText.restartQuestion = L"选择“是”重新启动 Launcher，选择“否”退出。";
+        launcherCrashText.restartFailedText = L"重新启动 Launcher 失败，程序即将退出。";
+    } else {
+        launcherCrashText.title = L"Ksword Launcher crashed";
+        launcherCrashText.instruction = L"Ksword Launcher stopped because of an unhandled exception.";
+        launcherCrashText.restartQuestion = L"Choose Yes to restart Launcher, or No to exit.";
+        launcherCrashText.restartFailedText = L"Launcher could not be restarted and will now exit.";
+    }
+    ks::crash::UpdateCrashDialogText(launcherCrashText);
+    (void)ks::crash::WaitForCrashRestartTargetFromCommandLine();
     const bool chinese = IsChineseUi();
     const OsInfo os = QueryOsInfo();
     const RuntimePaths paths = ResolveRuntimePaths();
     LauncherOptions options = ParseOptions();
+
+    if (options.crashReport) {
+        return HandleCrashReportMode(paths, options, chinese);
+    }
 
     if (!os.isWindows10OrLater()) {
         ShowUnsupportedOsDialog(os, chinese);

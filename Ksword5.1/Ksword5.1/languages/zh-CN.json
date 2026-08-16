@@ -1612,6 +1612,15 @@
     "main.unlocker.dialog.path_failed": "读取程序路径失败，无法注册系统右键菜单。",
     "main.unlocker.dialog.registered": "已注册系统右键菜单，可在文件/目录/磁盘和目录空白处右键触发。",
     "main.unlocker.dialog.register_failed": "注册系统右键菜单失败，请确认当前账户对 HKCU\\Software\\Classes 具备写入权限。",
+    "main.crash.title": "KswordARK 崩溃",
+    "main.crash.instruction": "KswordARK 因未处理的异常停止运行。",
+    "main.crash.exception_code": "异常",
+    "main.crash.exception_address": "地址",
+    "main.crash.dump_path": "转储文件",
+    "main.crash.dump_unavailable": "转储文件未能写入。",
+    "main.crash.restart_question": "选择“是”重新启动 KswordARK，选择“否”退出。",
+    "main.crash.repeated": "程序刚刚重启后再次崩溃，建议先退出并检查转储文件。",
+    "main.crash.restart_failed": "重新启动 KswordARK 失败，程序即将退出。",
     "main.startup.progress.starting": "正在启动...",
     "main.startup.progress.qt_runtime": "正在准备运行环境...",
     "main.startup.progress.prepare_environment": "正在准备运行环境...",
@@ -30129,6 +30138,12 @@
     "搜索%1": "搜索%1",
     "搜索当前表格：%1": "搜索当前表格：%1",
     "搜索范围：%1。聚焦输入框后按 Tab 切换范围。": "搜索范围：%1。聚焦输入框后按 Tab 切换范围。",
-    "表格": "表格"
+    "表格": "表格",
+    "KswordARK 崩溃": "KswordARK 崩溃",
+    "KswordARK 因未处理的异常停止运行。": "KswordARK 因未处理的异常停止运行。",
+    "转储文件未能写入。": "转储文件未能写入。",
+    "选择“是”重新启动 KswordARK，选择“否”退出。": "选择“是”重新启动 KswordARK，选择“否”退出。",
+    "程序刚刚重启后再次崩溃，建议先退出并检查转储文件。": "程序刚刚重启后再次崩溃，建议先退出并检查转储文件。",
+    "重新启动 KswordARK 失败，程序即将退出。": "重新启动 KswordARK 失败，程序即将退出。"
   }
 }
