@@ -3409,6 +3409,50 @@ namespace
 
 namespace ks::process
 {
+    const std::vector<std::string>& KnownTokenPrivilegeNames()
+    {
+        // Windows SDK winnt.h 中 SE_*_NAME 的完整目录，顺序与 SDK 定义保持一致。
+        static const std::vector<std::string> privilegeNames{
+            ks::str::Utf16ToUtf8(SE_CREATE_TOKEN_NAME),
+            ks::str::Utf16ToUtf8(SE_ASSIGNPRIMARYTOKEN_NAME),
+            ks::str::Utf16ToUtf8(SE_LOCK_MEMORY_NAME),
+            ks::str::Utf16ToUtf8(SE_INCREASE_QUOTA_NAME),
+            ks::str::Utf16ToUtf8(SE_UNSOLICITED_INPUT_NAME),
+            ks::str::Utf16ToUtf8(SE_MACHINE_ACCOUNT_NAME),
+            ks::str::Utf16ToUtf8(SE_TCB_NAME),
+            ks::str::Utf16ToUtf8(SE_SECURITY_NAME),
+            ks::str::Utf16ToUtf8(SE_TAKE_OWNERSHIP_NAME),
+            ks::str::Utf16ToUtf8(SE_LOAD_DRIVER_NAME),
+            ks::str::Utf16ToUtf8(SE_SYSTEM_PROFILE_NAME),
+            ks::str::Utf16ToUtf8(SE_SYSTEMTIME_NAME),
+            ks::str::Utf16ToUtf8(SE_PROF_SINGLE_PROCESS_NAME),
+            ks::str::Utf16ToUtf8(SE_INC_BASE_PRIORITY_NAME),
+            ks::str::Utf16ToUtf8(SE_CREATE_PAGEFILE_NAME),
+            ks::str::Utf16ToUtf8(SE_CREATE_PERMANENT_NAME),
+            ks::str::Utf16ToUtf8(SE_BACKUP_NAME),
+            ks::str::Utf16ToUtf8(SE_RESTORE_NAME),
+            ks::str::Utf16ToUtf8(SE_SHUTDOWN_NAME),
+            ks::str::Utf16ToUtf8(SE_DEBUG_NAME),
+            ks::str::Utf16ToUtf8(SE_AUDIT_NAME),
+            ks::str::Utf16ToUtf8(SE_SYSTEM_ENVIRONMENT_NAME),
+            ks::str::Utf16ToUtf8(SE_CHANGE_NOTIFY_NAME),
+            ks::str::Utf16ToUtf8(SE_REMOTE_SHUTDOWN_NAME),
+            ks::str::Utf16ToUtf8(SE_UNDOCK_NAME),
+            ks::str::Utf16ToUtf8(SE_SYNC_AGENT_NAME),
+            ks::str::Utf16ToUtf8(SE_ENABLE_DELEGATION_NAME),
+            ks::str::Utf16ToUtf8(SE_MANAGE_VOLUME_NAME),
+            ks::str::Utf16ToUtf8(SE_IMPERSONATE_NAME),
+            ks::str::Utf16ToUtf8(SE_CREATE_GLOBAL_NAME),
+            ks::str::Utf16ToUtf8(SE_TRUSTED_CREDMAN_ACCESS_NAME),
+            ks::str::Utf16ToUtf8(SE_RELABEL_NAME),
+            ks::str::Utf16ToUtf8(SE_INC_WORKING_SET_NAME),
+            ks::str::Utf16ToUtf8(SE_TIME_ZONE_NAME),
+            ks::str::Utf16ToUtf8(SE_CREATE_SYMBOLIC_LINK_NAME),
+            ks::str::Utf16ToUtf8(SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME)
+        };
+        return privilegeNames;
+    }
+
     std::string BuildProcessIdentityKey(const std::uint32_t pid, const std::uint64_t creationTime100ns)
     {
         // identity 规则：PID#CreationTime100ns。
@@ -7187,6 +7231,143 @@ namespace ks::process
     bool OpenFolderByPath(const std::string& targetPath, std::string* const errorMessage)
     {
         return OpenInExplorerByPath(targetPath, errorMessage);
+    }
+
+    bool QueryTokenPrivilegesByPid(
+        const std::uint32_t sourcePid,
+        std::vector<TokenPrivilegeInfo>* const privilegesOut,
+        std::string* const errorMessage)
+    {
+        if (privilegesOut == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "QueryTokenPrivilegesByPid::privilegesOut cannot be null.";
+            }
+            return false;
+        }
+        privilegesOut->clear();
+
+        HANDLE tokenHandle = nullptr;
+        if (!OpenTokenByProcessPid(sourcePid, TOKEN_QUERY, tokenHandle, errorMessage))
+        {
+            return false;
+        }
+
+        DWORD requiredSize = 0;
+        ::SetLastError(ERROR_SUCCESS);
+        const BOOL sizeQueryOk = ::GetTokenInformation(
+            tokenHandle,
+            TokenPrivileges,
+            nullptr,
+            0,
+            &requiredSize);
+        const DWORD sizeQueryError = ::GetLastError();
+        if (sizeQueryOk != FALSE || sizeQueryError != ERROR_INSUFFICIENT_BUFFER || requiredSize < sizeof(DWORD))
+        {
+            ::CloseHandle(tokenHandle);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetTokenInformation::TokenPrivileges size failed: "
+                    + FormatLastErrorMessage(sizeQueryError);
+            }
+            return false;
+        }
+
+        std::vector<std::uint8_t> tokenBuffer(requiredSize, 0);
+        TOKEN_PRIVILEGES* const tokenPrivileges = reinterpret_cast<TOKEN_PRIVILEGES*>(tokenBuffer.data());
+        if (::GetTokenInformation(
+            tokenHandle,
+            TokenPrivileges,
+            tokenPrivileges,
+            requiredSize,
+            &requiredSize) == FALSE)
+        {
+            const DWORD queryError = ::GetLastError();
+            ::CloseHandle(tokenHandle);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetTokenInformation::TokenPrivileges failed: "
+                    + FormatLastErrorMessage(queryError);
+            }
+            return false;
+        }
+        ::CloseHandle(tokenHandle);
+
+        std::vector<TokenPrivilegeLuidEntry> privilegeEntries;
+        privilegeEntries.reserve(tokenPrivileges->PrivilegeCount);
+        for (DWORD privilegeIndex = 0; privilegeIndex < tokenPrivileges->PrivilegeCount; ++privilegeIndex)
+        {
+            const LUID_AND_ATTRIBUTES& tokenPrivilege = tokenPrivileges->Privileges[privilegeIndex];
+            TokenPrivilegeLuidEntry privilegeEntry{};
+            privilegeEntry.luidLowPart = tokenPrivilege.Luid.LowPart;
+            privilegeEntry.luidHighPart = tokenPrivilege.Luid.HighPart;
+            privilegeEntry.attributes = static_cast<std::uint32_t>(tokenPrivilege.Attributes);
+            privilegeEntries.push_back(privilegeEntry);
+        }
+
+        return BuildKnownTokenPrivilegeSnapshot(
+            privilegeEntries,
+            privilegesOut,
+            errorMessage);
+    }
+
+    bool BuildKnownTokenPrivilegeSnapshot(
+        const std::vector<TokenPrivilegeLuidEntry>& entries,
+        std::vector<TokenPrivilegeInfo>* const privilegesOut,
+        std::string* const errorMessage)
+    {
+        if (privilegesOut == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "QueryTokenPrivilegesByPid::privilegesOut cannot be null.";
+            }
+            return false;
+        }
+
+        privilegesOut->clear();
+        privilegesOut->reserve(KnownTokenPrivilegeNames().size());
+        for (const std::string& privilegeName : KnownTokenPrivilegeNames())
+        {
+            TokenPrivilegeInfo privilegeInfo{};
+            privilegeInfo.privilegeName = privilegeName;
+
+            const std::wstring privilegeNameWide = ks::str::Utf8ToUtf16(privilegeName);
+            LUID privilegeLuid{};
+            if (privilegeNameWide.empty()
+                || ::LookupPrivilegeValueW(nullptr, privilegeNameWide.c_str(), &privilegeLuid) == FALSE)
+            {
+                privilegesOut->push_back(std::move(privilegeInfo));
+                continue;
+            }
+
+            privilegeInfo.luidLowPart = privilegeLuid.LowPart;
+            privilegeInfo.luidHighPart = privilegeLuid.HighPart;
+            privilegeInfo.luidKnown = true;
+            privilegeInfo.state = TokenPrivilegeState::NotPresent;
+            for (const TokenPrivilegeLuidEntry& tokenPrivilege : entries)
+            {
+                if (tokenPrivilege.luidLowPart != privilegeLuid.LowPart
+                    || tokenPrivilege.luidHighPart != privilegeLuid.HighPart)
+                {
+                    continue;
+                }
+
+                privilegeInfo.attributes = tokenPrivilege.attributes;
+                privilegeInfo.state = (tokenPrivilege.attributes & SE_PRIVILEGE_ENABLED) != 0
+                    ? TokenPrivilegeState::Enabled
+                    : TokenPrivilegeState::Disabled;
+                break;
+            }
+            privilegesOut->push_back(std::move(privilegeInfo));
+        }
+
+        if (errorMessage != nullptr)
+        {
+            errorMessage->clear();
+        }
+        return true;
     }
 
     bool ApplyTokenPrivilegeEditsByPid(

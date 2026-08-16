@@ -109,6 +109,17 @@ namespace ksword::ark
             std::uint64_t expectedCreateTime100ns,
             const std::vector<ProcessTokenPrivilegeEntry>& edits,
             bool allowRemove) const;
+
+        // legacy compatibility entry points for old query/adjust IOCTLs.
+         ProcessTokenPrivilegeQueryResult queryProcessTokenPrivileges(
+             std::uint32_t processId,
+            DriverHandle* existingHandle = nullptr) const;
+        ProcessTokenPrivilegeAdjustResult adjustProcessTokenPrivilege(
+            std::uint32_t processId,
+            std::uint32_t luidLowPart,
+            std::int32_t luidHighPart,
+            bool enabled,
+            DriverHandle* existingHandle = nullptr) const;
         ProcessSpecialFlagsResult setProcessSpecialFlags(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
         ProcessDkomResult dkomProcess(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
         ProcessInjectResult injectProcessDll(

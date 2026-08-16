@@ -791,6 +791,12 @@
     <ClCompile Include="src\features\process\process_memory_ioctl.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\process\process_privilege.c">
+      <Filter>Source Files\Features</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\process\process_privilege_ioctl.c">
+      <Filter>Source Files\Features</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\process\process_token_privilege.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>

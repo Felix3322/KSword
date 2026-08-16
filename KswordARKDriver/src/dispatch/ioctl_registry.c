@@ -31,6 +31,8 @@ NTSTATUS KswordARKProcessIoctlSuspend(_In_ WDFDEVICE Device, _In_ WDFREQUEST Req
 NTSTATUS KswordARKProcessIoctlSetPplLevel(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKProcessIoctlSetIntegrity(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKProcessIoctlTokenPrivileges(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKProcessIoctlQueryTokenPrivileges(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKProcessIoctlAdjustTokenPrivilege(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKProcessIoctlEnumProcess(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKProcessIoctlSetVisibility(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKProcessIoctlSetSpecialFlags(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -206,6 +208,9 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_SUSPEND_PROCESS, KswordARKProcessIoctlSuspend, "IOCTL_KSWORD_ARK_SUSPEND_PROCESS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_PPL_LEVEL, KswordARKProcessIoctlSetPplLevel, "IOCTL_KSWORD_ARK_SET_PPL_LEVEL", KSW_CAP_PROCESS_PROTECTION_PATCH, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_PROCESS_INTEGRITY, KswordARKProcessIoctlSetIntegrity, "IOCTL_KSWORD_ARK_SET_PROCESS_INTEGRITY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES, KswordARKProcessIoctlTokenPrivileges, "IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES, KswordARKProcessIoctlQueryTokenPrivileges, "IOCTL_KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE, KswordARKProcessIoctlAdjustTokenPrivilege, "IOCTL_KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES, KswordARKProcessIoctlTokenPrivileges, "IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_ENUM_PROCESS, KswordARKProcessIoctlEnumProcess, "IOCTL_KSWORD_ARK_ENUM_PROCESS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY, KswordARKProcessIoctlSetVisibility, "IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },

@@ -64,6 +64,45 @@ KswordARKDriverSetProcessIntegrityByPid(
     );
 
 /*
+ * KswordARKDriverQueryProcessTokenPrivilegesByPid
+ * Inputs:
+ * - ProcessId selects the target process through ZwOpenProcess.
+ * - Entries/EntryCapacity describe caller-owned protocol entry storage.
+ * Processing:
+ * - Opens the primary token with TOKEN_QUERY and reads TokenPrivileges through
+ *   ZwQueryInformationToken; no private TOKEN layout is accessed.
+ * Return behavior:
+ * - TotalCount receives the native token count, ReturnedCount receives copied
+ *   entries, and STATUS_BUFFER_OVERFLOW denotes a valid truncated snapshot.
+ */
+NTSTATUS
+KswordARKDriverQueryProcessTokenPrivilegesByPid(
+    _In_ ULONG ProcessId,
+    _Out_writes_to_(EntryCapacity, *ReturnedCount) KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY* Entries,
+    _In_ ULONG EntryCapacity,
+    _Out_ ULONG* TotalCount,
+    _Out_ ULONG* ReturnedCount
+    );
+
+/*
+ * KswordARKDriverAdjustProcessTokenPrivilegeByPid
+ * Inputs:
+ * - ProcessId selects the target process.
+ * - PrivilegeLuid identifies one token privilege; Enable selects enabled or disabled.
+ * Processing:
+ * - Opens the primary token with TOKEN_ADJUST_PRIVILEGES and calls
+ *   ZwAdjustPrivilegesToken for exactly one LUID.
+ * Return behavior:
+ * - Returns the documented Zw* API status without private offsets or fallback writes.
+ */
+NTSTATUS
+KswordARKDriverAdjustProcessTokenPrivilegeByPid(
+    _In_ ULONG ProcessId,
+    _In_ LUID PrivilegeLuid,
+    _In_ BOOLEAN Enable
+    );
+
+/*
  * KswordARKDriverDescribeLastProcessIntegrityAttempt
  * Inputs:
  * - Buffer/BufferBytes provide caller-owned ANSI storage for a diagnostic line.

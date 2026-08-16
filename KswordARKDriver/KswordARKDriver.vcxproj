@@ -158,6 +158,8 @@
     <ClCompile Include="src\features\process\process_memory.c" />
     <ClCompile Include="src\features\process\process_memory_ioctl.c" />
     <ClCompile Include="src\features\process\process_token_privilege.c" />
+    <ClCompile Include="src\features\process\process_privilege.c" />
+    <ClCompile Include="src\features\process\process_privilege_ioctl.c" />
     <ClCompile Include="src\features\registry\registry_query.c" />
     <ClCompile Include="src\features\registry\registry_ioctl.c" />
     <ClCompile Include="src\framework\device_control.c" />

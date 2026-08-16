@@ -3508,19 +3508,17 @@ namespace
             + QStringLiteral("background:transparent;background-color:transparent;"));
     }
 
-    // 常见令牌特权列表：用于“可视化调权”表格。
-    const QStringList CommonPrivilegeNames{
-        "SeDebugPrivilege",
-        "SeImpersonatePrivilege",
-        "SeAssignPrimaryTokenPrivilege",
-        "SeIncreaseQuotaPrivilege",
-        "SeTcbPrivilege",
-        "SeBackupPrivilege",
-        "SeRestorePrivilege",
-        "SeLoadDriverPrivilege",
-        "SeSecurityPrivilege",
-        "SeTakeOwnershipPrivilege"
-    };
+    // 完整令牌特权列表：复用进程模块维护的 Windows SDK Se*Privilege 目录。
+    QStringList tokenPrivilegeNames()
+    {
+        QStringList privilegeNames;
+        privilegeNames.reserve(static_cast<qsizetype>(ks::process::KnownTokenPrivilegeNames().size()));
+        for (const std::string& privilegeName : ks::process::KnownTokenPrivilegeNames())
+        {
+            privilegeNames.push_back(QString::fromLatin1(privilegeName.c_str()));
+        }
+        return privilegeNames;
+    }
 
     // BitmaskFlagDefinition 作用：
     // - 统一描述“复选框可勾选的位标志定义”；
@@ -5034,7 +5032,8 @@ void ProcessDock::initializeCreateProcessPage()
     QGroupBox* tokenPrivilegeGroup = new QGroupBox("Token 特权调整（AdjustTokenPrivileges）", contentWidget);
     applyTransparentContainerStyle(tokenPrivilegeGroup);
     QVBoxLayout* tokenPrivilegeLayout = new QVBoxLayout(tokenPrivilegeGroup);
-    m_tokenPrivilegeTable = new ks::ui::VisibleTableWidget(CommonPrivilegeNames.size(), 2, tokenPrivilegeGroup);
+    const QStringList privilegeNames = tokenPrivilegeNames();
+    m_tokenPrivilegeTable = new ks::ui::VisibleTableWidget(privilegeNames.size(), 2, tokenPrivilegeGroup);
     m_tokenPrivilegeTable->setHorizontalHeaderLabels(QStringList{ "Privilege", "Action" });
     m_tokenPrivilegeTable->horizontalHeader()->setStretchLastSection(true);
     m_tokenPrivilegeTable->verticalHeader()->setVisible(false);
@@ -5080,9 +5079,9 @@ void ProcessDock::initializeCreateProcessPage()
             QApplication::clipboard()->setText(rowFields.join(QChar('\t')));
         });
 
-    for (int row = 0; row < CommonPrivilegeNames.size(); ++row)
+    for (int row = 0; row < privilegeNames.size(); ++row)
     {
-        QTableWidgetItem* nameItem = new QTableWidgetItem(CommonPrivilegeNames.at(row));
+        QTableWidgetItem* nameItem = new QTableWidgetItem(privilegeNames.at(row));
         nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
         m_tokenPrivilegeTable->setItem(row, 0, nameItem);
 
@@ -10306,6 +10305,409 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         processContextText("process.menu.hotkeys", QStringLiteral("扫描进程热键")));
     scanHotkeyAction->setToolTip(QStringLiteral("打开进程详细信息并直达“进程热键”页，扫描窗口热键、菜单快捷键、Accelerator、快捷方式和R0热键表。"));
     scanHotkeyAction->setEnabled(!hasBatchSelection);
+
+    // 令牌特权二级菜单：
+    // - 查询和调整均在线程池执行，避免 OpenProcessToken/AdjustTokenPrivileges 阻塞 GUI；
+    // - 每一项用 QWidgetAction 承载无边框 QToolButton，点击后菜单保持展开；
+    // - 多选时只有全部目标都包含该特权才允许切换，一次点击立即提交到全部目标。
+    QMenu* privilegeSubMenu = contextMenu.addMenu(
+        blueTintedIcon(":/Icon/process_critical.svg"),
+        processContextText("process.menu.privileges", QStringLiteral("令牌特权")));
+    privilegeSubMenu->setStyleSheet(buildThreadContextMenuStyle());
+    privilegeSubMenu->setToolTipsVisible(true);
+    privilegeSubMenu->setToolTip(processContextText(
+        "process.menu.privileges.tooltip",
+        QStringLiteral("点击切换全部选中进程的令牌特权；菜单会保持展开，便于连续调整。")));
+    QAction* privilegeLoadingAction = privilegeSubMenu->addAction(
+        processContextText(
+            "process.menu.privileges.querying",
+            QStringLiteral("正在查询令牌特权...")));
+    privilegeLoadingAction->setEnabled(false);
+
+    struct ContextPrivilegeTargetState
+    {
+        std::uint32_t processId = 0;
+        std::string processName;
+        bool querySucceeded = false;
+        bool usedR0 = false;
+        std::vector<ks::process::TokenPrivilegeInfo> privileges;
+        std::string detailText;
+    };
+    struct ContextPrivilegeAdjustResult
+    {
+        std::size_t targetIndex = 0U;
+        bool succeeded = false;
+        bool r0Attempted = false;
+        std::string detailText;
+        std::string r3DetailText;
+    };
+
+    const QPointer<ProcessDock> privilegeDockGuard(this);
+    const QPointer<QMenu> privilegeMenuGuard(privilegeSubMenu);
+    const std::vector<ProcessActionTarget> privilegeTargets = contextActionTargets;
+    QRunnable* privilegeQueryTask = QRunnable::create([
+        privilegeDockGuard,
+        privilegeMenuGuard,
+        privilegeTargets]() mutable
+    {
+        const auto targetStates = std::make_shared<std::vector<ContextPrivilegeTargetState>>();
+        targetStates->reserve(privilegeTargets.size());
+        ksword::ark::DriverClient r0Client;
+        ksword::ark::DriverHandle r0Handle;
+        bool r0HandleOpenAttempted = false;
+        for (const ProcessActionTarget& actionTarget : privilegeTargets)
+        {
+            ContextPrivilegeTargetState targetState;
+            targetState.processId = actionTarget.record.pid;
+            targetState.processName = actionTarget.record.processName;
+            std::string r3DetailText;
+            targetState.querySucceeded = ks::process::QueryTokenPrivilegesByPid(
+                targetState.processId,
+                &targetState.privileges,
+                &r3DetailText);
+            if (!targetState.querySucceeded)
+            {
+                if (!r0HandleOpenAttempted)
+                {
+                    r0Handle = r0Client.open();
+                    r0HandleOpenAttempted = true;
+                }
+
+                const ksword::ark::ProcessTokenPrivilegeQueryResult r0Result =
+                    r0Client.queryProcessTokenPrivileges(
+                        targetState.processId,
+                        &r0Handle);
+                if (r0Result.io.ok
+                    && r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK)
+                {
+                    std::vector<ks::process::TokenPrivilegeLuidEntry> r0Entries;
+                    r0Entries.reserve(r0Result.entries.size());
+                    for (const ksword::ark::ProcessTokenPrivilegeEntry& r0Entry : r0Result.entries)
+                    {
+                        ks::process::TokenPrivilegeLuidEntry entry{};
+                        entry.luidLowPart = r0Entry.luidLowPart;
+                        entry.luidHighPart = r0Entry.luidHighPart;
+                        entry.attributes = r0Entry.attributes;
+                        r0Entries.push_back(entry);
+                    }
+                    targetState.querySucceeded = ks::process::BuildKnownTokenPrivilegeSnapshot(
+                        r0Entries,
+                        &targetState.privileges,
+                        &targetState.detailText);
+                    targetState.usedR0 = targetState.querySucceeded;
+                }
+
+                if (!targetState.querySucceeded)
+                {
+                    targetState.detailText = r3DetailText;
+                    if (!r0Result.io.message.empty())
+                    {
+                        targetState.detailText += " | ";
+                        targetState.detailText += r0Result.io.message;
+                    }
+                }
+            }
+            targetStates->push_back(std::move(targetState));
+        }
+
+        if (privilegeDockGuard == nullptr)
+        {
+            return;
+        }
+        QMetaObject::invokeMethod(privilegeDockGuard, [
+            privilegeDockGuard,
+            privilegeMenuGuard,
+            targetStates]()
+        {
+            if (privilegeDockGuard == nullptr || privilegeMenuGuard == nullptr)
+            {
+                return;
+            }
+
+            privilegeMenuGuard->clear();
+            if (targetStates->empty())
+            {
+                QAction* unavailableAction = privilegeMenuGuard->addAction(
+                    processContextText(
+                        "process.menu.privileges.unavailable",
+                        QStringLiteral("无法读取全部选中进程的令牌特权。")));
+                unavailableAction->setEnabled(false);
+                return;
+            }
+
+            const QString privilegeButtonStyle = QStringLiteral(
+                "QToolButton {"
+                "  min-width:300px; min-height:26px; padding:3px 10px;"
+                "  text-align:left; color:%1; background:transparent; border:none;"
+                "}"
+                "QToolButton:hover { background:%2; }"
+                "QToolButton:disabled { color:%3; }"
+                "QToolButton[ks_privilege_mixed=\"true\"] { color:%4; }")
+                .arg(KswordTheme::TextPrimaryHex())
+                .arg(KswordTheme::SurfaceAltHex())
+                .arg(KswordTheme::TextSecondaryHex())
+                .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+
+            const std::size_t privilegeCount = ks::process::KnownTokenPrivilegeNames().size();
+            for (std::size_t privilegeIndex = 0U; privilegeIndex < privilegeCount; ++privilegeIndex)
+            {
+                QWidgetAction* rowAction = new QWidgetAction(privilegeMenuGuard);
+                QToolButton* privilegeButton = new QToolButton(privilegeMenuGuard);
+                privilegeButton->setCheckable(true);
+                privilegeButton->setAutoRaise(true);
+                privilegeButton->setFocusPolicy(Qt::NoFocus);
+                privilegeButton->setStyleSheet(privilegeButtonStyle);
+                rowAction->setDefaultWidget(privilegeButton);
+                privilegeMenuGuard->addAction(rowAction);
+
+                const QPointer<QToolButton> privilegeButtonGuard(privilegeButton);
+                const auto updatePrivilegeButton = [
+                    targetStates,
+                    privilegeButtonGuard,
+                    privilegeIndex]()
+                {
+                    if (privilegeButtonGuard == nullptr)
+                    {
+                        return;
+                    }
+
+                    bool availableForAll = !targetStates->empty();
+                    std::size_t enabledCount = 0U;
+                    QStringList unavailableDetails;
+                    for (const ContextPrivilegeTargetState& targetState : *targetStates)
+                    {
+                        if (!targetState.querySucceeded || privilegeIndex >= targetState.privileges.size())
+                        {
+                            availableForAll = false;
+                            unavailableDetails.push_back(QStringLiteral("PID %1: %2")
+                                .arg(targetState.processId)
+                                .arg(QString::fromStdString(targetState.detailText)));
+                            continue;
+                        }
+
+                        const ks::process::TokenPrivilegeState privilegeState =
+                            targetState.privileges[privilegeIndex].state;
+                        if (privilegeState == ks::process::TokenPrivilegeState::Enabled)
+                        {
+                            ++enabledCount;
+                        }
+                        else if (privilegeState != ks::process::TokenPrivilegeState::Disabled)
+                        {
+                            availableForAll = false;
+                            unavailableDetails.push_back(QStringLiteral("PID %1: %2")
+                                .arg(targetState.processId)
+                                .arg(processContextText(
+                                    "process.menu.privileges.not_present",
+                                    QStringLiteral("目标令牌不包含此特权。"))));
+                        }
+                    }
+
+                    const bool enabledForAll = availableForAll
+                        && enabledCount == targetStates->size();
+                    const bool mixedState = availableForAll
+                        && enabledCount > 0U
+                        && enabledCount < targetStates->size();
+                    const QString statePrefix = mixedState
+                        ? QStringLiteral("≈")
+                        : (enabledForAll ? QStringLiteral("✓") : QStringLiteral("×"));
+                    const std::string& privilegeName =
+                        ks::process::KnownTokenPrivilegeNames().at(privilegeIndex);
+
+                    const QSignalBlocker signalBlocker(privilegeButtonGuard);
+                    privilegeButtonGuard->setText(
+                        QStringLiteral("%1  %2")
+                            .arg(statePrefix, QString::fromLatin1(privilegeName.c_str())));
+                    privilegeButtonGuard->setChecked(enabledForAll);
+                    privilegeButtonGuard->setEnabled(availableForAll);
+                    privilegeButtonGuard->setProperty("ks_privilege_mixed", mixedState);
+                    privilegeButtonGuard->setToolTip(
+                        availableForAll
+                            ? processContextText(
+                                "process.menu.privileges.toggle",
+                                QStringLiteral("点击切换全部选中进程的此项令牌特权。"))
+                            : unavailableDetails.join(QStringLiteral("\n")));
+                    privilegeButtonGuard->style()->unpolish(privilegeButtonGuard);
+                    privilegeButtonGuard->style()->polish(privilegeButtonGuard);
+                    privilegeButtonGuard->update();
+                };
+                updatePrivilegeButton();
+
+                connect(privilegeButton, &QToolButton::clicked, privilegeMenuGuard, [
+                    privilegeDockGuard,
+                    privilegeMenuGuard,
+                    targetStates,
+                    privilegeButtonGuard,
+                    privilegeIndex,
+                    updatePrivilegeButton](const bool enablePrivilege)
+                {
+                    if (privilegeDockGuard == nullptr
+                        || privilegeMenuGuard == nullptr
+                        || privilegeButtonGuard == nullptr)
+                    {
+                        return;
+                    }
+
+                    privilegeButtonGuard->setEnabled(false);
+                    privilegeButtonGuard->setText(
+                        QStringLiteral("…  %1")
+                            .arg(QString::fromLatin1(
+                                ks::process::KnownTokenPrivilegeNames().at(privilegeIndex).c_str())));
+
+                    const std::string privilegeName =
+                        ks::process::KnownTokenPrivilegeNames().at(privilegeIndex);
+                    QRunnable* adjustTask = QRunnable::create([
+                        privilegeDockGuard,
+                        privilegeMenuGuard,
+                        targetStates,
+                        privilegeButtonGuard,
+                        privilegeIndex,
+                        privilegeName,
+                        enablePrivilege,
+                        updatePrivilegeButton]()
+                    {
+                        std::vector<ContextPrivilegeAdjustResult> adjustResults;
+                        adjustResults.reserve(targetStates->size());
+                        ksword::ark::DriverClient r0Client;
+                        ksword::ark::DriverHandle r0Handle;
+                        bool r0HandleOpenAttempted = false;
+                        for (std::size_t targetIndex = 0U;
+                             targetIndex < targetStates->size();
+                             ++targetIndex)
+                        {
+                            ContextPrivilegeAdjustResult adjustResult;
+                            adjustResult.targetIndex = targetIndex;
+                            ks::process::TokenPrivilegeEdit privilegeEdit;
+                            privilegeEdit.privilegeName = privilegeName;
+                            privilegeEdit.action = enablePrivilege
+                                ? ks::process::TokenPrivilegeAction::Enable
+                                : ks::process::TokenPrivilegeAction::Disable;
+                            adjustResult.succeeded = ks::process::ApplyTokenPrivilegeEditsByPid(
+                                (*targetStates)[targetIndex].processId,
+                                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                                false,
+                                std::vector<ks::process::TokenPrivilegeEdit>{ privilegeEdit },
+                                &adjustResult.detailText);
+                            if (!adjustResult.succeeded)
+                            {
+                                adjustResult.r3DetailText = adjustResult.detailText;
+                                const ks::process::TokenPrivilegeInfo& privilegeInfo =
+                                    (*targetStates)[targetIndex].privileges[privilegeIndex];
+                                if (privilegeInfo.luidKnown)
+                                {
+                                    if (!r0HandleOpenAttempted)
+                                    {
+                                        r0Handle = r0Client.open();
+                                        r0HandleOpenAttempted = true;
+                                    }
+                                    adjustResult.r0Attempted = true;
+                                    const ksword::ark::ProcessTokenPrivilegeAdjustResult r0Result =
+                                        r0Client.adjustProcessTokenPrivilege(
+                                            (*targetStates)[targetIndex].processId,
+                                            privilegeInfo.luidLowPart,
+                                            privilegeInfo.luidHighPart,
+                                            enablePrivilege,
+                                            &r0Handle);
+                                    adjustResult.succeeded = r0Result.io.ok
+                                        && r0Result.status ==
+                                            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK;
+                                    adjustResult.detailText = r0Result.io.message;
+                                }
+                            }
+                            adjustResults.push_back(std::move(adjustResult));
+                        }
+
+                        if (privilegeDockGuard == nullptr)
+                        {
+                            return;
+                        }
+                        QMetaObject::invokeMethod(privilegeDockGuard, [
+                            privilegeDockGuard,
+                            privilegeMenuGuard,
+                            targetStates,
+                            privilegeButtonGuard,
+                            privilegeIndex,
+                            privilegeName,
+                            enablePrivilege,
+                            updatePrivilegeButton,
+                            adjustResults = std::move(adjustResults)]() mutable
+                        {
+                            if (privilegeDockGuard == nullptr
+                                || privilegeMenuGuard == nullptr
+                                || privilegeButtonGuard == nullptr)
+                            {
+                                return;
+                            }
+
+                            bool allSucceeded = true;
+                            std::size_t r0FallbackCount = 0U;
+                            QStringList failureDetails;
+                            for (const ContextPrivilegeAdjustResult& adjustResult : adjustResults)
+                            {
+                                ContextPrivilegeTargetState& targetState =
+                                    (*targetStates)[adjustResult.targetIndex];
+                                if (!adjustResult.r3DetailText.empty())
+                                {
+                                    if (adjustResult.r0Attempted)
+                                    {
+                                        ++r0FallbackCount;
+                                    }
+                                    kLogEvent r3FailureEvent;
+                                    warn << r3FailureEvent
+                                        << "[ProcessDock]::R3 token privilege adjustment failed, pid="
+                                        << targetState.processId
+                                        << "::privilege=" << privilegeName
+                                        << ", enable=" << (enablePrivilege ? "true" : "false")
+                                        << ", detail=" << adjustResult.r3DetailText
+                                        << "::r0Attempted=" << (adjustResult.r0Attempted ? "true" : "false")
+                                        << "::finalSucceeded=" << (adjustResult.succeeded ? "true" : "false")
+                                        << eol;
+                                }
+                                if (adjustResult.succeeded)
+                                {
+                                    targetState.privileges[privilegeIndex].state = enablePrivilege
+                                        ? ks::process::TokenPrivilegeState::Enabled
+                                        : ks::process::TokenPrivilegeState::Disabled;
+                                    continue;
+                                }
+
+                                allSucceeded = false;
+                                failureDetails.push_back(QStringLiteral("PID %1: %2")
+                                    .arg(targetState.processId)
+                                    .arg(QString::fromStdString(adjustResult.detailText)));
+                            }
+
+                            updatePrivilegeButton();
+                            if (!allSucceeded)
+                            {
+                                privilegeButtonGuard->setToolTip(
+                                    failureDetails.join(QStringLiteral("\n")));
+                                privilegeMenuGuard->setToolTip(
+                                    processContextText(
+                                        "process.menu.privileges.adjust_failed",
+                                        QStringLiteral("部分进程的令牌特权调整失败。"))
+                                    + QStringLiteral("\n")
+                                    + failureDetails.join(QStringLiteral("\n")));
+                            }
+
+                            kLogEvent actionEvent;
+                            (allSucceeded ? info : warn) << actionEvent
+                                << "[ProcessDock]::token privilege menu adjustment::privilege="
+                                << privilegeName
+                                << ", enable=" << (enablePrivilege ? "true" : "false")
+                                << ", targetCount=" << targetStates->size()
+                                << ", r0FallbackCount=" << r0FallbackCount
+                                << "::allSucceeded=" << (allSucceeded ? "true" : "false")
+                                << eol;
+                        }, Qt::QueuedConnection);
+                    });
+                    adjustTask->setAutoDelete(true);
+                    QThreadPool::globalInstance()->start(adjustTask);
+                });
+            }
+        }, Qt::QueuedConnection);
+    });
+    privilegeQueryTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(privilegeQueryTask);
 
     // 跨组 CPU 亲和性矩阵：
     // - 用 QWidgetAction 承载每一行核心按钮，按钮交互不会触发 QAction::triggered，

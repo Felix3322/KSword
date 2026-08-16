@@ -287,6 +287,17 @@ private:
         bool queryOk = false;                // 至少成功读取一项运行时字段。
     };
 
+    // ActionPrivilegeRefreshResult：操作页令牌特权后台查询结果。
+    struct ActionPrivilegeRefreshResult
+    {
+        std::string identityKey;                              // PID + 创建时间，拒绝 PID 复用后的旧结果。
+        std::vector<ks::process::TokenPrivilegeInfo> privileges; // Windows SDK 完整特权目录状态。
+        QString diagnosticText;                              // R3/R0 查询失败诊断。
+        std::uint64_t ticket = 0;                            // 防止异步结果乱序覆盖。
+        bool queryOk = false;                                // 是否成功读取目标令牌。
+        bool usedR0 = false;                                 // true 表示 R3 失败后由 R0 查询完成。
+    };
+
 private:
     // ======== UI 初始化 ========
     // changeEvent 作用：
@@ -393,6 +404,10 @@ private:
     void requestAsyncDetailOverviewRefresh();
     // applyDetailOverviewRefreshResult 作用：校验身份后回填详细页的运行时字段。
     void applyDetailOverviewRefreshResult(const DetailOverviewRefreshResult& refreshResult);
+    // requestAsyncActionPrivilegeRefresh 作用：后台查询操作页全部令牌特权，R3 失败时允许 R0 回退。
+    void requestAsyncActionPrivilegeRefresh();
+    // applyActionPrivilegeRefreshResult 作用：在 UI 线程按特权状态更新复选框与按钮。
+    void applyActionPrivilegeRefreshResult(const ActionPrivilegeRefreshResult& refreshResult);
     // requestInitialRefreshForCurrentTab 作用：
     // - 按当前 Tab 懒启动首次重型刷新；
     // - 打开窗口时只展示“详细信息”页，不立即扫描模块/PEB/令牌。
@@ -547,6 +562,8 @@ private:
     void executeResumeProcessAction();
     void executeSetCriticalAction(bool enableCritical);
     void executeSetPriorityAction();
+    // executeApplyActionPrivileges 作用：把操作页有变化的复选框通过指定 R3/R0 路径提交。
+    void executeApplyActionPrivileges(bool useR0);
     // refreshActionAffinityControls 作用：读取跨组 CPU Set 亲和性并回填操作页处理器矩阵。
     void refreshActionAffinityControls();
     // confirmActionAffinityRisk 作用：实际应用或持久化前展示明确风险并等待用户继续。
@@ -754,6 +771,18 @@ private:
     std::vector<QToolButton*> m_affinityCoreButtons; // 与亲和性快照 processors 顺序一致的按钮。
     ks::process::ProcessAffinitySnapshot m_actionAffinitySnapshot; // 最近一次跨组亲和性查询快照。
     bool m_actionAffinityReadable = false; // 当前亲和性是否成功读取。
+
+    QGroupBox* m_privilegeActionGroup = nullptr; // 令牌特权复选框区域。
+    QLabel* m_actionPrivilegeStatusLabel = nullptr; // 特权查询与应用状态。
+    QPushButton* m_actionPrivilegeRefreshButton = nullptr; // 重新查询特权。
+    QPushButton* m_applyActionPrivilegeR3Button = nullptr; // 通过 R3 应用变化。
+    QPushButton* m_applyActionPrivilegeR0Button = nullptr; // 通过 R0 应用变化。
+    std::vector<QCheckBox*> m_actionPrivilegeCheckBoxes; // 与 KnownTokenPrivilegeNames 顺序一致。
+    std::vector<ks::process::TokenPrivilegeInfo> m_actionPrivilegeSnapshot; // 最近一次查询快照。
+    bool m_actionPrivilegeReadable = false; // 当前快照是否可用于编辑。
+    bool m_actionPrivilegeRefreshing = false; // 查询或应用是否正在后台执行。
+    bool m_actionPrivilegeInitialRefreshStarted = false; // 操作页首次特权查询是否已启动。
+    std::uint64_t m_actionPrivilegeRefreshTicket = 0; // 防止异步结果乱序。
 
     QComboBox* m_priorityCombo = nullptr;      // 优先级选择框。
     QPushButton* m_applyPriorityButton = nullptr; // 应用优先级按钮。
