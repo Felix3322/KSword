@@ -757,6 +757,7 @@ private:
 
     QComboBox* m_priorityCombo = nullptr;      // 优先级选择框。
     QPushButton* m_applyPriorityButton = nullptr; // 应用优先级按钮。
+    QPushButton* m_adjustTokenPrivilegesButton = nullptr; // 打开 R3/R0 进程令牌特权编辑器。
     QPushButton* m_openProcessFolderButton = nullptr; // 打开进程所在目录按钮。
     QPushButton* m_refreshPplProtectionButton = nullptr; // 手动刷新 PPL 保护级别按钮。
     QPushButton* m_enableEfficiencyModeButton = nullptr; // 开启效率模式按钮。

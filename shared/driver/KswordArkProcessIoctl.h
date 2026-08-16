@@ -50,6 +50,7 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_DETAIL 0x83CUL
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_RUNTIME_FIELDS 0x83EUL
 #define KSWORD_ARK_IOCTL_FUNCTION_SET_PROCESS_INTEGRITY 0x84CUL
+#define KSWORD_ARK_IOCTL_FUNCTION_PROCESS_TOKEN_PRIVILEGES 0x853UL
 
 #define IOCTL_KSWORD_ARK_TERMINATE_PROCESS \
     CTL_CODE( \
@@ -152,6 +153,79 @@ typedef struct _KSWORD_ARK_SET_PROCESS_INTEGRITY_RESPONSE
     unsigned long status;
     long lastStatus;
 } KSWORD_ARK_SET_PROCESS_INTEGRITY_RESPONSE;
+
+// 进程令牌特权协议：
+// - QUERY 返回目标主令牌当前持有的 LUID 与属性，名称由 R3 通过
+//   LookupPrivilegeNameW 本地解析，避免把可变长字符串放入内核协议；
+// - ADJUST 按 LUID 批量启用、禁用或永久移除特权；
+// - expectedCreateTime100ns 绑定 PID 对应的进程实例，防止详情窗口或右键菜单
+//   停留期间 PID 被复用后修改到另一个进程。
+#define IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_PROCESS_TOKEN_PRIVILEGES, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES 64UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE 0xFFFFFFFFUL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_CONFIRMATION_TOKEN 0x4B535750UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST 2UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_KEEP 0UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE 2UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_REMOVE 3UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED 0x00000001UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_ALLOW_REMOVE 0x00000002UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_UNKNOWN 0UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL 2UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED 3UL
+
+typedef struct _KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY
+{
+    unsigned long luidLowPart;
+    long luidHighPart;
+    unsigned long attributes;
+    unsigned long action;
+} KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY;
+
+typedef struct _KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long operation;
+    unsigned long processId;
+    unsigned long flags;
+    unsigned long entryCount;
+    unsigned long long expectedCreateTime100ns;
+    unsigned long confirmationToken;
+    unsigned long reserved;
+    KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY entries[KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES];
+} KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST;
+
+typedef struct _KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long operation;
+    unsigned long processId;
+    unsigned long status;
+    unsigned long entryCount;
+    unsigned long requestedCount;
+    unsigned long appliedCount;
+    unsigned long failedIndex;
+    long lastStatus;
+    unsigned long long processCreateTime100ns;
+    unsigned long reserved;
+    KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY entries[KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES];
+} KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE;
 
 #define IOCTL_KSWORD_ARK_ENUM_PROCESS \
     CTL_CODE( \

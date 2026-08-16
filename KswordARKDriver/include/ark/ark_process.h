@@ -80,6 +80,48 @@ KswordARKDriverDescribeLastProcessIntegrityAttempt(
     _In_ SIZE_T BufferBytes
     );
 
+/*
+ * KswordARKDriverQueryProcessTokenPrivileges
+ * Inputs:
+ * - ProcessId selects the target process and ExpectedCreateTime100ns optionally
+ *   binds that PID to the process instance observed by R3.
+ * Processing:
+ * - Opens the primary token through kernel handles and queries TokenPrivileges.
+ * - Copies bounded LUID/attribute rows into the shared fixed response.
+ * Return behavior:
+ * - Returns STATUS_SUCCESS for a complete snapshot, STATUS_BUFFER_OVERFLOW for
+ *   a usable truncated snapshot, or the process/token query status on failure.
+ */
+NTSTATUS
+KswordARKDriverQueryProcessTokenPrivileges(
+    _In_ ULONG ProcessId,
+    _In_ ULONG64 ExpectedCreateTime100ns,
+    _Out_ KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE* Response
+    );
+
+/*
+ * KswordARKDriverAdjustProcessTokenPrivileges
+ * Inputs:
+ * - ProcessId/ExpectedCreateTime100ns identify one stable process instance.
+ * - Entries contains validated LUID plus enable/disable/remove actions.
+ * Processing:
+ * - Opens the primary token with TOKEN_ADJUST_PRIVILEGES and applies entries in
+ *   request order through ZwAdjustPrivilegesToken.
+ * Return behavior:
+ * - AppliedCountOut reports the committed prefix. FailedIndexOut identifies the
+ *   first rejected row, making partial mutation explicit to R3.
+ */
+NTSTATUS
+KswordARKDriverAdjustProcessTokenPrivileges(
+    _In_ ULONG ProcessId,
+    _In_ ULONG64 ExpectedCreateTime100ns,
+    _In_reads_(EntryCount) const KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY* Entries,
+    _In_ ULONG EntryCount,
+    _Out_ ULONG* AppliedCountOut,
+    _Out_ ULONG* FailedIndexOut,
+    _Out_ ULONG64* ProcessCreateTime100nsOut
+    );
+
 NTSTATUS
 KswordARKDriverEnumerateProcesses(
     _Out_writes_bytes_to_(outputBufferLength, *bytesWrittenOut) PVOID outputBuffer,

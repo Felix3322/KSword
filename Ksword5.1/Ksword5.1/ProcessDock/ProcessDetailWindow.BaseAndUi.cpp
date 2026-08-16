@@ -3564,6 +3564,10 @@ void ProcessDetailWindow::initializeActionTab()
         QStringLiteral("应用"),
         QStringLiteral("应用当前选中的进程优先级"),
         controlGroup);
+    m_adjustTokenPrivilegesButton = buildTextActionButton(
+        QStringLiteral("调整特权"),
+        QStringLiteral("读取并调整当前进程主令牌的特权（R3/R0）"),
+        controlGroup);
 
     controlLayout->addWidget(new QLabel("结束方案", controlGroup), 0, 0);
     controlLayout->addWidget(m_terminateActionCombo, 0, 1, 1, 3);
@@ -3577,6 +3581,8 @@ void ProcessDetailWindow::initializeActionTab()
     controlLayout->addWidget(new QLabel("优先级", controlGroup), 3, 0);
     controlLayout->addWidget(m_priorityCombo, 3, 1, 1, 3);
     controlLayout->addWidget(m_applyPriorityButton, 3, 4);
+    controlLayout->addWidget(new QLabel(QStringLiteral("进程令牌"), controlGroup), 4, 0);
+    controlLayout->addWidget(m_adjustTokenPrivilegesButton, 4, 1, 1, 2);
     m_actionLayout->addWidget(controlGroup);
 
     // CPU 亲和性：
@@ -4842,6 +4848,17 @@ void ProcessDetailWindow::initializeConnections()
     connect(m_setCriticalButton, &QPushButton::clicked, this, [this]() { executeSetCriticalAction(true); });
     connect(m_clearCriticalButton, &QPushButton::clicked, this, [this]() { executeSetCriticalAction(false); });
     connect(m_applyPriorityButton, &QPushButton::clicked, this, [this]() { executeSetPriorityAction(); });
+    connect(m_adjustTokenPrivilegesButton, &QPushButton::clicked, this, [this]() {
+        const bool changed = ks::process_ui::showProcessTokenPrivilegeDialog(
+            this,
+            m_baseRecord.pid,
+            m_baseRecord.creationTime100ns,
+            QString::fromStdString(m_baseRecord.processName));
+        if (changed)
+        {
+            requestAsyncTokenRefresh();
+        }
+    });
     connect(m_openProcessFolderButton, &QPushButton::clicked, this, [this]() { executeOpenProcessFolderAction(); });
     connect(m_refreshPplProtectionButton, &QPushButton::clicked, this, [this]() { executeRefreshPplProtectionLevelAction(); });
     connect(m_enableEfficiencyModeButton, &QPushButton::clicked, this, [this]() { executeSetEfficiencyModeAction(true); });
