@@ -6391,6 +6391,16 @@ void MainWindow::initGlobalUiSearchController()
         &ks::ui::GlobalUiSearchController::searchScopeDisplayTextChanged,
         m_customTitleBar,
         &ks::ui::CustomTitleBar::setSearchScopeDisplayText);
+    connect(
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::searchResultsOnlyChanged,
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::setSearchResultsOnlyChecked);
+    connect(
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::searchResultsOnlyChanged,
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::setSearchResultsOnly);
     m_customTitleBar->setSearchScopeDisplayText(
         m_globalUiSearchController->searchScopeDisplayText());
     m_globalUiSearchController->setSearchInputActive(
@@ -10559,6 +10569,8 @@ void MainWindow::openProcessDetailByPid(const quint32 pid)
         << pid
         << eol;
 
+    // 进程页仍负责详情窗口复用和进程 identity 校验，但这里只初始化其内容，
+    // 不激活进程 Dock，避免从其他 Dock 打开独立详情窗口时切走当前页签。
     if (m_dockProcess != nullptr)
     {
         ensureDockContentInitialized(m_dockProcess);
@@ -10566,14 +10578,6 @@ void MainWindow::openProcessDetailByPid(const quint32 pid)
     if (m_processWidget != nullptr)
     {
         m_processWidget->requestOpenProcessDetailByPid(static_cast<std::uint32_t>(pid));
-    }
-    if (m_dockProcess != nullptr)
-    {
-        withTemporaryNonTopMostForDockSwitch([this]()
-            {
-                m_dockProcess->raise();
-            });
-        m_dockProcess->setVisible(true);
     }
 }
 
@@ -10590,7 +10594,8 @@ void MainWindow::openProcessDetailByIdentity(
         << creationTime100ns
         << eol;
 
-    // m_dockProcess：先确保延迟加载的进程页已经创建。
+    // 进程页仍负责详情窗口复用和历史 identity 校验，但这里只初始化其内容，
+    // 不激活进程 Dock，避免从其他 Dock 打开独立详情窗口时切走当前页签。
     if (m_dockProcess != nullptr)
     {
         ensureDockContentInitialized(m_dockProcess);
@@ -10600,16 +10605,6 @@ void MainWindow::openProcessDetailByIdentity(
         m_processWidget->requestOpenProcessDetailByIdentity(
             static_cast<std::uint32_t>(pid),
             static_cast<std::uint64_t>(creationTime100ns));
-    }
-
-    // 历史目标失效时 ProcessDock 会弹出明确提示，仍置顶进程页供用户查看当前状态。
-    if (m_dockProcess != nullptr)
-    {
-        withTemporaryNonTopMostForDockSwitch([this]()
-            {
-                m_dockProcess->raise();
-            });
-        m_dockProcess->setVisible(true);
     }
 }
 
