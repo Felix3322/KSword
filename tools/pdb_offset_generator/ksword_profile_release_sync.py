@@ -19,11 +19,10 @@ Processing:
   module class, machine, TimeDateStamp, and SizeOfImage.
 - Copy only accepted profile JSON files into Release\\profiles\\ark_dyndata
   when scattered JSON publishing is requested.
-- Optionally emit a compact Release\\profiles\\ark_dyndata_pack_v1.json,
-  Release\\profiles\\ark_dyndata_pack_v2.json, or
-  Release\\profiles\\ark_dyndata_pack_v3.json pack. v1 stores only fields for
-  legacy compatibility. v2 adds callbackItems. v3 adds typed StructOffset and
-  GlobalRva items plus coverage metadata.
+- Optionally emit a compact Release\\profiles\\ark_dyndata_pack_v3.json or
+  Release\\profiles\\ark_dyndata_pack_v4.json pack. v3 carries typed
+  StructOffset and GlobalRva items plus coverage metadata; v4 adds stable
+  multi-module items and capability groups.
 - Write a manifest outside the scanned JSON directory so KernelDock does not
   attempt to parse the manifest as a scattered runtime profile.
 
@@ -49,20 +48,15 @@ from typing import Any
 
 DEFAULT_SOURCE_DIR = Path(r"D:\PDB\profiles\ark_dyndata")
 DEFAULT_LOCAL_KERNEL = Path(r"C:\Windows\System32\ntoskrnl.exe")
-KSW_PACK_VERSION_V1 = 1
-KSW_PACK_VERSION_V2 = 2
 KSW_PACK_VERSION_V3 = 3
 KSW_PACK_VERSION_V4 = 4
-KSW_DEFAULT_PACK_VERSION = KSW_PACK_VERSION_V1
-KSW_SUPPORTED_PACK_VERSIONS = (KSW_PACK_VERSION_V1, KSW_PACK_VERSION_V2, KSW_PACK_VERSION_V3, KSW_PACK_VERSION_V4)
+KSW_DEFAULT_PACK_VERSION = KSW_PACK_VERSION_V4
+KSW_SUPPORTED_PACK_VERSIONS = (KSW_PACK_VERSION_V3, KSW_PACK_VERSION_V4)
 DEFAULT_PACK_FILE_NAMES = {
-    KSW_PACK_VERSION_V1: "ark_dyndata_pack_v1.json",
-    KSW_PACK_VERSION_V2: "ark_dyndata_pack_v2.json",
     KSW_PACK_VERSION_V3: "ark_dyndata_pack_v3.json",
     KSW_PACK_VERSION_V4: "ark_dyndata_pack_v4.json",
 }
-# Kept for compatibility with callers and docs that referenced the original
-# single-pack default name before v2 publishing was added.
+# Kept for callers and docs that reference the default compact pack name.
 DEFAULT_PACK_FILE_NAME = DEFAULT_PACK_FILE_NAMES[KSW_DEFAULT_PACK_VERSION]
 KSW_DYN_PROFILE_OFFSET_MAX = 0x0000FFFF
 KSW_DYN_PROFILE_GLOBAL_RVA_MAX = 0x7FFFFFFF
@@ -576,8 +570,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=KSW_DEFAULT_PACK_VERSION,
         help=(
             "Compact pack format version to emit when --emit-pack/--pack-only is used; "
-            "1 keeps legacy fields-only output, 2 adds callbackItems, 3 adds typed items, "
-            "4 adds stable multi-module items and capability groups. Default: 1."
+            "3 adds typed items, 4 adds stable multi-module items and capability groups. "
+            "Default: 4."
         ),
     )
     parser.add_argument(
@@ -1353,15 +1347,11 @@ def build_pack_field_dictionary(records: list[ProfileRecord]) -> tuple[list[str]
 def records_for_pack_version(records: list[ProfileRecord], pack_version: int) -> list[ProfileRecord]:
     """Return records representable by one compact pack format.
 
-    v1/v2 require legacy field pairs, v3 can encode typed-only records, and v4
-    is the only format that can carry v4-only module capability items. Keeping
-    this selection at the publisher boundary preserves legacy artifacts when a
-    newer module class has no meaningful old-format projection.
+    v3 can encode typed-only records, and v4 is the only format that can carry
+    v4-only module capability items.
     """
     if pack_version not in KSW_SUPPORTED_PACK_VERSIONS:
         raise ValueError(f"unsupported pack version: {pack_version}")
-    if pack_version in {KSW_PACK_VERSION_V1, KSW_PACK_VERSION_V2}:
-        return [record for record in records if record.field_count > 0]
     if pack_version == KSW_PACK_VERSION_V3:
         return [record for record in records if record.field_count > 0 or record.typed_items]
     return [record for record in records if record.field_count > 0 or record.typed_items or record.v4_items]
@@ -1497,8 +1487,8 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
     - Normalizes module identity and PDB metadata to compact numeric/string
       values.
     - Stores field payload as [fieldIndex, offset] pairs sorted by field index.
-    - For v2 packs, appends the already validated callbackItems payload using
-      canonical shared protocol names and compact integer values.
+    - For v3 packs, emits typed items using canonical shared protocol names and
+      compact integer values; v4 emits stable item packets and capability groups.
 
     Return behavior:
     - Returns a JSON-serializable dictionary for the pack file.
@@ -1512,7 +1502,7 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
         raise ValueError(f"unsupported module class for {record.path}")
 
     fields = record.data.get("fields", {})
-    if not isinstance(fields, dict) or (not fields and pack_version not in {KSW_PACK_VERSION_V3, KSW_PACK_VERSION_V4}):
+    if not isinstance(fields, dict):
         raise ValueError(f"invalid field set for {record.path}")
 
     packed_fields: list[list[int]] = []
@@ -1535,9 +1525,7 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
     }
     if record.idt_baseline is not None:
         profile_entry["idtBaseline"] = record.idt_baseline
-    if pack_version == KSW_PACK_VERSION_V2:
-        profile_entry["callbackItems"] = record.callback_items
-    elif pack_version == KSW_PACK_VERSION_V3:
+    if pack_version == KSW_PACK_VERSION_V3:
         profile_entry["items"] = build_pack_typed_items(record, pack_version)
         profile_entry["coveragePercent"] = record.coverage_percent
         profile_entry["missingFields"] = record.missing_fields
@@ -1566,8 +1554,7 @@ def build_profile_pack(records: list[ProfileRecord], pack_version: int) -> dict[
     - Creates a once-per-pack field dictionary.
     - Converts each profile into a compact numeric identity plus field-index
       tuples.
-    - Preserves v1 fields-only behavior by omitting callbackItems unless v2 is
-      explicitly requested.
+    - Emits only the supported v3 or v4 payload shape.
 
     Return behavior:
     - Returns a JSON-serializable pack dictionary.

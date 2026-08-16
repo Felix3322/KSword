@@ -1,9 +1,8 @@
 # DynData / PDB profile v3 manifest
 
 本文件记录下一阶段 cross-view、驱动完整性和内核内存归因所需的 DynData
-协议扩展。本文只描述 schema 和协议面，不要求重新生成
-`profiles/ark_dyndata_pack_v1.json`、`profiles/ark_dyndata_pack_v2.json` 或写入
-`Release`。
+协议扩展。发行链路已停止生成和加载 v1/v2 pack；本文保留 v3 schema 的设计
+说明，并以 v3/v4 作为当前可发布格式。
 
 ## 新增 capability 位
 
@@ -54,12 +53,11 @@
 
 ## pack v3 schema
 
-pack v3 保留 v1/v2 顶层 identity 和 `fields` 布局，新增推荐字段
-`profiles[].items`。R3 loader 支持：
+pack v3 保留紧凑 identity 和 `fields` 布局，新增推荐字段
+`profiles[].items`。当前 R3 loader 只支持：
 
-- `packVersion: 1`：仅 `fieldDictionary` + `fields`。
-- `packVersion: 2`：v1 + `callbackItems`。
-- `packVersion: 3`：v1/v2 兼容字段 + `items` typed payload。
+- `packVersion: 3`：typed `items` payload。
+- `packVersion: 4`：stable `items` 和 `capabilityGroups` payload。
 
 示例：
 
@@ -106,17 +104,16 @@ pack v3 保留 v1/v2 顶层 identity 和 `fields` 布局，新增推荐字段
 
 - R0/R3 共享协议新增字段 ID 和 capability 位。
 - R0 DynData state 可保存新增结构偏移和 optional kernel global RVA。
-- R0 EX apply 支持 v3 通用 `StructOffset` / `GlobalRva` item，并继续兼容
-  v2 callback items。
-- R3 KernelDock profile loader 支持 packVersion 1/2/3。
+- R0 EX apply 支持 v3 通用 `StructOffset` / `GlobalRva` item；v4 通过独立
+  stable-item apply 入口下发。
+- R3 KernelDock profile loader 支持 packVersion 3/4。
 - PDB generator 扩展 `FIELD_MAP` 并解析 optional kernel global RVAs。
-- release sync 支持 v3 pack 输出，并在报告中输出每个 profile 的
+- release sync 支持 v3/v4 pack 输出，并在报告中输出每个 profile 的
   `missingFields`、`missingGlobals`、`coveragePercent`。
 
 ## 未完成项
 
-- 未重新生成任何 `profiles/ark_dyndata_pack_v1.json` /
-  `profiles/ark_dyndata_pack_v2.json` / v3 pack。
+- 未重新生成 v3/v4 pack。
 - 未构建驱动、用户态或 Qt 项目。
 - 新 capability 当前只暴露 DynData/profile 面；cross-view 枚举、驱动完整性
   校验和内核内存归因的业务 IOCTL/worker 尚未接入。

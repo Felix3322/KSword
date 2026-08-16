@@ -6,7 +6,7 @@ from pathlib import Path
 import ksword_profile_release_sync as release_sync
 
 
-class PackVersionCompatibilityTests(unittest.TestCase):
+class PackVersionSelectionTests(unittest.TestCase):
     def make_record(
         self,
         name: str,
@@ -46,14 +46,6 @@ class PackVersionCompatibilityTests(unittest.TestCase):
         records = [legacy, typed, v4_only]
 
         self.assertEqual(
-            [legacy],
-            release_sync.records_for_pack_version(records, release_sync.KSW_PACK_VERSION_V1),
-        )
-        self.assertEqual(
-            [legacy],
-            release_sync.records_for_pack_version(records, release_sync.KSW_PACK_VERSION_V2),
-        )
-        self.assertEqual(
             [legacy, typed],
             release_sync.records_for_pack_version(records, release_sync.KSW_PACK_VERSION_V3),
         )
@@ -61,6 +53,11 @@ class PackVersionCompatibilityTests(unittest.TestCase):
             [legacy, typed, v4_only],
             release_sync.records_for_pack_version(records, release_sync.KSW_PACK_VERSION_V4),
         )
+        self.assertEqual(release_sync.KSW_PACK_VERSION_V4, release_sync.KSW_DEFAULT_PACK_VERSION)
+        with self.assertRaisesRegex(ValueError, "unsupported pack version"):
+            release_sync.records_for_pack_version(records, 1)
+        with self.assertRaisesRegex(ValueError, "unsupported pack version"):
+            release_sync.records_for_pack_version(records, 2)
 
 
 if __name__ == "__main__":

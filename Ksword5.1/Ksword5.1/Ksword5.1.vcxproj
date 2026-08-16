@@ -377,6 +377,7 @@
     <ClCompile Include="ProcessDock\ProcessDetailWindow.ActionAndUtil.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.ExtendedActions.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.AdvancedInfo.cpp" />
+    <ClCompile Include="ProcessDock\ProcessTokenPrivilegeDialog.cpp" />
     <ClCompile Include="PluginHost.cpp" />
     <ClCompile Include="ProcessDock\ProcessDock.cpp" />
     <ClCompile Include="ProcessDock\ProcessDock.Icon.cpp" />
@@ -709,6 +710,7 @@
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />
+    <ClInclude Include="ProcessDock\ProcessTokenPrivilegeDialog.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityUtils.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityPersistence.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityModel.h" />
@@ -768,7 +770,6 @@
     <None Include="..\..\third_party\zstd\NOTICE.md" />
     <None Include="..\..\third_party\SystemWideTransmission\LICENSE.txt" />
     <None Include="..\..\third_party\SystemWideTransmission\NOTICE.md" />
-    <None Include="profiles\ark_dyndata_pack_v2.json" />
     <None Include="profiles\ark_dyndata_pack_v3.json" />
     <None Include="profiles\ark_dyndata_pack_v4.json" />
     <None Include="ArkDriverClient\ArkRuntimeDynDataCatalog.inc" />
@@ -847,25 +848,21 @@
     <Copy SourceFiles="$(KswordZydisNoticeSource)" DestinationFiles="$(KswordThirdPartyLicenseTargetDir)zydis-NOTICE.md" SkipUnchangedFiles="true" />
   </Target>
   <Target Name="CopyKswordArkDynDataProfilePack" AfterTargets="Build">
-    <!-- v3 pack carries typed StructOffset items such as EpActiveProcessLinks; v2 is kept only as a callback-era fallback. -->
+    <!-- v3 carries typed compatibility items; v4 is the default multi-module profile pack. -->
     <PropertyGroup>
       <KswordProfileCompressor>$(MSBuildProjectDirectory)\..\..\tools\compress_qt_profile_json.py</KswordProfileCompressor>
       <KswordProfilePythonExe Condition="'$(KswordProfilePythonExe)'==''">python</KswordProfilePythonExe>
-      <KswordArkDynDataProfilePackV2Source>$(MSBuildProjectDirectory)\profiles\ark_dyndata_pack_v2.json</KswordArkDynDataProfilePackV2Source>
       <KswordArkDynDataProfilePackV3Source>$(MSBuildProjectDirectory)\profiles\ark_dyndata_pack_v3.json</KswordArkDynDataProfilePackV3Source>
       <KswordArkDynDataProfilePackV4Source>$(MSBuildProjectDirectory)\profiles\ark_dyndata_pack_v4.json</KswordArkDynDataProfilePackV4Source>
       <KswordArkDynDataProfilePackTargetDir>$(TargetDir)profiles\</KswordArkDynDataProfilePackTargetDir>
-      <KswordArkDynDataLegacyPack>$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v1.json</KswordArkDynDataLegacyPack>
     </PropertyGroup>
-    <MakeDir Directories="$(KswordArkDynDataProfilePackTargetDir)" Condition="Exists('$(KswordArkDynDataProfilePackV2Source)') Or Exists('$(KswordArkDynDataProfilePackV3Source)') Or Exists('$(KswordArkDynDataProfilePackV4Source)')" />
+    <MakeDir Directories="$(KswordArkDynDataProfilePackTargetDir)" Condition="Exists('$(KswordArkDynDataProfilePackV3Source)') Or Exists('$(KswordArkDynDataProfilePackV4Source)')" />
     <Exec Command="&quot;$(KswordProfilePythonExe)&quot; &quot;$(KswordProfileCompressor)&quot; --file &quot;$(KswordArkDynDataProfilePackV4Source)&quot; --out &quot;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v4.json.qz&quot;" Condition="Exists('$(KswordProfileCompressor)') And Exists('$(KswordArkDynDataProfilePackV4Source)')" />
     <Exec Command="&quot;$(KswordProfilePythonExe)&quot; &quot;$(KswordProfileCompressor)&quot; --file &quot;$(KswordArkDynDataProfilePackV3Source)&quot; --out &quot;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v3.json.qz&quot;" Condition="Exists('$(KswordProfileCompressor)') And Exists('$(KswordArkDynDataProfilePackV3Source)')" />
-    <Exec Command="&quot;$(KswordProfilePythonExe)&quot; &quot;$(KswordProfileCompressor)&quot; --file &quot;$(KswordArkDynDataProfilePackV2Source)&quot; --out &quot;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v2.json.qz&quot;" Condition="Exists('$(KswordProfileCompressor)') And Exists('$(KswordArkDynDataProfilePackV2Source)')" />
-    <Delete Files="$(KswordArkDynDataLegacyPack);$(KswordArkDynDataLegacyPack).qz" />
-    <Delete Files="$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v2.json;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v3.json;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v4.json" Condition="Exists('$(KswordProfileCompressor)')" />
+    <Delete Files="$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v1.json;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v1.json.qz;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v2.json;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v2.json.qz" />
+    <Delete Files="$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v3.json;$(KswordArkDynDataProfilePackTargetDir)ark_dyndata_pack_v4.json" Condition="Exists('$(KswordProfileCompressor)')" />
     <Warning Condition="!Exists('$(KswordProfileCompressor)')" Text="Profile compressor was not found; compressed profile packs were not generated: $(KswordProfileCompressor)" />
     <Warning Condition="!Exists('$(KswordArkDynDataProfilePackV3Source)')" Text="KswordARK DynData v3 profile pack was not found: $(KswordArkDynDataProfilePackV3Source)" />
-    <Warning Condition="!Exists('$(KswordArkDynDataProfilePackV2Source)')" Text="KswordARK DynData v2 profile pack was not found: $(KswordArkDynDataProfilePackV2Source)" />
     <Warning Condition="!Exists('$(KswordArkDynDataProfilePackV4Source)')" Text="KswordARK DynData v4 profile pack was not found: $(KswordArkDynDataProfilePackV4Source)" />
   </Target>
   <Target Name="CopyRegistryOptimizationProfile" AfterTargets="Build">

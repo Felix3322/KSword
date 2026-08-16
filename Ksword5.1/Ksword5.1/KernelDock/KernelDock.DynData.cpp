@@ -1879,12 +1879,8 @@ namespace
         appendUniquePath(paths, qEnvironmentVariable("KSWORD_ARK_PROFILE_PACK"));
         appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
         appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-        appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v2.json")));
-        appendUniquePath(paths, QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("profiles/ark_dyndata_pack_v1.json")));
         appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
         appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-        appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v2.json")));
-        appendUniquePath(paths, QDir::current().filePath(QStringLiteral("profiles/ark_dyndata_pack_v1.json")));
         return paths;
     }
 
@@ -2052,7 +2048,7 @@ namespace
 
     // loadPdbProfilePackEntry：
     // - 输入 pack 记录/currentIdentity/fieldDictionary/packVersion：pack profile 条目、当前内核身份、字段字典和版本；
-    // - 处理：把 v1/v2 紧凑字段和 v3 typed items 展开为 apply input；
+    // - 处理：把 v3 typed items 和 v4 stable items 展开为 apply input；
     // - 返回：LocalPdbProfile；matched=false 表示不是当前内核 profile。
     LocalPdbProfile loadPdbProfilePackEntry(
         const QJsonObject& packEntry,
@@ -2249,7 +2245,7 @@ namespace
 
     // loadPdbProfilePackFile：
     // - 输入 filePath/currentIdentity/diagnosticsOut：候选 pack、当前内核身份和诊断输出；
-    // - 处理：校验 v1/v2/v3 pack schema、字段字典和 profiles 数组，寻找精确匹配条目；
+    // - 处理：校验 v3/v4 pack schema、字段字典和 profiles 数组，寻找精确匹配条目；
     // - 返回：匹配 profile；未命中或 pack 无效时 valid=false/matched=false。
     LocalPdbProfile loadPdbProfilePackFile(const QString& filePath, const ksword::ark::ArkDynModuleIdentity& currentIdentity, QString& diagnosticsOut)
     {
@@ -2274,7 +2270,7 @@ namespace
         if (!parseProfileUInt32(rootObject.value(QStringLiteral("schemaVersion")), schemaVersion) ||
             !parseProfileUInt32(rootObject.value(QStringLiteral("packVersion")), packVersion) ||
             schemaVersion != 1U ||
-            (packVersion != 1U && packVersion != 2U && packVersion != 3U && packVersion != 4U))
+            (packVersion != 3U && packVersion != 4U))
         {
             diagnosticsOut = kernelText("kernel.dyndata.pack.version_unsupported", QStringLiteral("PDB profile pack schemaVersion/packVersion 不支持。"));
             return bestProfile;

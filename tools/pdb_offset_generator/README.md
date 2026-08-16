@@ -139,16 +139,17 @@ under `diagnostics.missingItems`, `missingGlobals`, and `diagnostics.missingGlob
 
 ## Release sync packs
 
-`ksword_profile_release_sync.py` still emits the legacy fields-only v1 pack by
-default. Existing v1 release flows remain valid:
+`ksword_profile_release_sync.py` emits the v4 compact pack by default. v4 is
+the release default because it carries stable multi-module items and capability
+groups; v3 remains available for the typed-item compatibility path:
 
 ```powershell
 python tools\pdb_offset_generator\ksword_profile_release_sync.py `
   --emit-pack
 ```
 
-To publish the typed offset pack used by the current R3 loader path, request
-pack v3 and write it directly to `Release\profiles\ark_dyndata_pack_v3.json`:
+To publish the v3 compatibility pack alongside the default v4 pack, request
+pack v3 explicitly and write it to `Release\profiles\ark_dyndata_pack_v3.json`:
 
 ```powershell
 python tools\pdb_offset_generator\ksword_profile_release_sync.py `
@@ -159,14 +160,14 @@ python tools\pdb_offset_generator\ksword_profile_release_sync.py `
 
 The default output path is version-specific:
 
-- v1: `<release-root>\profiles\ark_dyndata_pack_v1.json`
-- v2: `<release-root>\profiles\ark_dyndata_pack_v2.json`
 - v3: `<release-root>\profiles\ark_dyndata_pack_v3.json` (preferred for
   `EpActiveProcessLinks` and other typed `StructOffset` fields)
+- v4: `<release-root>\profiles\ark_dyndata_pack_v4.json` (default; stable
+  multi-module items and capability groups)
 
-`--pack-only` keeps its existing behavior and can also be combined with
-`--pack-version 2` or `--pack-version 3`. `--pack-output` overrides the computed
-v1/v2/v3 path when a specific destination is required.
+`--pack-only` keeps its existing behavior and can be combined with
+`--pack-version 3` or `--pack-version 4`. `--pack-output` overrides the computed
+v3/v4 path when a specific destination is required.
 
 For a release-side v3 pack that lands at `Release\profiles\ark_dyndata_pack_v3.json`
 and does not publish scattered JSON, use pack-only together with `--clean-target`:
@@ -183,47 +184,14 @@ python tools\pdb_offset_generator\ksword_profile_release_sync.py `
 This keeps the Release tree on the compact pack path only; it skips PDB/PE
 publication and skips copying scattered `profiles\ark_dyndata\*.json` payloads.
 
-Pack v2 keeps the v1 top-level layout and adds callback payloads to each profile:
+Pack v3 retains the compact identity and `fields` layout, and adds a typed
+`items` array for every profile. R3 loaders accept packVersion 3 or 4; v3 is
+the compatibility option when a driver does not provide the v4 endpoint.
 
-```json
-{
-  "schemaVersion": 1,
-  "packVersion": 2,
-  "fieldDictionary": ["EpObjectTable"],
-  "profiles": [
-    {
-      "moduleClassId": 0,
-      "machine": 34404,
-      "timeDateStamp": 305419896,
-      "sizeOfImage": 21299200,
-      "profileName": "example",
-      "pdbName": "ntkrnlmp.pdb",
-      "pdbGuid": "",
-      "pdbAge": 1,
-      "fields": [[0, 768]],
-      "callbackItems": [
-        {
-          "name": "PspCreateProcessNotifyRoutine",
-          "kind": "GlobalRva",
-          "value": 305419896
-        }
-      ]
-    }
-  ]
-}
-```
-
-`profile.fields` remains an array of `[fieldIndex, offset]` pairs. In v2,
-`profile.callbackItems` is optional per source profile; profiles without source
-callback items are emitted with an empty callback array. Each callback item is a
-compact object containing at least `name`, `kind`, and numeric `value`.
-Source-only diagnostics such as symbol source, section, and member metadata are
-not copied into the pack.
-
-Pack v3 remains compatible with the v1/v2 identity and `fields` layout, but it
-adds a typed `items` array for every profile. R3 loaders accept packVersion 1,
-2, or 3; v3 is preferred for the current offset-extraction path because `items`
-can carry both `StructOffset` and optional `GlobalRva` entries:
+Pack v4 is the primary path. It stores stable wire items in `items` and their
+per-module capability summary in `capabilityGroups`; `legacyItems` exists only
+to let a v4 artifact be interpreted by the retained v3 compatibility layer.
+New release flows must use its v4 payload rather than publishing v1/v2 packs.
 
 ```json
 {

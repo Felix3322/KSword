@@ -559,8 +559,6 @@ std::vector<std::filesystem::path> ProfilePackSearchPaths() {
         }
         AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v4.json");
         AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v3.json");
-        AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v2.json");
-        AppendUniquePath(paths, base / L"profiles" / L"ark_dyndata_pack_v1.json");
     }
     return paths;
 }
@@ -1354,7 +1352,7 @@ DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleId
         }
         if (!ParseUInt32(rootObject.member("packVersion"), packVersion) ||
             schemaVersion != 1U ||
-            (packVersion != 1U && packVersion != 2U && packVersion != 3U && packVersion != 4U)) {
+            (packVersion != 3U && packVersion != 4U)) {
             AppendDiagnostic(diagnostics, L"pack schemaVersion/packVersion 不支持: " + candidatePath.wstring());
             continue;
         }

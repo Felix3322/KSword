@@ -1157,9 +1157,7 @@ namespace
             const QDir directory(root);
             const QStringList packNames = {
                 QStringLiteral("ark_dyndata_pack_v4.json"),
-                QStringLiteral("ark_dyndata_pack_v3.json"),
-                QStringLiteral("ark_dyndata_pack_v2.json"),
-                QStringLiteral("ark_dyndata_pack_v1.json")
+                QStringLiteral("ark_dyndata_pack_v3.json")
             };
             for (const QString& packName : packNames)
             {
