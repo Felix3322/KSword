@@ -2,21 +2,22 @@
 
 ## 1. Legal boundary / 法律边界
 
-Ksword is free software licensed under `GPL-3.0-only`. The binding software
-license is the complete text in `LICENSE`.
+Ksword is source-available software licensed under the terms in `LICENSE`. "Open
+source" here means source is open for reading and access, and does not indicate an
+OSI-approved license.
 
-Ksword 是按 `GPL-3.0-only` 发布的自由软件。具有法律约束力的软件许可仅为
-`LICENSE` 中的完整 GPLv3 正文。
+Ksword 是按 `LICENSE` 条款发布的源码公开软件。具有法律约束力的软件许可仅为
+`LICENSE` 中的完整正文。
 
-This covenant is not part of the GPL, is not an additional restriction, and is
-not a condition for receiving or exercising GPL rights. Anyone may use, copy,
-modify, host, sell, or redistribute the software as GPLv3 permits, whether or
-not they join or follow the official community. A failure to follow this
-covenant cannot terminate GPL rights.
+This covenant is not part of the license, is not an additional restriction, and is
+not a condition for receiving or exercising rights. Anyone may use, copy,
+modify, host, or redistribute the software as the project license permits, whether
+or not they join or follow the official community. A failure to follow this
+covenant cannot terminate license rights.
 
-本公约不是 GPL 的组成部分，不是附加许可限制，也不是取得或行使 GPL 权利的
-条件。无论是否加入或遵守官方社区，任何人都可以在 GPLv3 允许的范围内使用、
-复制、修改、托管、销售或再分发软件。违反本公约不会导致 GPL 权利终止。
+本公约不是许可文本的组成部分，不是附加许可限制，也不是取得或行使许可权利的
+条件。无论是否加入或遵守官方社区，任何人都可以在 `LICENSE` 允许的范围内使用、
+复制、修改、托管或再分发软件。违反本公约不会导致许可权利终止。
 
 ## 2. Shared commitments / 共同承诺
 
@@ -47,11 +48,11 @@ Official community participants are expected to:
 - 对收费项目如实说明其实际价值，例如开发、集成、打包、部署、培训、维护或支持。
 
 These are community standards, not copyright conditions. In particular, the
-project recognizes that GPLv3 permits commercial use, charging any price for a
-copy, paid support, and hosted operation, subject to the GPL's actual terms.
+project recognizes commercial and hosted uses that are allowed by the project
+license text.
 
-以上内容是社区标准，不是版权许可条件。项目明确承认：在遵守 GPLv3 正文的
-前提下，GPLv3 允许商业使用、对副本收取任意价格、提供付费支持和托管运行。
+以上内容是社区标准，不是版权许可条件。项目明确承认：在遵守 `LICENSE` 正文的
+前提下，社区认可商业与托管用途，但具体边界按许可文本约定为准。
 
 ## 3. Official identity and project marks / 官方身份与项目标识
 
@@ -64,14 +65,14 @@ authorship, sponsorship, certification, endorsement, or maintainer status.
 作品基于 Ksword、与 Ksword 兼容或为 Ksword 提供支持，但不应暗示其具有官方
 作者、赞助、认证、背书或维护者身份。
 
-The GPL grants copyright permissions, not a trademark license. Use of the
+The License grants copyright permissions, not a trademark license. Use of the
 Ksword name or logos in a way likely to confuse users about origin or official
 status may be refused or challenged under applicable trademark and unfair
 competition law. A fork can avoid that issue by using its own primary name and
 branding while giving truthful attribution to Ksword. This paragraph does not
 restrict nominative fair use or any other use permitted by law.
 
-GPL 授予的是版权许可，不是商标许可。以可能使用户混淆来源或官方身份的方式使用
+许可文本授予版权许可，不是商标许可。以可能使用户混淆来源或官方身份的方式使用
 Ksword 名称或标志，项目可以依据适用的商标及反不正当竞争规则拒绝或提出异议。
 fork 可以使用自己的主要名称和品牌，同时如实注明来源于 Ksword。本段不限制
 指称性合理使用或法律允许的其他使用。
@@ -90,13 +91,13 @@ consistently, and allow a reasonable opportunity to respond when practicable.
 
 Those actions affect only access to official community resources, recognition,
 or use of project-controlled identity. They do not revoke, narrow, or condition
-any right already granted by GPLv3.
+any right already granted by the License.
 
 这些措施只影响官方社区资源的访问、官方认可或项目控制的身份标识，不撤销、
-缩小或附加条件于 GPLv3 已经授予的任何权利。
+缩小或附加条件于许可文本已经授予的任何权利。
 
 本公约不靠附加许可证强制。真把社区约定当作可选依赖也行，只是名声没有
 `--no-verify` 参数。
 
-This covenant is not enforced by adding restrictions to the GPL. Treat it as
-an optional dependency if you must; reputation has no `--no-verify` flag.
+This covenant is not enforced by adding restrictions to the project license. Treat it as
+an optional community practice if you must; reputation has no `--no-verify` flag.

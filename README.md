@@ -33,7 +33,7 @@
 </div>
 
 <h1 align="center">Ksword5.1</h1>
-<p align="center"><strong>A high-coverage open-source Windows ARK and kernel analysis suite</strong></p>
+<p align="center"><strong>A high-coverage source-available Windows ARK and kernel analysis suite</strong></p>
 
 <p align="center">
   <a href="https://github.com/KSwordDEV/KSword/stargazers">
@@ -54,7 +54,7 @@
 
 ## Overview
 
-Ksword5.1 is an open-source Windows ARK, kernel-debugging, and system-forensics suite. It includes the full Qt/ADS desktop application, the lightweight native Win32 `KswordARKLight`, the `KswordARKDriver` kernel driver, a CLI, desktop helper components, and an optional installer.
+Ksword5.1 is a source-available Windows ARK, kernel-debugging, and system-forensics suite. It includes the full Qt/ADS desktop application, the lightweight native Win32 `KswordARKLight`, the `KswordARKDriver` kernel driver, a CLI, desktop helper components, and an optional installer.
 
 The current codebase focuses on R3/R0 cross-view evidence, PDB/DynData-driven offsets, read-only audit pages, and explicit gates for destructive or mutation-oriented actions.
 
@@ -245,9 +245,10 @@ This project includes system-level debugging, auditing, and management capabilit
 
 ## License
 
-Ksword is free software under [GNU GPL version 3 only](LICENSE). Use it, study it, change it, share it, sell it, or build services around it—just follow GPLv3 and provide the matching source when you distribute binaries. Third-party components keep their own licenses.
+Ksword is source-available under the [KSword Community Source License v1.6](LICENSE). In this project, "open source" means source code visibility and access; it does not mean the project uses an Open Source Initiative (OSI)-approved license.
+Please follow the terms in LICENSE for what is permitted, especially around redistribution and commercial usage models. Third-party components keep their own licenses.
 
-Except where a file says otherwise, Ksword's own code is GPLv3-only. The [Ksword Community Covenant](COMMUNITY_COVENANT.md) is about honesty, attribution, responsible use, and not pretending an unofficial fork is official. It is a community promise, not another layer of license restrictions. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md).
+Except where a file says otherwise, Ksword's own code follows LICENSE. The [Ksword Community Covenant](COMMUNITY_COVENANT.md) is about honesty, attribution, responsible use, and not pretending an unofficial fork is official. It is a community promise, not another layer of license restrictions. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Star History
 

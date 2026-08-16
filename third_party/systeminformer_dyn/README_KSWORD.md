@@ -16,3 +16,6 @@ Files:
 
 Do not mix Ksword driver IOCTL protocol definitions into this directory. Shared
 R0/R3 protocol remains under `shared/driver/`.
+
+This directory is governed by its listed upstream license and is independent from
+Ksword's project `LICENSE`.

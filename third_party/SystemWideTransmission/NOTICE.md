@@ -1,5 +1,7 @@
 # SystemWideTransmission Reference Notice
 
+This directory/reference note is governed by the upstream license terms listed above, and Ksword's project `LICENSE` is not used to override third-party legal terms.
+
 Upstream project: <https://github.com/WindowsKin/SystemWideTransmission>
 
 - Revision reviewed: `9b06e82bcc9e8bbdb7641c68d321979fe7fd11b5`

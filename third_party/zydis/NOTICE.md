@@ -7,6 +7,7 @@
 - Source commit: `a2278f1d254e492f6a6b39f6cb5d1f5d515659dc`
 - Bundled Zycore commit: `0b2432ced0884fd152b471d97ecf0258ff4d859f`
 - License: MIT, copied in `LICENSE-Zydis.txt` and `LICENSE-Zycore.txt`
+- Third-party licensing note: these bundled files are governed by the license(s) noted above and are not automatically covered by Ksword's project `LICENSE`.
 - Imported files: official generated amalgamation `Zydis.h` and `Zydis.c`
 - Local use: bounded x86/x64 instruction decoding and Intel-syntax formatting
 

@@ -5,6 +5,7 @@ Imported for Ksword ARK Phase 0 DynData matching.
 - Upstream project: System Informer
 - Upstream URL: https://github.com/winsiderss/systeminformer
 - License: MIT License, copied in LICENSE.txt
+- Third-party licensing note: this package is governed by the license noted above and is not automatically subject to the Ksword project `LICENSE`.
 - Upstream copyright: Copyright (c) 2022 Winsider Seminars & Solutions, Inc.
 - Imported files: kphdyn.xml, kphdyn.c, kphdyn.h
 - Local import target: third_party/systeminformer_dyn

@@ -33,7 +33,7 @@
 </div>
 
 <h1 align="center">Ksword5.1</h1>
-<p align="center"><strong>开放源代码 Windows ARK / 内核调试工具集</strong></p>
+<p align="center"><strong>源码公开（非 OSI 认证开源许可证）Windows ARK / 内核调试工具集</strong></p>
 <p align="center">
   <a href="https://github.com/KSwordDEV/KSword/stargazers">
     <img alt="GitHub stars" src="https://img.shields.io/github/stars/KSwordDEV/KSword.svg?style=for-the-badge" />
@@ -54,7 +54,7 @@
 ## 中文
 
 ### 项目简介
-Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工具集。项目由完整 Qt/ADS 主程序、轻量原生 Win32 版本 `KswordARKLight`、R0 驱动 `KswordARKDriver`、命令行工具、辅助 Taskbar/HUD 和可选安装器组成，覆盖进程、线程、句柄、内存、网络、文件、驱动、内核对象、窗口、注册表、启动项、服务、硬件设备和安全策略等场景。
+Ksword5.1 是面向 Windows 的源码公开（“开源”仅表示源码可见）ARK、内核调试与系统取证分析工具集。项目由完整 Qt/ADS 主程序、轻量原生 Win32 版本 `KswordARKLight`、R0 驱动 `KswordARKDriver`、命令行工具、辅助 Taskbar/HUD 和可选安装器组成，覆盖进程、线程、句柄、内存、网络、文件、驱动、内核对象、窗口、注册表、启动项、服务、硬件设备和安全策略等场景。
 
 当前主线重点是 R3/R0 cross-view、PDB/DynData 动态偏移、只读审计证据页和明确的 mutation/safety gate。大量审计页默认只读，涉及驱动卸载、回调移除、磁盘写入、进程保护位修改等高风险操作时，应通过单独入口、显式确认和能力门禁执行。
 
@@ -217,10 +217,8 @@ $msbuild = 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 
 ### 许可证
 
-Ksword 按 GNU GPL version 3 only（`GPL-3.0-only`）发布。可以使用、研究、修改、
-分享、销售，也可以围绕它提供服务；遵守 GPLv3，并在分发二进制时提供对应源码
-即可。第三方组件继续使用它们自己的许可证。
+Ksword 按 [KSword Community Source License v1.6](../LICENSE) 发布。这里的“开源”仅表示源码公开，不代表本项目使用 OSI 认证的开源许可证类型。许可边界请以 `LICENSE` 为准；第三方组件继续使用它们自己的许可证。
 
-除另有文件说明外，Ksword 自有代码均按 GPLv3-only 发布。
+除另有文件说明外，Ksword 自有代码均按 `LICENSE` 所载许可约束发布。
 `COMMUNITY_COVENANT.md` 是关于诚实、署名、负责任使用，以及不要把非官方 fork
 冒充官方的社区约定，不是另一层许可限制。贡献规则见 `CONTRIBUTING.md`。

@@ -2,10 +2,9 @@
 
 ## 贡献
 
-项目按 `GPL-3.0-only` 发布。提交代码即表示你有权提交，并同意该贡献随项目按
-GPLv3 发布。第三方代码请保留其原有许可证文本。
+项目按 [LICENSE](LICENSE) 的条款发布（当前为 KSword Community Source License 1.6）。提交代码即表示你有权提交，并同意该贡献随项目按对应许可证约束处理。第三方代码请保留其原有许可证文本。
 
-讨论和协作遵守 `COMMUNITY_COVENANT.md`；它是社区约定，不给 GPL 再加限制。
+讨论和协作遵守 `COMMUNITY_COVENANT.md`；它是社区约定，不会给许可再加限制。
 
 ## 模块边界
 
