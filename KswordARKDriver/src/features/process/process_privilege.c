@@ -236,8 +236,8 @@ KswordARKDriverQueryProcessTokenPrivilegesByPid(
         // Preserve all documented and future privilege attribute bits for R3 display.
         Entries[privilegeIndex].attributes =
             tokenPrivileges->Privileges[privilegeIndex].Attributes;
-        // Keep the reserved protocol field deterministic.
-        Entries[privilegeIndex].reserved = 0UL;
+        // Keep the legacy reserved/action protocol slot deterministic.
+        Entries[privilegeIndex].action = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_KEEP;
     }
     // Publish the number of initialized protocol entries.
     *ReturnedCount = copyCount;

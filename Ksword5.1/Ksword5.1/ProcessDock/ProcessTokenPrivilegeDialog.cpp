@@ -375,13 +375,17 @@ namespace
                 return false;
             }
 
-            std::vector<BYTE> tokenBuffer(requiredBytes);
+            constexpr std::size_t tokenPrivilegesHeaderSize =
+                FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges);
+            const DWORD bufferCapacity = requiredBytes;
+            std::vector<BYTE> tokenBuffer(bufferCapacity);
+            DWORD returnedBytes = 0;
             if (::GetTokenInformation(
                 tokenHandle,
                 TokenPrivileges,
                 tokenBuffer.data(),
-                requiredBytes,
-                &requiredBytes) == FALSE)
+                bufferCapacity,
+                &returnedBytes) == FALSE)
             {
                 const DWORD queryError = ::GetLastError();
                 ::CloseHandle(tokenHandle);
@@ -395,6 +399,19 @@ namespace
 
             const TOKEN_PRIVILEGES* tokenPrivileges =
                 reinterpret_cast<const TOKEN_PRIVILEGES*>(tokenBuffer.data());
+            if (returnedBytes < tokenPrivilegesHeaderSize
+                || returnedBytes > bufferCapacity
+                || static_cast<std::size_t>(tokenPrivileges->PrivilegeCount) >
+                    (static_cast<std::size_t>(returnedBytes) -
+                     tokenPrivilegesHeaderSize) / sizeof(LUID_AND_ATTRIBUTES))
+            {
+                if (errorText != nullptr)
+                {
+                    *errorText = QStringLiteral(
+                        "GetTokenInformation(TokenPrivileges) returned invalid data");
+                }
+                return false;
+            }
             rowsOut->reserve(tokenPrivileges->PrivilegeCount);
             for (DWORD privilegeIndex = 0; privilegeIndex < tokenPrivileges->PrivilegeCount; ++privilegeIndex)
             {
@@ -555,8 +572,8 @@ namespace
             {
                 const std::vector<ks::process::TokenPrivilegeEdit> singleEdit{ edits[editIndex] };
                 std::string editDetailText;
-                if (!ks::process::ApplyTokenPrivilegeEditsByPid(
-                    m_processId,
+                if (!ks::process::ApplyTokenPrivilegeEditsByProcessHandle(
+                    m_identityProcessHandle,
                     TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
                     false,
                     singleEdit,

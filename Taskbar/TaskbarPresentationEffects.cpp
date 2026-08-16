@@ -36,6 +36,7 @@ void Taskbar::applyTaskbarTheme(bool earthquakeAlert, const QColor& backgroundCo
     }
     m_leftSpectrum->setBarColor(foreground);
     m_rightSpectrum->setBarColor(foreground);
+    logoColorEffect->setColor(foreground);
     logoColorEffect->setStrength(earthquakeAlert ? 1.0 : 0.0);
     for (GlowIconButton* button : { lockBtn, toolBtn, settingsBtn, userBtn })
     {

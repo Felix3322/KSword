@@ -7233,8 +7233,8 @@ namespace ks::process
         return OpenInExplorerByPath(targetPath, errorMessage);
     }
 
-    bool QueryTokenPrivilegesByPid(
-        const std::uint32_t sourcePid,
+    bool QueryTokenPrivilegesByProcessHandle(
+        const HANDLE processHandle,
         std::vector<TokenPrivilegeInfo>* const privilegesOut,
         std::string* const errorMessage)
     {
@@ -7242,15 +7242,30 @@ namespace ks::process
         {
             if (errorMessage != nullptr)
             {
-                *errorMessage = "QueryTokenPrivilegesByPid::privilegesOut cannot be null.";
+                *errorMessage = "QueryTokenPrivilegesByProcessHandle::privilegesOut cannot be null.";
             }
             return false;
         }
         privilegesOut->clear();
 
-        HANDLE tokenHandle = nullptr;
-        if (!OpenTokenByProcessPid(sourcePid, TOKEN_QUERY, tokenHandle, errorMessage))
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
         {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "QueryTokenPrivilegesByProcessHandle::processHandle is invalid.";
+            }
+            return false;
+        }
+
+        HANDLE tokenHandle = nullptr;
+        if (::OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle) == FALSE
+            || tokenHandle == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcessToken(TOKEN_QUERY) failed: "
+                    + FormatLastErrorMessage(::GetLastError());
+            }
             return false;
         }
 
@@ -7263,7 +7278,11 @@ namespace ks::process
             0,
             &requiredSize);
         const DWORD sizeQueryError = ::GetLastError();
-        if (sizeQueryOk != FALSE || sizeQueryError != ERROR_INSUFFICIENT_BUFFER || requiredSize < sizeof(DWORD))
+        constexpr std::size_t tokenPrivilegesHeaderSize =
+            FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges);
+        if (sizeQueryOk != FALSE
+            || sizeQueryError != ERROR_INSUFFICIENT_BUFFER
+            || requiredSize < tokenPrivilegesHeaderSize)
         {
             ::CloseHandle(tokenHandle);
             if (errorMessage != nullptr)
@@ -7274,14 +7293,16 @@ namespace ks::process
             return false;
         }
 
-        std::vector<std::uint8_t> tokenBuffer(requiredSize, 0);
+        const DWORD bufferCapacity = requiredSize;
+        std::vector<std::uint8_t> tokenBuffer(bufferCapacity, 0);
         TOKEN_PRIVILEGES* const tokenPrivileges = reinterpret_cast<TOKEN_PRIVILEGES*>(tokenBuffer.data());
+        DWORD returnedSize = 0;
         if (::GetTokenInformation(
             tokenHandle,
             TokenPrivileges,
             tokenPrivileges,
-            requiredSize,
-            &requiredSize) == FALSE)
+            bufferCapacity,
+            &returnedSize) == FALSE)
         {
             const DWORD queryError = ::GetLastError();
             ::CloseHandle(tokenHandle);
@@ -7293,6 +7314,28 @@ namespace ks::process
             return false;
         }
         ::CloseHandle(tokenHandle);
+
+        if (returnedSize < tokenPrivilegesHeaderSize
+            || returnedSize > bufferCapacity)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetTokenInformation::TokenPrivileges returned an invalid size.";
+            }
+            return false;
+        }
+        const std::size_t availablePrivilegeCount =
+            (static_cast<std::size_t>(returnedSize) - tokenPrivilegesHeaderSize)
+            / sizeof(LUID_AND_ATTRIBUTES);
+        if (static_cast<std::size_t>(tokenPrivileges->PrivilegeCount)
+            > availablePrivilegeCount)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetTokenInformation::TokenPrivileges returned an invalid privilege count.";
+            }
+            return false;
+        }
 
         std::vector<TokenPrivilegeLuidEntry> privilegeEntries;
         privilegeEntries.reserve(tokenPrivileges->PrivilegeCount);
@@ -7310,6 +7353,42 @@ namespace ks::process
             privilegeEntries,
             privilegesOut,
             errorMessage);
+    }
+
+    bool QueryTokenPrivilegesByPid(
+        const std::uint32_t sourcePid,
+        std::vector<TokenPrivilegeInfo>* const privilegesOut,
+        std::string* const errorMessage)
+    {
+        if (sourcePid == 0U)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "QueryTokenPrivilegesByPid::sourcePid cannot be 0.";
+            }
+            return false;
+        }
+
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            ToDwordPid(sourcePid));
+        if (processHandle == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcess(for token query) failed: "
+                    + FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+
+        const bool queryOk = QueryTokenPrivilegesByProcessHandle(
+            processHandle,
+            privilegesOut,
+            errorMessage);
+        ::CloseHandle(processHandle);
+        return queryOk;
     }
 
     bool BuildKnownTokenPrivilegeSnapshot(
@@ -7370,8 +7449,8 @@ namespace ks::process
         return true;
     }
 
-    bool ApplyTokenPrivilegeEditsByPid(
-        const std::uint32_t sourcePid,
+    bool ApplyTokenPrivilegeEditsByProcessHandle(
+        const HANDLE processHandle,
         const std::uint32_t tokenDesiredAccess,
         const bool duplicatePrimaryToken,
         const std::vector<TokenPrivilegeEdit>& edits,
@@ -7381,9 +7460,24 @@ namespace ks::process
             ? DefaultTokenDesiredAccess
             : static_cast<DWORD>(tokenDesiredAccess);
 
-        HANDLE sourceToken = nullptr;
-        if (!OpenTokenByProcessPid(sourcePid, desiredAccess, sourceToken, errorMessage))
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
         {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "ApplyTokenPrivilegeEditsByProcessHandle::processHandle is invalid.";
+            }
+            return false;
+        }
+
+        HANDLE sourceToken = nullptr;
+        if (::OpenProcessToken(processHandle, desiredAccess, &sourceToken) == FALSE
+            || sourceToken == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcessToken(for adjustment) failed: "
+                    + FormatLastErrorMessage(::GetLastError());
+            }
             return false;
         }
 
@@ -7415,6 +7509,46 @@ namespace ks::process
             stream << "AdjustTokenPrivileges succeeded, edited privileges=" << edits.size();
             *errorMessage = stream.str();
         }
+        return adjustOk;
+    }
+
+    bool ApplyTokenPrivilegeEditsByPid(
+        const std::uint32_t sourcePid,
+        const std::uint32_t tokenDesiredAccess,
+        const bool duplicatePrimaryToken,
+        const std::vector<TokenPrivilegeEdit>& edits,
+        std::string* const errorMessage)
+    {
+        if (sourcePid == 0U)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "ApplyTokenPrivilegeEditsByPid::sourcePid cannot be 0.";
+            }
+            return false;
+        }
+
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            ToDwordPid(sourcePid));
+        if (processHandle == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcess(for token adjustment) failed: "
+                    + FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+
+        const bool adjustOk = ApplyTokenPrivilegeEditsByProcessHandle(
+            processHandle,
+            tokenDesiredAccess,
+            duplicatePrimaryToken,
+            edits,
+            errorMessage);
+        ::CloseHandle(processHandle);
         return adjustOk;
     }
 

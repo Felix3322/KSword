@@ -111,9 +111,9 @@ namespace ksword::ark
             bool allowRemove) const;
 
         // legacy compatibility entry points for old query/adjust IOCTLs.
-         ProcessTokenPrivilegeQueryResult queryProcessTokenPrivileges(
-             std::uint32_t processId,
-            DriverHandle* existingHandle = nullptr) const;
+        ProcessTokenPrivilegeQueryResult queryProcessTokenPrivileges(
+            std::uint32_t processId,
+            DriverHandle* existingHandle) const;
         ProcessTokenPrivilegeAdjustResult adjustProcessTokenPrivilege(
             std::uint32_t processId,
             std::uint32_t luidLowPart,

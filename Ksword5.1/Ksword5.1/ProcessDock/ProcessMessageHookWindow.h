@@ -24,6 +24,7 @@ struct ProcessMessageHookTarget
 {
     std::uint32_t processId = 0; // processId：目标进程 PID。
     std::uint32_t sessionId = 0; // sessionId：目标进程所在登录会话。
+    std::uint64_t creationTime100ns = 0; // creationTime100ns：防止窗口刷新时 PID 已复用。
     QString processName;         // processName：用于窗口摘要的进程显示名。
 };
 

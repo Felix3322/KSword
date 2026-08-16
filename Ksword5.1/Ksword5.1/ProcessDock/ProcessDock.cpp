@@ -10327,6 +10327,7 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     struct ContextPrivilegeTargetState
     {
         std::uint32_t processId = 0;
+        std::uint64_t creationTime100ns = 0;
         std::string processName;
         bool querySucceeded = false;
         bool usedR0 = false;
@@ -10352,33 +10353,41 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     {
         const auto targetStates = std::make_shared<std::vector<ContextPrivilegeTargetState>>();
         targetStates->reserve(privilegeTargets.size());
-        ksword::ark::DriverClient r0Client;
-        ksword::ark::DriverHandle r0Handle;
-        bool r0HandleOpenAttempted = false;
         for (const ProcessActionTarget& actionTarget : privilegeTargets)
         {
             ContextPrivilegeTargetState targetState;
             targetState.processId = actionTarget.record.pid;
+            targetState.creationTime100ns = actionTarget.record.creationTime100ns;
             targetState.processName = actionTarget.record.processName;
             std::string r3DetailText;
-            targetState.querySucceeded = ks::process::QueryTokenPrivilegesByPid(
-                targetState.processId,
-                &targetState.privileges,
-                &r3DetailText);
+            HANDLE rawIdentityHandle = nullptr;
+            if (!acquireProcessActionIdentityHold(
+                    targetState.processId,
+                    targetState.creationTime100ns,
+                    &rawIdentityHandle,
+                    &targetState.detailText))
+            {
+                targetStates->push_back(std::move(targetState));
+                continue;
+            }
+            const ScopedProcessActionHandle identityHandle(rawIdentityHandle);
+
+            targetState.querySucceeded =
+                ks::process::QueryTokenPrivilegesByProcessHandle(
+                    rawIdentityHandle,
+                    &targetState.privileges,
+                    &r3DetailText);
             if (!targetState.querySucceeded)
             {
-                if (!r0HandleOpenAttempted)
-                {
-                    r0Handle = r0Client.open();
-                    r0HandleOpenAttempted = true;
-                }
-
-                const ksword::ark::ProcessTokenPrivilegeQueryResult r0Result =
+                ksword::ark::DriverClient r0Client;
+                const ksword::ark::ProcessTokenPrivilegeResult r0Result =
                     r0Client.queryProcessTokenPrivileges(
                         targetState.processId,
-                        &r0Handle);
+                        targetState.creationTime100ns);
                 if (r0Result.io.ok
-                    && r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK)
+                    && (r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+                        || r0Result.status ==
+                            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL))
                 {
                     std::vector<ks::process::TokenPrivilegeLuidEntry> r0Entries;
                     r0Entries.reserve(r0Result.entries.size());
@@ -10567,9 +10576,6 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                     {
                         std::vector<ContextPrivilegeAdjustResult> adjustResults;
                         adjustResults.reserve(targetStates->size());
-                        ksword::ark::DriverClient r0Client;
-                        ksword::ark::DriverHandle r0Handle;
-                        bool r0HandleOpenAttempted = false;
                         for (std::size_t targetIndex = 0U;
                              targetIndex < targetStates->size();
                              ++targetIndex)
@@ -10581,12 +10587,26 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                             privilegeEdit.action = enablePrivilege
                                 ? ks::process::TokenPrivilegeAction::Enable
                                 : ks::process::TokenPrivilegeAction::Disable;
-                            adjustResult.succeeded = ks::process::ApplyTokenPrivilegeEditsByPid(
-                                (*targetStates)[targetIndex].processId,
-                                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
-                                false,
-                                std::vector<ks::process::TokenPrivilegeEdit>{ privilegeEdit },
-                                &adjustResult.detailText);
+                            const ContextPrivilegeTargetState& targetState =
+                                (*targetStates)[targetIndex];
+                            HANDLE rawIdentityHandle = nullptr;
+                            if (acquireProcessActionIdentityHold(
+                                    targetState.processId,
+                                    targetState.creationTime100ns,
+                                    &rawIdentityHandle,
+                                    &adjustResult.detailText))
+                            {
+                                const ScopedProcessActionHandle identityHandle(
+                                    rawIdentityHandle);
+                                adjustResult.succeeded =
+                                    ks::process::ApplyTokenPrivilegeEditsByProcessHandle(
+                                        rawIdentityHandle,
+                                        TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                                        false,
+                                        std::vector<ks::process::TokenPrivilegeEdit>{
+                                            privilegeEdit },
+                                        &adjustResult.detailText);
+                            }
                             if (!adjustResult.succeeded)
                             {
                                 adjustResult.r3DetailText = adjustResult.detailText;
@@ -10594,22 +10614,25 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                                     (*targetStates)[targetIndex].privileges[privilegeIndex];
                                 if (privilegeInfo.luidKnown)
                                 {
-                                    if (!r0HandleOpenAttempted)
-                                    {
-                                        r0Handle = r0Client.open();
-                                        r0HandleOpenAttempted = true;
-                                    }
                                     adjustResult.r0Attempted = true;
-                                    const ksword::ark::ProcessTokenPrivilegeAdjustResult r0Result =
-                                        r0Client.adjustProcessTokenPrivilege(
-                                            (*targetStates)[targetIndex].processId,
-                                            privilegeInfo.luidLowPart,
-                                            privilegeInfo.luidHighPart,
-                                            enablePrivilege,
-                                            &r0Handle);
+                                    ksword::ark::ProcessTokenPrivilegeEntry r0Edit{};
+                                    r0Edit.luidLowPart = privilegeInfo.luidLowPart;
+                                    r0Edit.luidHighPart = privilegeInfo.luidHighPart;
+                                    r0Edit.action = enablePrivilege
+                                        ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE
+                                        : KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE;
+                                    ksword::ark::DriverClient r0Client;
+                                    const ksword::ark::ProcessTokenPrivilegeResult r0Result =
+                                        r0Client.adjustProcessTokenPrivileges(
+                                            targetState.processId,
+                                            targetState.creationTime100ns,
+                                            std::vector<ksword::ark::ProcessTokenPrivilegeEntry>{
+                                                r0Edit },
+                                            false);
                                     adjustResult.succeeded = r0Result.io.ok
                                         && r0Result.status ==
-                                            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK;
+                                            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+                                        && r0Result.appliedCount == 1U;
                                     adjustResult.detailText = r0Result.io.message;
                                 }
                             }
@@ -14943,6 +14966,7 @@ void ProcessDock::executeOpenMessageHooksAction(
     ProcessMessageHookTarget target;
     target.processId = targetRecord.pid;
     target.sessionId = targetRecord.sessionId;
+    target.creationTime100ns = targetRecord.creationTime100ns;
     target.processName = QString::fromStdString(targetRecord.processName);
 
     auto* hookWindow = new ProcessMessageHookWindow(target, nullptr);

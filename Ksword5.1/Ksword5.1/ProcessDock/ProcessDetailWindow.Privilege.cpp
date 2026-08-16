@@ -34,7 +34,7 @@ namespace
     bool invokePrivilegeActionForIdentity(
         const std::uint32_t processId,
         const std::uint64_t expectedCreationTime100ns,
-        const std::function<bool(std::string*)>& actionInvoker,
+        const std::function<bool(HANDLE, std::string*)>& actionInvoker,
         std::string* const detailTextOut)
     {
         if (!actionInvoker)
@@ -101,12 +101,13 @@ namespace
             return false;
         }
 
-        return actionInvoker(detailTextOut);
+        return actionInvoker(rawProcessHandle, detailTextOut);
     }
 
     bool queryTokenPrivilegesWithR0Fallback(
         const std::uint32_t processId,
-        ksword::ark::DriverHandle* const existingR0Handle,
+        const std::uint64_t expectedCreationTime100ns,
+        const HANDLE processHandle,
         std::vector<ks::process::TokenPrivilegeInfo>* const privilegesOut,
         bool* const usedR0Out,
         std::string* const detailTextOut)
@@ -117,8 +118,8 @@ namespace
         }
 
         std::string r3DetailText;
-        if (ks::process::QueryTokenPrivilegesByPid(
-            processId,
+        if (ks::process::QueryTokenPrivilegesByProcessHandle(
+            processHandle,
             privilegesOut,
             &r3DetailText))
         {
@@ -130,10 +131,13 @@ namespace
         }
 
         ksword::ark::DriverClient driverClient;
-        const ksword::ark::ProcessTokenPrivilegeQueryResult r0Result =
-            driverClient.queryProcessTokenPrivileges(processId, existingR0Handle);
+        const ksword::ark::ProcessTokenPrivilegeResult r0Result =
+            driverClient.queryProcessTokenPrivileges(
+                processId,
+                expectedCreationTime100ns);
         if (r0Result.io.ok
-            && r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK)
+            && (r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+                || r0Result.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL))
         {
             std::vector<ks::process::TokenPrivilegeLuidEntry> r0Entries;
             r0Entries.reserve(r0Result.entries.size());
@@ -224,11 +228,14 @@ void ProcessDetailWindow::requestAsyncActionPrivilegeRefresh()
         refreshResult.queryOk = invokePrivilegeActionForIdentity(
             processId,
             creationTime100ns,
-            [processId, &refreshResult](std::string* const actionDetailText)
+            [processId, creationTime100ns, &refreshResult](
+                const HANDLE processHandle,
+                std::string* const actionDetailText)
             {
                 return queryTokenPrivilegesWithR0Fallback(
                     processId,
-                    nullptr,
+                    creationTime100ns,
+                    processHandle,
                     &refreshResult.privileges,
                     &refreshResult.usedR0,
                     actionDetailText);
@@ -496,59 +503,88 @@ void ProcessDetailWindow::executeApplyActionPrivileges(const bool useR0)
         const bool identityActionOk = invokePrivilegeActionForIdentity(
             processId,
             creationTime100ns,
-            [processId, useR0, &privilegeEdits, &taskResult, &failureLines](std::string* const actionDetailText)
+            [
+                processId,
+                creationTime100ns,
+                useR0,
+                &privilegeEdits,
+                &taskResult,
+                &failureLines](
+                    const HANDLE processHandle,
+                    std::string* const actionDetailText)
             {
-                taskResult.allSucceeded = true;
-                ksword::ark::DriverClient driverClient;
-                ksword::ark::DriverHandle driverHandle;
+                std::string privilegeDetailText;
                 if (useR0)
                 {
-                    driverHandle = driverClient.open();
-                }
-
-                for (const PendingPrivilegeEdit& privilegeEdit : privilegeEdits)
-                {
-                    std::string privilegeDetailText;
-                    bool privilegeSucceeded = false;
-                    if (useR0 && privilegeEdit.luidKnown)
+                    std::vector<ksword::ark::ProcessTokenPrivilegeEntry> r0Edits;
+                    r0Edits.reserve(privilegeEdits.size());
+                    for (const PendingPrivilegeEdit& privilegeEdit : privilegeEdits)
                     {
-                        const ksword::ark::ProcessTokenPrivilegeAdjustResult r0Result =
-                            driverClient.adjustProcessTokenPrivilege(
+                        if (!privilegeEdit.luidKnown)
+                        {
+                            failureLines.push_back(
+                                QStringLiteral("%1: privilege LUID is unavailable")
+                                    .arg(QString::fromStdString(
+                                        privilegeEdit.edit.privilegeName)));
+                            continue;
+                        }
+
+                        ksword::ark::ProcessTokenPrivilegeEntry r0Edit{};
+                        r0Edit.luidLowPart = privilegeEdit.luidLowPart;
+                        r0Edit.luidHighPart = privilegeEdit.luidHighPart;
+                        r0Edit.action = privilegeEdit.edit.action ==
+                                ks::process::TokenPrivilegeAction::Enable
+                            ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE
+                            : KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE;
+                        r0Edits.push_back(r0Edit);
+                    }
+
+                    if (r0Edits.size() == privilegeEdits.size())
+                    {
+                        ksword::ark::DriverClient driverClient;
+                        const ksword::ark::ProcessTokenPrivilegeResult r0Result =
+                            driverClient.adjustProcessTokenPrivileges(
                                 processId,
-                                privilegeEdit.luidLowPart,
-                                privilegeEdit.luidHighPart,
-                                privilegeEdit.edit.action ==
-                                    ks::process::TokenPrivilegeAction::Enable,
-                                &driverHandle);
-                        privilegeSucceeded = r0Result.io.ok
+                                creationTime100ns,
+                                r0Edits,
+                                false);
+                        taskResult.allSucceeded = r0Result.io.ok
                             && r0Result.status ==
-                                KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK;
+                                KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+                            && r0Result.appliedCount == r0Edits.size();
                         privilegeDetailText = r0Result.io.message;
                     }
-                    else if (!useR0)
+                    else
                     {
-                        privilegeSucceeded = ks::process::ApplyTokenPrivilegeEditsByPid(
-                            processId,
+                        taskResult.allSucceeded = false;
+                    }
+                }
+                else
+                {
+                    std::vector<ks::process::TokenPrivilegeEdit> r3Edits;
+                    r3Edits.reserve(privilegeEdits.size());
+                    for (const PendingPrivilegeEdit& privilegeEdit : privilegeEdits)
+                    {
+                        r3Edits.push_back(privilegeEdit.edit);
+                    }
+                    taskResult.allSucceeded =
+                        ks::process::ApplyTokenPrivilegeEditsByProcessHandle(
+                            processHandle,
                             TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
                             false,
-                            std::vector<ks::process::TokenPrivilegeEdit>{ privilegeEdit.edit },
+                            r3Edits,
                             &privilegeDetailText);
-                    }
+                }
 
-                    if (privilegeSucceeded)
-                    {
-                        continue;
-                    }
-
-                    taskResult.allSucceeded = false;
-                    failureLines.push_back(QStringLiteral("%1: %2")
-                        .arg(QString::fromStdString(privilegeEdit.edit.privilegeName))
-                        .arg(QString::fromStdString(privilegeDetailText)));
+                if (!taskResult.allSucceeded && !privilegeDetailText.empty())
+                {
+                    failureLines.push_back(QString::fromStdString(privilegeDetailText));
                 }
 
                 taskResult.refreshResult.queryOk = queryTokenPrivilegesWithR0Fallback(
                     processId,
-                    useR0 ? &driverHandle : nullptr,
+                    creationTime100ns,
+                    processHandle,
                     &taskResult.refreshResult.privileges,
                     &taskResult.refreshResult.usedR0,
                     actionDetailText);

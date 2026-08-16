@@ -14,6 +14,7 @@ Environment:
 
 --*/
 
+#include <ntifs.h>
 #include "ark/ark_driver.h"
 #include "../../platform/pool_compat.h"
 
@@ -154,6 +155,7 @@ Return Value:
     HANDLE tokenHandle = NULL;
     PTOKEN_PRIVILEGES tokenPrivileges = NULL;
     ULONG tokenInformationBytes = 0UL;
+    ULONG tokenInformationCapacity = 0UL;
     ULONG returnedCount = 0UL;
     ULONG entryIndex = 0UL;
     ULONG64 processCreateTime100ns = 0ULL;
@@ -184,31 +186,42 @@ Return Value:
         ZwClose(tokenHandle);
         return status;
     }
-    if (tokenInformationBytes < sizeof(ULONG) ||
+    if (tokenInformationBytes < (ULONG)FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges) ||
         tokenInformationBytes > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_QUERY_MAX_BYTES) {
         ZwClose(tokenHandle);
         return STATUS_INVALID_BUFFER_SIZE;
     }
 
+    tokenInformationCapacity = tokenInformationBytes;
     tokenPrivileges = (PTOKEN_PRIVILEGES)KswordARKAllocateNonPagedPool(
-        tokenInformationBytes,
+        tokenInformationCapacity,
         KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_POOL_TAG);
     if (tokenPrivileges == NULL) {
         ZwClose(tokenHandle);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    RtlZeroMemory(tokenPrivileges, tokenInformationBytes);
+    RtlZeroMemory(tokenPrivileges, tokenInformationCapacity);
 
     status = ZwQueryInformationToken(
         tokenHandle,
         TokenPrivileges,
         tokenPrivileges,
-        tokenInformationBytes,
+        tokenInformationCapacity,
         &tokenInformationBytes);
     ZwClose(tokenHandle);
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(tokenPrivileges, KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_POOL_TAG);
         return status;
+    }
+
+    if (tokenInformationBytes < (ULONG)FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges) ||
+        tokenInformationBytes > tokenInformationCapacity ||
+        tokenPrivileges->PrivilegeCount >
+            ((tokenInformationBytes -
+              (ULONG)FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges)) /
+             sizeof(LUID_AND_ATTRIBUTES))) {
+        ExFreePoolWithTag(tokenPrivileges, KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_POOL_TAG);
+        return STATUS_INFO_LENGTH_MISMATCH;
     }
 
     returnedCount = tokenPrivileges->PrivilegeCount;
@@ -273,7 +286,8 @@ Return Value:
     ULONG64 processCreateTime100ns = 0ULL;
     NTSTATUS status = STATUS_SUCCESS;
 
-    if (Entries == NULL || EntryCount == 0UL ||
+    if (ExpectedCreateTime100ns == 0ULL ||
+        Entries == NULL || EntryCount == 0UL ||
         EntryCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES ||
         AppliedCountOut == NULL || FailedIndexOut == NULL ||
         ProcessCreateTime100nsOut == NULL) {

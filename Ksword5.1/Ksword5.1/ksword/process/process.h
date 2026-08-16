@@ -878,11 +878,29 @@ namespace ks::process
         std::vector<TokenPrivilegeInfo>* privilegesOut,
         std::string* errorMessage);
 
+    // QueryTokenPrivilegesByProcessHandle 作用：
+    // - 复用调用方已经校验过创建时间的进程句柄读取令牌；
+    // - 避免在身份校验后再次按 PID 打开进程而命中复用后的新进程。
+    bool QueryTokenPrivilegesByProcessHandle(
+        HANDLE processHandle,
+        std::vector<TokenPrivilegeInfo>* privilegesOut,
+        std::string* errorMessage);
+
     // ApplyTokenPrivilegeEditsByPid 作用：
     // - 打开指定 PID 的进程令牌（可选 DuplicateTokenEx）；
     // - 按 edits 调整特权（AdjustTokenPrivileges）。
     bool ApplyTokenPrivilegeEditsByPid(
         std::uint32_t sourcePid,
+        std::uint32_t tokenDesiredAccess,
+        bool duplicatePrimaryToken,
+        const std::vector<TokenPrivilegeEdit>& edits,
+        std::string* errorMessage);
+
+    // ApplyTokenPrivilegeEditsByProcessHandle 作用：
+    // - 直接从稳定进程句柄打开令牌并应用调整；
+    // - 身份敏感 UI 必须优先使用该入口，不能在校验后退回按 PID 打开。
+    bool ApplyTokenPrivilegeEditsByProcessHandle(
+        HANDLE processHandle,
         std::uint32_t tokenDesiredAccess,
         bool duplicatePrimaryToken,
         const std::vector<TokenPrivilegeEdit>& edits,

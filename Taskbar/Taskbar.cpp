@@ -307,7 +307,7 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
         logoLabel->setAlignment(Qt::AlignCenter);
     }
     logoColorEffect = new QGraphicsColorizeEffect(logoLabel);
-    logoColorEffect->setColor(Qt::black);
+    logoColorEffect->setColor(Qt::white);
     logoColorEffect->setStrength(0.0);
     logoLabel->setGraphicsEffect(logoColorEffect);
     hLayout->addWidget(logoLabel);

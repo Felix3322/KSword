@@ -98,6 +98,14 @@ struct LauncherOptions {
     bool useLight = false;
     bool internalUpload = false;
     bool internalMarker = false;
+    bool crashReport = false;
+    bool crashDumpWritten = false;
+    bool crashRepeat = false;
+    DWORD crashProcessId = 0;
+    DWORD crashExceptionCode = 0;
+    unsigned long long crashExceptionAddress = 0;
+    std::wstring crashDumpPath;
+    std::wstring crashReadyEventName;
     std::vector<std::wstring> forwardedArguments;
 };
 
@@ -163,6 +171,7 @@ void CloseCollectionProgress(CollectionProgress* progress);
 
 bool RelaunchElevated(const LauncherOptions& options, bool forUpload);
 bool LaunchTarget(const RuntimePaths& paths, const LauncherOptions& options);
+int HandleCrashReportMode(const RuntimePaths& paths, const LauncherOptions& options, bool chinese);
 bool PrepareUploadBundle(const RuntimePaths& paths, const SupportManifest& manifest, const ScanResult& scan, std::wstring* bundlePath, CollectionProgress* progress, bool chinese);
 void OpenBundleFolder(const std::wstring& path);
 std::string BuildReportJson(const RuntimePaths& paths, const SupportManifest& manifest, const ScanResult& scan);

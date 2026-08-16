@@ -35,6 +35,29 @@
 
 namespace
 {
+    class ScopedHookIdentityHandle final
+    {
+    public:
+        explicit ScopedHookIdentityHandle(const HANDLE handleValue)
+            : m_handle(handleValue)
+        {
+        }
+
+        ~ScopedHookIdentityHandle()
+        {
+            if (m_handle != nullptr)
+            {
+                ::CloseHandle(m_handle);
+            }
+        }
+
+        ScopedHookIdentityHandle(const ScopedHookIdentityHandle&) = delete;
+        ScopedHookIdentityHandle& operator=(const ScopedHookIdentityHandle&) = delete;
+
+    private:
+        HANDLE m_handle = nullptr;
+    };
+
     // hookWindowText：通过 source_translations 翻译此独立窗口的短文本。
     QString hookWindowText(const QString& sourceText)
     {
@@ -359,6 +382,52 @@ void ProcessMessageHookWindow::requestRefresh()
     auto* task = QRunnable::create([guardThis, ticket, target]()
         {
             QueryResult queryResult;
+            HANDLE rawIdentityHandle = nullptr;
+            DWORD identityError = ERROR_INVALID_PARAMETER;
+            if (target.processId != 0U && target.creationTime100ns != 0U)
+            {
+                rawIdentityHandle = ::OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    FALSE,
+                    target.processId);
+                identityError = rawIdentityHandle != nullptr
+                    ? ERROR_SUCCESS
+                    : ::GetLastError();
+            }
+            const ScopedHookIdentityHandle identityHandle(rawIdentityHandle);
+
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            const bool identityReadable = rawIdentityHandle != nullptr
+                && ::GetProcessTimes(
+                    rawIdentityHandle,
+                    &creationTime,
+                    &exitTime,
+                    &kernelTime,
+                    &userTime) != FALSE;
+            if (!identityReadable && rawIdentityHandle != nullptr)
+            {
+                identityError = ::GetLastError();
+            }
+            const std::uint64_t actualCreationTime100ns = identityReadable
+                ? (static_cast<std::uint64_t>(creationTime.dwHighDateTime) << 32U)
+                    | static_cast<std::uint64_t>(creationTime.dwLowDateTime)
+                : 0U;
+            if (!identityReadable
+                || actualCreationTime100ns != target.creationTime100ns)
+            {
+                queryResult.ioMessage = hookWindowText(QStringLiteral(
+                    "进程身份已变化（PID 可能已被复用），已拒绝操作。"));
+                queryResult.detail = QStringLiteral(
+                    "expectedCreateTime100ns=%1; actualCreateTime100ns=%2; error=%3")
+                    .arg(static_cast<qulonglong>(target.creationTime100ns))
+                    .arg(static_cast<qulonglong>(actualCreationTime100ns))
+                    .arg(identityError);
+            }
+            else
+            {
             const ksword::ark::Win32kHooksPdbResult driverResult =
                 ksword::ark::DriverClient().queryWin32kHooksPdb(
                     KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_ALL,
@@ -427,6 +496,7 @@ void ProcessMessageHookWindow::requestRefresh()
                     diagnosticParts.join(QStringLiteral("; ")) });
             }
             queryResult.matchedCount = static_cast<std::uint32_t>(queryResult.rows.size());
+            }
 
             if (guardThis == nullptr)
             {

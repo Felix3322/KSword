@@ -854,7 +854,14 @@ namespace ksword::ark
             response.version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION ||
             response.operation != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY ||
             response.processId != processId ||
-            response.entryCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES)
+            response.entryCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES ||
+            response.status < KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK ||
+            response.status > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED ||
+            ((response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK ||
+              response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL) &&
+             (response.processCreateTime100ns == 0U ||
+              (expectedCreateTime100ns != 0U &&
+               response.processCreateTime100ns != expectedCreateTime100ns))))
         {
             queryResult.io.ok = false;
             queryResult.io.win32Error = ERROR_INVALID_DATA;
@@ -904,7 +911,9 @@ namespace ksword::ark
         // 处理：本地约束协议上限/动作，再发出 confirmation-gated ADJUST 请求。
         // 返回：包含 appliedCount/failedIndex 的结果，调用方可明确提示部分成功。
         ProcessTokenPrivilegeResult adjustResult{};
-        if (edits.empty() || edits.size() > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES)
+        if (processId <= 4U || expectedCreateTime100ns == 0U
+            || edits.empty()
+            || edits.size() > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES)
         {
             adjustResult.io.win32Error = ERROR_INVALID_PARAMETER;
             adjustResult.io.message = "process-token privilege edit count is invalid";
@@ -972,8 +981,24 @@ namespace ksword::ark
             response.processId != processId ||
             response.requestedCount != static_cast<unsigned long>(edits.size()) ||
             response.appliedCount > response.requestedCount ||
+            response.status < KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK ||
+            response.status > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED ||
             (response.failedIndex != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE &&
-             response.failedIndex >= response.requestedCount))
+             response.failedIndex >= response.requestedCount) ||
+            (response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK &&
+             (response.appliedCount != response.requestedCount ||
+              response.failedIndex != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE)) ||
+            (response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL &&
+             (response.appliedCount == 0U ||
+              response.appliedCount >= response.requestedCount ||
+              response.failedIndex != response.appliedCount)) ||
+            (response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED &&
+             response.appliedCount != 0U) ||
+            ((response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK ||
+              response.status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL) &&
+             response.processCreateTime100ns != expectedCreateTime100ns) ||
+            (response.processCreateTime100ns != 0U &&
+             response.processCreateTime100ns != expectedCreateTime100ns))
         {
             adjustResult.io.ok = false;
             adjustResult.io.win32Error = ERROR_INVALID_DATA;
@@ -1003,6 +1028,7 @@ namespace ksword::ark
             << std::dec << ", bytesReturned=" << adjustResult.io.bytesReturned;
         adjustResult.io.message = stream.str();
         return adjustResult;
+    }
 
     ProcessTokenPrivilegeQueryResult DriverClient::queryProcessTokenPrivileges(
         const std::uint32_t processId,

@@ -615,7 +615,7 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
     if (operation == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST) {
-        if (entryCount == 0UL ||
+        if (entryCount == 0UL || expectedCreateTime100ns == 0ULL ||
             (flags & KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED) == 0UL ||
             tokenRequest->confirmationToken != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_CONFIRMATION_TOKEN) {
             return STATUS_ACCESS_DENIED;

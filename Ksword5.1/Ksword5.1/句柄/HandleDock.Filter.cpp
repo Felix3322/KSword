@@ -53,6 +53,22 @@ namespace
         value.replace('\t', QStringLiteral("\\t"));
         value.replace('\r', QStringLiteral("\\r"));
         value.replace('\n', QStringLiteral("\\n"));
+        value.replace(QChar::Null, QStringLiteral("\\0"));
+        qsizetype firstMeaningfulIndex = 0;
+        while (firstMeaningfulIndex < value.size()
+            && value.at(firstMeaningfulIndex).isSpace())
+        {
+            ++firstMeaningfulIndex;
+        }
+        if (firstMeaningfulIndex < value.size()
+            && (value.at(firstMeaningfulIndex) == QLatin1Char('=')
+                || value.at(firstMeaningfulIndex) == QLatin1Char('+')
+                || value.at(firstMeaningfulIndex) == QLatin1Char('-')
+                || value.at(firstMeaningfulIndex) == QLatin1Char('@')))
+        {
+            // 防止进程名、对象名或规则名在电子表格中被解释成公式。
+            value.prepend(QLatin1Char('\''));
+        }
         return value;
     }
 
