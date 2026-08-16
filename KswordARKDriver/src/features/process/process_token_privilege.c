@@ -18,6 +18,10 @@ Environment:
 #include "ark/ark_driver.h"
 #include "../../platform/pool_compat.h"
 
+#ifndef PROCESS_QUERY_INFORMATION
+#define PROCESS_QUERY_INFORMATION (0x0400)
+#endif
+
 NTKERNELAPI
 LONGLONG
 NTAPI

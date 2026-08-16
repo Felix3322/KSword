@@ -10,6 +10,9 @@ metadata:
 - 先看最新提交对应的 `Source integrity`、用户态构建和 `Driver CI` 日志；`git diff --check` 失败会跳过后续 JSON、i18n 与 IOCTL 审计，修完空白后必须单独补跑这些检查。
 - `shared/driver/` 中的 R0/R3 IOCTL function ID 必须全局唯一。新增统一协议时不能复用仍需兼容的旧 IOCTL 编号；中央注册表也只能登记一次，否则线性查找会让后续 handler 永远不可达。
 - 驱动源文件使用 `TOKEN_PRIVILEGES`、`ZwOpenProcessTokenEx`、`ZwQueryInformationToken` 等 NTIFS 声明时，需要显式包含 `<ntifs.h>`；仅包含项目的 `ark_driver.h`（其基础是 `<ntddk.h>`）不够。
+- 即使显式包含 `<ntifs.h>`，当前 GitHub Actions WDK 也可能不导出 `PROCESS_QUERY_INFORMATION`；需要该访问掩码的驱动源文件应与相邻实现一致，用 `#ifndef PROCESS_QUERY_INFORMATION` 定义 `0x0400`，否则 Windows runner 会报 `C2065`。
+- Windows SDK 的 `FIELD_OFFSET(...)` 在当前 MSVC/SDK 组合下不能用于初始化 C++ `constexpr`，会报 `C2131`；变长结构边界检查应使用局部 `const std::size_t`，或在确认标准布局与包含条件后使用标准 `offsetof`。
+- Qt 6.9 且 Release `/WX` 下，`QDateTime::fromMSecsSinceEpoch(..., Qt::UTC)` 的旧 time-spec 重载会因弃用告警报 `C4996`；应改用 `QTimeZone::UTC` 重载并保留原有 UTC/本地转换语义。
 - 驱动 Release 把警告视为错误。R0/R3 共享协议头避免匿名 struct/union；如需让同一 ABI 槽位兼容旧 `reserved` 与新动作语义，保留单个具名字段并让旧路径写入确定的零值。
 - 多分支合并后不要只修第一个编译错误：对照最近一次两套 CI 都成功的 SHA，检查新增文件、被静默撤销的功能文件、工程引用、重复注册与协议编号，再运行语言包审计和 JSON 解析。
 - 身份敏感的异步进程操作必须冻结 `PID + creationTime100ns`。R3 优先复用已校验并持续持有的进程句柄；R0 调整协议必须拒绝零创建时间，并由客户端复核响应中的创建时间与批量应用计数。仅在 UI 状态里保存 PID、稍后重新打开会把操作落到复用后的新进程。

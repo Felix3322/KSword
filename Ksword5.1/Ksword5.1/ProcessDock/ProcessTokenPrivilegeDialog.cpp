@@ -375,7 +375,7 @@ namespace
                 return false;
             }
 
-            constexpr std::size_t tokenPrivilegesHeaderSize =
+            const std::size_t tokenPrivilegesHeaderSize =
                 FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges);
             const DWORD bufferCapacity = requiredBytes;
             std::vector<BYTE> tokenBuffer(bufferCapacity);

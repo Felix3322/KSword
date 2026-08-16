@@ -7278,7 +7278,7 @@ namespace ks::process
             0,
             &requiredSize);
         const DWORD sizeQueryError = ::GetLastError();
-        constexpr std::size_t tokenPrivilegesHeaderSize =
+        const std::size_t tokenPrivilegesHeaderSize =
             FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges);
         if (sizeQueryOk != FALSE
             || sizeQueryError != ERROR_INSUFFICIENT_BUFFER

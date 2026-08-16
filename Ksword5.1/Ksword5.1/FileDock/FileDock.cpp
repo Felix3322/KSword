@@ -5561,7 +5561,7 @@ namespace
             }
             const qint64 millisecondsSinceUnixEpoch =
                 (timeValue.QuadPart - WindowsEpochOffset100ns) / 10000LL;
-            return QDateTime::fromMSecsSinceEpoch(millisecondsSinceUnixEpoch, Qt::UTC).toLocalTime();
+            return QDateTime::fromMSecsSinceEpoch(millisecondsSinceUnixEpoch, QTimeZone::UTC).toLocalTime();
         }
 
         static LARGE_INTEGER localDateTimeToFileMetadataTime(const QDateTime& dateTime)
