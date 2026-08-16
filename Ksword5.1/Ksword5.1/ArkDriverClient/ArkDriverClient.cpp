@@ -811,6 +811,154 @@ namespace ksword::ark
         return integrityResult;
     }
 
+    ProcessTokenPrivilegeQueryResult DriverClient::queryProcessTokenPrivileges(
+        const std::uint32_t processId,
+        DriverHandle* const existingHandle) const
+    {
+        ProcessTokenPrivilegeQueryResult result{};
+        KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_REQUEST request{};
+        constexpr std::size_t responseHeaderSize =
+            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE_HEADER_SIZE;
+        constexpr std::size_t responseCapacity =
+            responseHeaderSize +
+            (KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES *
+             sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY));
+        std::vector<std::uint8_t> responseBuffer(responseCapacity, 0U);
+
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.version = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION;
+        request.processId = processId;
+
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            responseBuffer.data(),
+            static_cast<unsigned long>(responseBuffer.size()),
+            existingHandle);
+        if (!result.io.ok)
+        {
+            result.unsupported = isUnsupportedIoctlError(result.io.win32Error);
+            result.io.message = "IOCTL_KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES failed";
+            return result;
+        }
+        if (result.io.bytesReturned < responseHeaderSize)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = "process-token-privilege query response too small";
+            return result;
+        }
+
+        const auto* response = reinterpret_cast<
+            const KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_RESPONSE*>(
+                responseBuffer.data());
+        const std::size_t requiredBytes = responseHeaderSize +
+            (static_cast<std::size_t>(response->returnedCount) *
+             sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY));
+        if (response->version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION ||
+            response->entrySize != sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY) ||
+            response->returnedCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES ||
+            response->size < requiredBytes ||
+            result.io.bytesReturned < requiredBytes)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = "process-token-privilege query response invalid";
+            return result;
+        }
+
+        result.version = static_cast<std::uint32_t>(response->version);
+        result.processId = static_cast<std::uint32_t>(response->processId);
+        result.status = static_cast<std::uint32_t>(response->status);
+        result.totalCount = static_cast<std::uint32_t>(response->totalCount);
+        result.returnedCount = static_cast<std::uint32_t>(response->returnedCount);
+        result.lastStatus = static_cast<long>(response->lastStatus);
+        result.io.ntStatus = result.lastStatus;
+        result.entries.reserve(result.returnedCount);
+        for (std::uint32_t index = 0; index < result.returnedCount; ++index)
+        {
+            ProcessTokenPrivilegeEntry entry{};
+            entry.luidLowPart = static_cast<std::uint32_t>(response->entries[index].luidLowPart);
+            entry.luidHighPart = static_cast<std::int32_t>(response->entries[index].luidHighPart);
+            entry.attributes = static_cast<std::uint32_t>(response->entries[index].attributes);
+            result.entries.push_back(entry);
+        }
+
+        std::ostringstream stream;
+        stream << "pid=" << result.processId
+            << ", status=" << result.status
+            << ", count=" << result.returnedCount << "/" << result.totalCount
+            << ", lastStatus=0x" << std::hex
+            << static_cast<unsigned long>(result.lastStatus);
+        result.io.message = stream.str();
+        return result;
+    }
+
+    ProcessTokenPrivilegeAdjustResult DriverClient::adjustProcessTokenPrivilege(
+        const std::uint32_t processId,
+        const std::uint32_t luidLowPart,
+        const std::int32_t luidHighPart,
+        const bool enabled,
+        DriverHandle* const existingHandle) const
+    {
+        ProcessTokenPrivilegeAdjustResult result{};
+        KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_REQUEST request{};
+        KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_RESPONSE response{};
+
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.version = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION;
+        request.processId = processId;
+        request.luidLowPart = luidLowPart;
+        request.luidHighPart = luidHighPart;
+        request.action = enabled
+            ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE
+            : KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE;
+        request.flags = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED;
+
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &response,
+            static_cast<unsigned long>(sizeof(response)),
+            existingHandle);
+        if (!result.io.ok)
+        {
+            result.unsupported = isUnsupportedIoctlError(result.io.win32Error);
+            result.io.message = "IOCTL_KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE failed";
+            return result;
+        }
+        if (result.io.bytesReturned < sizeof(response) ||
+            response.size != sizeof(response) ||
+            response.version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = "process-token-privilege adjust response invalid";
+            return result;
+        }
+
+        result.version = static_cast<std::uint32_t>(response.version);
+        result.processId = static_cast<std::uint32_t>(response.processId);
+        result.luidLowPart = static_cast<std::uint32_t>(response.luidLowPart);
+        result.luidHighPart = static_cast<std::int32_t>(response.luidHighPart);
+        result.action = static_cast<std::uint32_t>(response.action);
+        result.status = static_cast<std::uint32_t>(response.status);
+        result.lastStatus = static_cast<long>(response.lastStatus);
+        result.io.ntStatus = result.lastStatus;
+
+        std::ostringstream stream;
+        stream << "pid=" << result.processId
+            << ", luid=" << result.luidHighPart << ":" << result.luidLowPart
+            << ", action=" << result.action
+            << ", status=" << result.status
+            << ", lastStatus=0x" << std::hex
+            << static_cast<unsigned long>(result.lastStatus);
+        result.io.message = stream.str();
+        return result;
+    }
+
     ProcessVisibilityResult DriverClient::setProcessVisibility(
         const std::uint32_t processId,
     const unsigned long action,

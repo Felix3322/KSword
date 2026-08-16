@@ -99,6 +99,15 @@ namespace ksword::ark
         //   必要时由 R0 DynData/PDB 私有 Token 字段兜底；
         // - 返回：ProcessIntegrityResult；io.ok 与 status/lastStatus 分别表示通信和语义结果。
         ProcessIntegrityResult setProcessIntegrity(std::uint32_t processId, unsigned long integrityRid) const;
+        ProcessTokenPrivilegeQueryResult queryProcessTokenPrivileges(
+            std::uint32_t processId,
+            DriverHandle* existingHandle = nullptr) const;
+        ProcessTokenPrivilegeAdjustResult adjustProcessTokenPrivilege(
+            std::uint32_t processId,
+            std::uint32_t luidLowPart,
+            std::int32_t luidHighPart,
+            bool enabled,
+            DriverHandle* existingHandle = nullptr) const;
         ProcessSpecialFlagsResult setProcessSpecialFlags(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
         ProcessDkomResult dkomProcess(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
         ProcessInjectResult injectProcessDll(

@@ -177,6 +177,39 @@ namespace ksword::ark
         long lastStatus = 0;                 // lastStatus：Zw* token API 或 R0 DynData Token 兜底路径 NTSTATUS。
     };
 
+    struct ProcessTokenPrivilegeEntry
+    {
+        std::uint32_t luidLowPart = 0;
+        std::int32_t luidHighPart = 0;
+        std::uint32_t attributes = 0;
+    };
+
+    struct ProcessTokenPrivilegeQueryResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t version = 0;
+        std::uint32_t processId = 0;
+        std::uint32_t status = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_UNKNOWN;
+        std::uint32_t totalCount = 0;
+        std::uint32_t returnedCount = 0;
+        long lastStatus = 0;
+        std::vector<ProcessTokenPrivilegeEntry> entries;
+    };
+
+    struct ProcessTokenPrivilegeAdjustResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t version = 0;
+        std::uint32_t processId = 0;
+        std::uint32_t luidLowPart = 0;
+        std::int32_t luidHighPart = 0;
+        std::uint32_t action = 0;
+        std::uint32_t status = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_UNKNOWN;
+        long lastStatus = 0;
+    };
+
     // ProcessSpecialFlagsResult 承载 BreakOnTermination/APC 插入控制响应。
     struct ProcessSpecialFlagsResult
     {
