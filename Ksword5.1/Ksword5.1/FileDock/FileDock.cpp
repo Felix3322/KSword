@@ -43,6 +43,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDateTime>
+#include <QDateTimeEdit>
 #include <QEvent>
 #include <QFile>
 #include <QFileDevice>
@@ -5238,6 +5239,7 @@ namespace
             rootLayout->addWidget(m_tabWidget, 1);
 
             m_tabWidget->addTab(buildGeneralTab(), QStringLiteral("常规信息"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("metadata")), QStringLiteral("元数据编辑"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("reparse")), QStringLiteral("重解析点 / 符号链接"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("security")), QStringLiteral("安全与权限"));
             m_tabWidget->addTab(buildHashTab(), QStringLiteral("哈希与完整性"));
@@ -5255,6 +5257,7 @@ namespace
 
             const QList<QPair<QString, QString>> detailTabTranslations{
                 {QStringLiteral("file.detail.tab.general"), QStringLiteral("常规信息")},
+                {QStringLiteral("file.detail.tab.metadata"), QStringLiteral("元数据编辑")},
                 {QStringLiteral("file.detail.tab.reparse"), QStringLiteral("重解析点 / 符号链接")},
                 {QStringLiteral("file.detail.tab.security"), QStringLiteral("安全与权限")},
                 {QStringLiteral("file.detail.tab.hash"), QStringLiteral("哈希与完整性")},
@@ -5280,6 +5283,7 @@ namespace
 
             const QList<QString> navigationIconPathList{
                 QStringLiteral(":/Icon/process_details.svg"),
+                QStringLiteral(":/Icon/process_copy_cell.svg"),
                 QStringLiteral(":/Icon/file_nav_forward.svg"),
                 QStringLiteral(":/Icon/file_owner.svg"),
                 QStringLiteral(":/Icon/process_performance.svg"),
@@ -5336,7 +5340,7 @@ namespace
                     }
                     activateDeferredTab(m_tabWidget, tabIndex);
                 });
-            constexpr int usageTabIndex = 4;
+            constexpr int usageTabIndex = 5;
             if (m_initialTabKey == QStringLiteral("usage"))
             {
                 m_tabWidget->setCurrentIndex(usageTabIndex);
@@ -5429,6 +5433,283 @@ namespace
             QString sourcePrefixText;  // sourcePrefixText：应用生成且需要翻译的说明。
             QString rawStringText;     // rawStringText：从文件提取的原始字符串，不得翻译。
         };
+
+        struct FileMetadataSnapshot
+        {
+            bool ok = false;                 // ok：是否成功打开目标并读取 FileBasicInfo。
+            DWORD win32Error = ERROR_SUCCESS; // win32Error：失败步骤的 Win32 错误码。
+            FILE_BASIC_INFO basicInfo{};     // basicInfo：四个时间戳与完整属性位快照。
+            bool identityAvailable = false;  // identityAvailable：卷序列号与文件索引是否可用于复核。
+            DWORD volumeSerialNumber = 0U;   // volumeSerialNumber：文件所在卷身份。
+            std::uint64_t fileIndex = 0U;    // fileIndex：同一卷内稳定文件身份。
+        };
+
+        struct FileMetadataUpdateRequest
+        {
+            std::array<bool, 4> updateTime{};       // updateTime：逐项决定是否写入对应时间。
+            std::array<LARGE_INTEGER, 4> timeValue{}; // timeValue：本地编辑值转换后的 FILETIME 100ns。
+            bool updateAttributes = false;         // updateAttributes：可编辑属性位是否发生变化。
+            DWORD editableAttributes = 0U;         // editableAttributes：六个允许编辑的属性位。
+            bool validateIdentity = false;         // validateIdentity：写入前是否必须匹配初始文件身份。
+            DWORD expectedVolumeSerialNumber = 0U; // expectedVolumeSerialNumber：初始卷身份。
+            std::uint64_t expectedFileIndex = 0U;  // expectedFileIndex：初始文件索引。
+        };
+
+        struct FileMetadataUpdateResult
+        {
+            bool ok = false;                  // ok：写入调用与回读是否都成功。
+            bool verificationMatched = false; // verificationMatched：回读值是否匹配请求。
+            DWORD win32Error = ERROR_SUCCESS; // win32Error：失败时保留稳定错误码。
+            FileMetadataSnapshot snapshot;   // snapshot：写入后的实际 FileBasicInfo。
+        };
+
+        static const std::array<DWORD, 6>& editableFileAttributeMasks()
+        {
+            // 只开放 SetFileInformationByHandle(FileBasicInfo) 可直接、可逆切换的属性。
+            // DIRECTORY/REPARSE_POINT/COMPRESSED/ENCRYPTED/SPARSE 等结构性位必须走各自专用 API。
+            static const std::array<DWORD, 6> masks{
+                FILE_ATTRIBUTE_READONLY,
+                FILE_ATTRIBUTE_HIDDEN,
+                FILE_ATTRIBUTE_SYSTEM,
+                FILE_ATTRIBUTE_ARCHIVE,
+                FILE_ATTRIBUTE_TEMPORARY,
+                FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+            };
+            return masks;
+        }
+
+        static DWORD editableFileAttributeMask()
+        {
+            DWORD mask = 0U;
+            for (const DWORD attributeMask : editableFileAttributeMasks())
+            {
+                mask |= attributeMask;
+            }
+            return mask;
+        }
+
+        static HANDLE openFileMetadataHandle(
+            const QString& filePath,
+            const DWORD desiredAccess,
+            DWORD& errorOut)
+        {
+            // OPEN_REPARSE_POINT 保证叶节点是链接时修改链接自身，而不是静默跟随到目标。
+            // BACKUP_SEMANTICS 同时允许目录句柄；共享删除避免与资源管理器产生不必要冲突。
+            const std::wstring nativePath = QDir::toNativeSeparators(filePath).toStdWString();
+            if (nativePath.empty())
+            {
+                errorOut = ERROR_INVALID_PARAMETER;
+                return INVALID_HANDLE_VALUE;
+            }
+
+            HANDLE fileHandle = ::CreateFileW(
+                nativePath.c_str(),
+                desiredAccess,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                nullptr);
+            errorOut = fileHandle == INVALID_HANDLE_VALUE ? ::GetLastError() : ERROR_SUCCESS;
+            return fileHandle;
+        }
+
+        static FileMetadataSnapshot readFileMetadataSnapshot(
+            const QString& filePath,
+            const DWORD desiredAccess = FILE_READ_ATTRIBUTES)
+        {
+            FileMetadataSnapshot snapshot;
+            HANDLE fileHandle = openFileMetadataHandle(filePath, desiredAccess, snapshot.win32Error);
+            if (fileHandle == INVALID_HANDLE_VALUE)
+            {
+                return snapshot;
+            }
+
+            if (::GetFileInformationByHandleEx(
+                    fileHandle,
+                    FileBasicInfo,
+                    &snapshot.basicInfo,
+                    sizeof(snapshot.basicInfo)) == FALSE)
+            {
+                snapshot.win32Error = ::GetLastError();
+                closeWin32Handle(fileHandle);
+                return snapshot;
+            }
+
+            snapshot.ok = true;
+            snapshot.win32Error = ERROR_SUCCESS;
+            BY_HANDLE_FILE_INFORMATION identityInfo{};
+            if (::GetFileInformationByHandle(fileHandle, &identityInfo) != FALSE)
+            {
+                snapshot.identityAvailable = true;
+                snapshot.volumeSerialNumber = identityInfo.dwVolumeSerialNumber;
+                snapshot.fileIndex =
+                    (static_cast<std::uint64_t>(identityInfo.nFileIndexHigh) << 32U) |
+                    static_cast<std::uint64_t>(identityInfo.nFileIndexLow);
+            }
+            closeWin32Handle(fileHandle);
+            return snapshot;
+        }
+
+        static QDateTime fileMetadataTimeToLocalDateTime(const LARGE_INTEGER timeValue)
+        {
+            // Windows 时间从 1601-01-01 UTC 起按 100ns 计数；Qt 使用 1970-01-01 毫秒。
+            constexpr qint64 WindowsEpochOffset100ns = 116444736000000000LL;
+            if (timeValue.QuadPart <= 0)
+            {
+                return {};
+            }
+            const qint64 millisecondsSinceUnixEpoch =
+                (timeValue.QuadPart - WindowsEpochOffset100ns) / 10000LL;
+            return QDateTime::fromMSecsSinceEpoch(millisecondsSinceUnixEpoch, Qt::UTC).toLocalTime();
+        }
+
+        static LARGE_INTEGER localDateTimeToFileMetadataTime(const QDateTime& dateTime)
+        {
+            constexpr qint64 WindowsEpochOffset100ns = 116444736000000000LL;
+            LARGE_INTEGER timeValue{};
+            if (!dateTime.isValid())
+            {
+                return timeValue;
+            }
+            timeValue.QuadPart =
+                dateTime.toUTC().toMSecsSinceEpoch() * 10000LL + WindowsEpochOffset100ns;
+            return timeValue;
+        }
+
+        static std::array<LARGE_INTEGER, 4> fileMetadataTimes(const FILE_BASIC_INFO& basicInfo)
+        {
+            return {
+                basicInfo.CreationTime,
+                basicInfo.LastAccessTime,
+                basicInfo.LastWriteTime,
+                basicInfo.ChangeTime
+            };
+        }
+
+        static FileMetadataUpdateResult writeFileMetadata(
+            const QString& filePath,
+            const FileMetadataUpdateRequest& request)
+        {
+            FileMetadataUpdateResult result;
+            HANDLE fileHandle = openFileMetadataHandle(
+                filePath,
+                FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+                result.win32Error);
+            if (fileHandle == INVALID_HANDLE_VALUE)
+            {
+                return result;
+            }
+
+            FILE_BASIC_INFO currentInfo{};
+            if (::GetFileInformationByHandleEx(
+                    fileHandle,
+                    FileBasicInfo,
+                    &currentInfo,
+                    sizeof(currentInfo)) == FALSE)
+            {
+                result.win32Error = ::GetLastError();
+                closeWin32Handle(fileHandle);
+                return result;
+            }
+
+            BY_HANDLE_FILE_INFORMATION identityInfo{};
+            const bool identityAvailable =
+                ::GetFileInformationByHandle(fileHandle, &identityInfo) != FALSE;
+            const std::uint64_t currentFileIndex = identityAvailable
+                ? ((static_cast<std::uint64_t>(identityInfo.nFileIndexHigh) << 32U) |
+                    static_cast<std::uint64_t>(identityInfo.nFileIndexLow))
+                : 0U;
+            if (request.validateIdentity)
+            {
+                if (!identityAvailable)
+                {
+                    result.win32Error = ::GetLastError();
+                    closeWin32Handle(fileHandle);
+                    return result;
+                }
+                if (identityInfo.dwVolumeSerialNumber != request.expectedVolumeSerialNumber ||
+                    currentFileIndex != request.expectedFileIndex)
+                {
+                    result.win32Error = ERROR_FILE_INVALID;
+                    closeWin32Handle(fileHandle);
+                    return result;
+                }
+            }
+
+            // 在同一句柄上二次读取后基于最新值合并，避免编辑页停留期间外部属性变化被覆盖。
+            // FILE_BASIC_INFO 中值为 0 的时间字段与 FileAttributes 都表示“不修改”，因此只填入
+            // 用户明确选择的时间；属性无变化时也保持 0，避免重写加密/压缩等结构性状态。
+            FILE_BASIC_INFO updatedInfo{};
+            if (request.updateTime[0]) updatedInfo.CreationTime = request.timeValue[0];
+            if (request.updateTime[1]) updatedInfo.LastAccessTime = request.timeValue[1];
+            if (request.updateTime[2]) updatedInfo.LastWriteTime = request.timeValue[2];
+            if (request.updateTime[3]) updatedInfo.ChangeTime = request.timeValue[3];
+            if (request.updateAttributes)
+            {
+                updatedInfo.FileAttributes = currentInfo.FileAttributes;
+                updatedInfo.FileAttributes &= ~editableFileAttributeMask();
+                updatedInfo.FileAttributes &= ~FILE_ATTRIBUTE_NORMAL;
+                updatedInfo.FileAttributes |=
+                    request.editableAttributes & editableFileAttributeMask();
+                if (updatedInfo.FileAttributes == 0U)
+                {
+                    updatedInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+                }
+            }
+
+            if (::SetFileInformationByHandle(
+                    fileHandle,
+                    FileBasicInfo,
+                    &updatedInfo,
+                    sizeof(updatedInfo)) == FALSE)
+            {
+                result.win32Error = ::GetLastError();
+                closeWin32Handle(fileHandle);
+                return result;
+            }
+
+            if (::GetFileInformationByHandleEx(
+                    fileHandle,
+                    FileBasicInfo,
+                    &result.snapshot.basicInfo,
+                    sizeof(result.snapshot.basicInfo)) == FALSE)
+            {
+                result.win32Error = ::GetLastError();
+                closeWin32Handle(fileHandle);
+                return result;
+            }
+            closeWin32Handle(fileHandle);
+
+            result.snapshot.ok = true;
+            result.snapshot.win32Error = ERROR_SUCCESS;
+            result.snapshot.identityAvailable = identityAvailable;
+            result.snapshot.volumeSerialNumber = identityAvailable
+                ? identityInfo.dwVolumeSerialNumber
+                : 0U;
+            result.snapshot.fileIndex = currentFileIndex;
+            result.ok = true;
+            result.win32Error = ERROR_SUCCESS;
+            result.verificationMatched = true;
+            const std::array<LARGE_INTEGER, 4> actualTimes =
+                fileMetadataTimes(result.snapshot.basicInfo);
+            for (std::size_t timeIndex = 0; timeIndex < request.updateTime.size(); ++timeIndex)
+            {
+                if (request.updateTime[timeIndex] &&
+                    actualTimes[timeIndex].QuadPart != request.timeValue[timeIndex].QuadPart)
+                {
+                    // FAT/exFAT 等文件系统可能按自身粒度舍入时间；写入仍成功，但 UI 必须展示回读值。
+                    result.verificationMatched = false;
+                }
+            }
+            if (request.updateAttributes &&
+                (result.snapshot.basicInfo.FileAttributes & editableFileAttributeMask()) !=
+                    (request.editableAttributes & editableFileAttributeMask()))
+            {
+                result.verificationMatched = false;
+            }
+            return result;
+        }
 
         static QString formatHexValue(const quint64 value, const int digitCount)
         {
@@ -6794,8 +7075,9 @@ namespace
                 return;
             }
 
+            const std::uint64_t loadGeneration = ++m_generalR0LoadGeneration;
             QPointer<FileDetailDialog> guardThis(this);
-            auto* task = QRunnable::create([guardThis, info, ntPathText]()
+            auto* task = QRunnable::create([guardThis, info, ntPathText, loadGeneration]()
                 {
                     FileDetailDialog* targetDialog = guardThis.data();
                     if (targetDialog == nullptr)
@@ -6813,9 +7095,10 @@ namespace
 
                     QMetaObject::invokeMethod(
                         targetDialog,
-                        [guardThis, r0Info]()
+                        [guardThis, r0Info, loadGeneration]()
                         {
-                            if (guardThis == nullptr)
+                            if (guardThis == nullptr ||
+                                guardThis->m_generalR0LoadGeneration != loadGeneration)
                             {
                                 return;
                             }
@@ -7892,6 +8175,314 @@ namespace
             QThreadPool::globalInstance()->start(task);
         }
 
+        void setMetadataEditorBusy(const bool busy)
+        {
+            m_metadataEditorBusy = busy;
+            const bool editorEnabled = m_metadataHasSnapshot && !busy;
+            for (std::size_t timeIndex = 0; timeIndex < m_metadataTimeChecks.size(); ++timeIndex)
+            {
+                if (m_metadataTimeChecks[timeIndex] != nullptr)
+                {
+                    m_metadataTimeChecks[timeIndex]->setEnabled(editorEnabled);
+                }
+                if (m_metadataTimeEdits[timeIndex] != nullptr)
+                {
+                    const bool timeSelected = m_metadataTimeChecks[timeIndex] != nullptr &&
+                        m_metadataTimeChecks[timeIndex]->isChecked();
+                    m_metadataTimeEdits[timeIndex]->setEnabled(editorEnabled && timeSelected);
+                }
+            }
+            for (QCheckBox* const attributeCheck : m_metadataAttributeChecks)
+            {
+                if (attributeCheck != nullptr)
+                {
+                    attributeCheck->setEnabled(editorEnabled);
+                }
+            }
+            if (m_metadataRefreshButton != nullptr)
+            {
+                m_metadataRefreshButton->setEnabled(!busy);
+            }
+            if (m_metadataApplyButton != nullptr)
+            {
+                m_metadataApplyButton->setEnabled(editorEnabled);
+            }
+        }
+
+        void applyMetadataSnapshotToEditor(const FileMetadataSnapshot& snapshot)
+        {
+            if (!snapshot.ok)
+            {
+                return;
+            }
+
+            m_metadataSnapshot = snapshot;
+            m_metadataHasSnapshot = true;
+            const std::array<LARGE_INTEGER, 4> timeValues = fileMetadataTimes(snapshot.basicInfo);
+            for (std::size_t timeIndex = 0; timeIndex < timeValues.size(); ++timeIndex)
+            {
+                if (m_metadataTimeChecks[timeIndex] != nullptr)
+                {
+                    m_metadataTimeChecks[timeIndex]->setChecked(false);
+                }
+                if (m_metadataTimeEdits[timeIndex] != nullptr)
+                {
+                    QDateTime dateTime = fileMetadataTimeToLocalDateTime(timeValues[timeIndex]);
+                    if (!dateTime.isValid())
+                    {
+                        dateTime = QDateTime::currentDateTime();
+                    }
+                    m_metadataTimeEdits[timeIndex]->setDateTime(dateTime);
+                }
+            }
+
+            const auto& attributeMasks = editableFileAttributeMasks();
+            for (std::size_t attributeIndex = 0;
+                 attributeIndex < attributeMasks.size();
+                 ++attributeIndex)
+            {
+                if (m_metadataAttributeChecks[attributeIndex] != nullptr)
+                {
+                    m_metadataAttributeChecks[attributeIndex]->setChecked(
+                        (snapshot.basicInfo.FileAttributes & attributeMasks[attributeIndex]) != 0U);
+                }
+            }
+            setMetadataEditorBusy(false);
+        }
+
+        void refreshMetadataEditor()
+        {
+            if (m_metadataStatusLabel == nullptr || m_metadataEditorBusy)
+            {
+                return;
+            }
+
+            m_metadataHasSnapshot = false;
+            setMetadataEditorBusy(true);
+            m_metadataStatusLabel->setText(
+                ks::i18n::sourceText(QStringLiteral("● 正在后台读取文件元数据...")));
+            const std::uint64_t operationGeneration = ++m_metadataOperationGeneration;
+            const QString filePathSnapshot = m_filePath;
+            QPointer<FileDetailDialog> guardThis(this);
+            auto* task = QRunnable::create([guardThis, filePathSnapshot, operationGeneration]()
+                {
+                    const FileMetadataSnapshot snapshot =
+                        FileDetailDialog::readFileMetadataSnapshot(filePathSnapshot);
+                    FileDetailDialog* targetDialog = guardThis.data();
+                    if (targetDialog == nullptr)
+                    {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        targetDialog,
+                        [guardThis, snapshot, operationGeneration]()
+                        {
+                            if (guardThis == nullptr ||
+                                guardThis->m_metadataOperationGeneration != operationGeneration)
+                            {
+                                return;
+                            }
+                            if (!snapshot.ok)
+                            {
+                                guardThis->m_metadataHasSnapshot = false;
+                                guardThis->setMetadataEditorBusy(false);
+                                if (guardThis->m_metadataStatusLabel != nullptr)
+                                {
+                                    guardThis->m_metadataStatusLabel->setText(
+                                        ks::i18n::displayText(QStringLiteral("● 元数据读取失败：%1"))
+                                            .arg(formatWin32ErrorText(snapshot.win32Error)));
+                                }
+                                return;
+                            }
+
+                            guardThis->applyMetadataSnapshotToEditor(snapshot);
+                            if (guardThis->m_metadataStatusLabel != nullptr)
+                            {
+                                guardThis->m_metadataStatusLabel->setText(
+                                    ks::i18n::displayText(QStringLiteral(
+                                        "● 当前值已读取：属性 %1。仅勾选“修改”的时间会被写入。"))
+                                        .arg(formatHexValue(snapshot.basicInfo.FileAttributes, 8)));
+                            }
+                        },
+                        Qt::QueuedConnection);
+                });
+            task->setAutoDelete(true);
+            QThreadPool::globalInstance()->start(task);
+        }
+
+        void applyMetadataEditorChanges()
+        {
+            if (!m_metadataHasSnapshot || m_metadataEditorBusy)
+            {
+                return;
+            }
+
+            FileMetadataUpdateRequest request;
+            request.validateIdentity = m_metadataSnapshot.identityAvailable;
+            request.expectedVolumeSerialNumber = m_metadataSnapshot.volumeSerialNumber;
+            request.expectedFileIndex = m_metadataSnapshot.fileIndex;
+            QStringList changeSummaryList;
+            const std::array<QString, 4> timeNames{
+                QStringLiteral("创建时间"),
+                QStringLiteral("最后访问时间"),
+                QStringLiteral("最后写入时间"),
+                QStringLiteral("元数据变更时间（ChangeTime）")
+            };
+            for (std::size_t timeIndex = 0; timeIndex < request.updateTime.size(); ++timeIndex)
+            {
+                if (m_metadataTimeChecks[timeIndex] == nullptr ||
+                    m_metadataTimeEdits[timeIndex] == nullptr ||
+                    !m_metadataTimeChecks[timeIndex]->isChecked())
+                {
+                    continue;
+                }
+                const QDateTime editedDateTime = m_metadataTimeEdits[timeIndex]->dateTime();
+                if (!editedDateTime.isValid())
+                {
+                    QMessageBox::warning(
+                        this,
+                        ks::i18n::sourceText(QStringLiteral("元数据编辑")),
+                        ks::i18n::sourceText(QStringLiteral("%1不是有效的日期时间。"))
+                            .arg(ks::i18n::sourceText(timeNames[timeIndex])));
+                    return;
+                }
+                request.updateTime[timeIndex] = true;
+                request.timeValue[timeIndex] = localDateTimeToFileMetadataTime(editedDateTime);
+                changeSummaryList.push_back(
+                    ks::i18n::sourceText(QStringLiteral("- %1：%2"))
+                        .arg(
+                            ks::i18n::sourceText(timeNames[timeIndex]),
+                            editedDateTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))));
+            }
+
+            const auto& attributeMasks = editableFileAttributeMasks();
+            for (std::size_t attributeIndex = 0;
+                 attributeIndex < attributeMasks.size();
+                 ++attributeIndex)
+            {
+                if (m_metadataAttributeChecks[attributeIndex] != nullptr &&
+                    m_metadataAttributeChecks[attributeIndex]->isChecked())
+                {
+                    request.editableAttributes |= attributeMasks[attributeIndex];
+                }
+            }
+            const DWORD originalEditableAttributes =
+                m_metadataSnapshot.basicInfo.FileAttributes & editableFileAttributeMask();
+            request.updateAttributes =
+                originalEditableAttributes != request.editableAttributes;
+            if (request.updateAttributes)
+            {
+                changeSummaryList.push_back(
+                    ks::i18n::sourceText(QStringLiteral("- 可编辑属性：%1 → %2"))
+                        .arg(formatHexValue(originalEditableAttributes, 8))
+                        .arg(formatHexValue(request.editableAttributes, 8)));
+            }
+
+            if (changeSummaryList.isEmpty())
+            {
+                QMessageBox::information(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("元数据编辑")),
+                    ks::i18n::sourceText(QStringLiteral("没有需要应用的元数据改动。")));
+                return;
+            }
+
+            const QString confirmationText =
+                ks::i18n::sourceText(QStringLiteral(
+                    "将写入以下文件元数据：\n%1\n\n目标：%2\n\n"))
+                    .arg(changeSummaryList.join(QLatin1Char('\n')),
+                        QDir::toNativeSeparators(m_filePath)) +
+                ks::i18n::sourceText(QStringLiteral(
+                    "写入前会在同一文件句柄上重新读取并合并最新值；写入后会立即回读实际结果。是否继续？"));
+            const QMessageBox::StandardButton userChoice = QMessageBox::question(
+                this,
+                ks::i18n::sourceText(QStringLiteral("确认修改文件元数据")),
+                confirmationText,
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (userChoice != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            setMetadataEditorBusy(true);
+            if (m_metadataStatusLabel != nullptr)
+            {
+                m_metadataStatusLabel->setText(
+                    ks::i18n::sourceText(QStringLiteral("● 正在写入并回读文件元数据...")));
+            }
+            const std::uint64_t operationGeneration = ++m_metadataOperationGeneration;
+            const QString filePathSnapshot = m_filePath;
+            QPointer<FileDetailDialog> guardThis(this);
+            auto* task = QRunnable::create(
+                [guardThis, filePathSnapshot, request, operationGeneration]()
+                {
+                    const FileMetadataUpdateResult result =
+                        FileDetailDialog::writeFileMetadata(filePathSnapshot, request);
+                    FileDetailDialog* targetDialog = guardThis.data();
+                    if (targetDialog == nullptr)
+                    {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        targetDialog,
+                        [guardThis, result, operationGeneration]()
+                        {
+                            if (guardThis == nullptr ||
+                                guardThis->m_metadataOperationGeneration != operationGeneration)
+                            {
+                                return;
+                            }
+                            if (!result.ok)
+                            {
+                                guardThis->setMetadataEditorBusy(false);
+                                const QString errorText =
+                                    ks::i18n::displayText(QStringLiteral("元数据写入失败：%1"))
+                                        .arg(formatWin32ErrorText(result.win32Error));
+                                if (guardThis->m_metadataStatusLabel != nullptr)
+                                {
+                                    guardThis->m_metadataStatusLabel->setText(
+                                        QStringLiteral("● %1").arg(errorText));
+                                }
+                                const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                                    guardThis.data(),
+                                    ks::i18n::sourceText(QStringLiteral("编辑文件元数据")),
+                                    result.win32Error);
+                                if (!privilegePromptHandled)
+                                {
+                                    QMessageBox::warning(
+                                        guardThis.data(),
+                                        ks::i18n::sourceText(QStringLiteral("元数据编辑")),
+                                        errorText);
+                                }
+                                return;
+                            }
+
+                            guardThis->applyMetadataSnapshotToEditor(result.snapshot);
+                            if (guardThis->m_metadataStatusLabel != nullptr)
+                            {
+                                guardThis->m_metadataStatusLabel->setText(
+                                    result.verificationMatched
+                                        ? ks::i18n::sourceText(QStringLiteral(
+                                            "● 元数据已写入并通过回读验证。"))
+                                        : ks::i18n::sourceText(QStringLiteral(
+                                            "● 写入调用成功，但文件系统回读值与请求不同；界面已显示实际值。")));
+                            }
+
+                            // 常规页与 R0 视图同步刷新；生成号会淘汰写入前尚未完成的旧 R0 查询。
+                            guardThis->m_generalR0Loaded = false;
+                            guardThis->refreshGeneralTab();
+                            const QFileInfo refreshedInfo(guardThis->m_filePath);
+                            guardThis->startR0FileInfoLoad(
+                                refreshedInfo,
+                                guardThis->m_generalNtPathText);
+                        },
+                        Qt::QueuedConnection);
+                });
+            task->setAutoDelete(true);
+            QThreadPool::globalInstance()->start(task);
+        }
+
         QWidget* buildDeferredTab(const QString& lazyKey)
         {
             // 用途：创建文件属性窗口的轻量占位页。
@@ -7953,7 +8544,11 @@ namespace
                     }
 
                     QWidget* realPage = nullptr;
-                    if (lazyKey == QStringLiteral("security"))
+                    if (lazyKey == QStringLiteral("metadata"))
+                    {
+                        realPage = buildMetadataTab();
+                    }
+                    else if (lazyKey == QStringLiteral("security"))
                     {
                         realPage = buildSecurityTab();
                     }
@@ -8041,6 +8636,122 @@ namespace
             layout->addWidget(
                 buildSwitchableView(page, m_generalPropertyTree, m_generalTextEditor), 1);
             startR0FileInfoLoad(info, m_generalNtPathText);
+            return page;
+        }
+
+        QWidget* buildMetadataTab()
+        {
+            QWidget* page = new QWidget(this);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            layout->setSpacing(10);
+
+            QLabel* targetLabel = new QLabel(
+                ks::i18n::sourceText(QStringLiteral("目标：%1"))
+                    .arg(QDir::toNativeSeparators(m_filePath)),
+                page);
+            targetLabel->setWordWrap(true);
+            targetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            layout->addWidget(targetLabel);
+
+            QLabel* hintLabel = new QLabel(
+                ks::i18n::sourceText(QStringLiteral(
+                    "时间按本地时区显示，精确到毫秒；只有勾选“修改”的时间字段才会写入。")) +
+                QLatin1Char('\n') +
+                ks::i18n::sourceText(QStringLiteral(
+                    "属性编辑只开放可直接切换的位，目录、重解析点、压缩、加密、稀疏等结构性属性始终保留。")),
+                page);
+            hintLabel->setWordWrap(true);
+            layout->addWidget(hintLabel);
+
+            QGroupBox* timeGroup = new QGroupBox(QStringLiteral("文件时间"), page);
+            QGridLayout* timeLayout = new QGridLayout(timeGroup);
+            timeLayout->setColumnStretch(2, 1);
+            timeLayout->addWidget(new QLabel(QStringLiteral("写入"), timeGroup), 0, 0);
+            timeLayout->addWidget(new QLabel(QStringLiteral("字段"), timeGroup), 0, 1);
+            timeLayout->addWidget(new QLabel(QStringLiteral("本地时间（含毫秒）"), timeGroup), 0, 2);
+
+            const std::array<QString, 4> timeNames{
+                QStringLiteral("创建时间"),
+                QStringLiteral("最后访问时间"),
+                QStringLiteral("最后写入时间"),
+                QStringLiteral("元数据变更时间（ChangeTime）")
+            };
+            // 0 在 FileBasicInformation 的“设置”语义中表示保持不变，故不允许选择恰好为
+            // FILETIME epoch 的 1601-01-01 00:00:00 UTC；从次日开始可避免时区换算后落到 0。
+            const QDateTime minimumDateTime(QDate(1601, 1, 2), QTime(0, 0));
+            const QDateTime maximumDateTime(QDate(9999, 12, 31), QTime(23, 59, 59, 999));
+            for (std::size_t timeIndex = 0; timeIndex < timeNames.size(); ++timeIndex)
+            {
+                QCheckBox* modifyCheck = new QCheckBox(QStringLiteral("修改"), timeGroup);
+                QDateTimeEdit* dateTimeEdit = new QDateTimeEdit(timeGroup);
+                dateTimeEdit->setCalendarPopup(true);
+                dateTimeEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
+                dateTimeEdit->setMinimumDateTime(minimumDateTime);
+                dateTimeEdit->setMaximumDateTime(maximumDateTime);
+                dateTimeEdit->setEnabled(false);
+                m_metadataTimeChecks[timeIndex] = modifyCheck;
+                m_metadataTimeEdits[timeIndex] = dateTimeEdit;
+                timeLayout->addWidget(modifyCheck, static_cast<int>(timeIndex) + 1, 0);
+                timeLayout->addWidget(
+                    new QLabel(timeNames[timeIndex], timeGroup),
+                    static_cast<int>(timeIndex) + 1,
+                    1);
+                timeLayout->addWidget(dateTimeEdit, static_cast<int>(timeIndex) + 1, 2);
+                connect(modifyCheck, &QCheckBox::toggled, dateTimeEdit,
+                    [this, dateTimeEdit](const bool checked)
+                    {
+                        dateTimeEdit->setEnabled(
+                            checked && m_metadataHasSnapshot && !m_metadataEditorBusy);
+                    });
+            }
+            layout->addWidget(timeGroup);
+
+            QGroupBox* attributeGroup = new QGroupBox(QStringLiteral("可编辑文件属性"), page);
+            QGridLayout* attributeLayout = new QGridLayout(attributeGroup);
+            const std::array<QString, 6> attributeNames{
+                QStringLiteral("只读（READONLY）"),
+                QStringLiteral("隐藏（HIDDEN）"),
+                QStringLiteral("系统（SYSTEM）"),
+                QStringLiteral("存档（ARCHIVE）"),
+                QStringLiteral("临时（TEMPORARY）"),
+                QStringLiteral("不建内容索引（NOT_CONTENT_INDEXED）")
+            };
+            for (std::size_t attributeIndex = 0;
+                 attributeIndex < attributeNames.size();
+                 ++attributeIndex)
+            {
+                QCheckBox* attributeCheck =
+                    new QCheckBox(attributeNames[attributeIndex], attributeGroup);
+                m_metadataAttributeChecks[attributeIndex] = attributeCheck;
+                attributeLayout->addWidget(
+                    attributeCheck,
+                    static_cast<int>(attributeIndex / 2),
+                    static_cast<int>(attributeIndex % 2));
+            }
+            layout->addWidget(attributeGroup);
+
+            QHBoxLayout* actionLayout = new QHBoxLayout();
+            m_metadataRefreshButton = new QPushButton(QStringLiteral("重新读取"), page);
+            m_metadataApplyButton = new QPushButton(QStringLiteral("应用更改"), page);
+            m_metadataApplyButton->setDefault(true);
+            actionLayout->addStretch(1);
+            actionLayout->addWidget(m_metadataRefreshButton);
+            actionLayout->addWidget(m_metadataApplyButton);
+            layout->addLayout(actionLayout);
+
+            m_metadataStatusLabel = new QLabel(QStringLiteral("● 等待读取文件元数据。"), page);
+            m_metadataStatusLabel->setWordWrap(true);
+            layout->addWidget(m_metadataStatusLabel);
+            layout->addStretch(1);
+
+            connect(m_metadataRefreshButton, &QPushButton::clicked, this,
+                [this]() { refreshMetadataEditor(); });
+            connect(m_metadataApplyButton, &QPushButton::clicked, this,
+                [this]() { applyMetadataEditorChanges(); });
+
+            m_metadataHasSnapshot = false;
+            setMetadataEditorBusy(false);
+            QMetaObject::invokeMethod(page, [this]() { refreshMetadataEditor(); }, Qt::QueuedConnection);
             return page;
         }
 
@@ -8960,6 +9671,17 @@ namespace
         QString m_generalNtPathText; // 常规页复用的 NT 路径，避免切换语言时重复查询。
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
+        std::uint64_t m_generalR0LoadGeneration = 0U; // 淘汰元数据写入前发起的旧 R0 查询。
+        std::array<QCheckBox*, 4> m_metadataTimeChecks{}; // 四个时间字段的逐项写入开关。
+        std::array<QDateTimeEdit*, 4> m_metadataTimeEdits{}; // 四个本地时间编辑器。
+        std::array<QCheckBox*, 6> m_metadataAttributeChecks{}; // 六个可直接切换的属性位。
+        QPushButton* m_metadataRefreshButton = nullptr; // 重新读取最新 FileBasicInfo。
+        QPushButton* m_metadataApplyButton = nullptr; // 确认后后台写入 FileBasicInfo。
+        QLabel* m_metadataStatusLabel = nullptr; // 读取、写入与回读验证状态。
+        FileMetadataSnapshot m_metadataSnapshot{}; // 编辑器当前展示的属性快照。
+        bool m_metadataHasSnapshot = false; // 防止读取失败后使用未初始化值写入。
+        bool m_metadataEditorBusy = false; // 防止重复读取或重复应用。
+        std::uint64_t m_metadataOperationGeneration = 0U; // 淘汰关闭/刷新后迟到的后台结果。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
         std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
         QProgressBar* m_usageScanProgressBar = nullptr; // 属性页文件占用扫描的阶段进度条。
