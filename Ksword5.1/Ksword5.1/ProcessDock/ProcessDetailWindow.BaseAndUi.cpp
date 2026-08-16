@@ -3789,7 +3789,7 @@ void ProcessDetailWindow::initializeActionTab()
         ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r0"), QString()),
         ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r0.tooltip"), QString()),
         m_privilegeActionGroup);
-    // R0 Token IOCTL 在后续驱动协议提交后启用，当前 UI 先保留独立入口并避免误调用旧驱动。
+    // 首次查询完成前禁用，避免在没有可比较快照时提交 R0 变化。
     m_applyActionPrivilegeR0Button->setEnabled(false);
     privilegeActionTopLayout->addWidget(m_actionPrivilegeStatusLabel, 1);
     privilegeActionTopLayout->addWidget(m_actionPrivilegeRefreshButton);
