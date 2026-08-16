@@ -1748,6 +1748,15 @@ void ProcessDetailWindow::requestInitialRefreshForCurrentTab()
         return;
     }
 
+    if (currentTab == m_actionTab)
+    {
+        if (!m_actionPrivilegeInitialRefreshStarted)
+        {
+            requestAsyncActionPrivilegeRefresh();
+        }
+        return;
+    }
+
     if (currentTab == m_tokenTab)
     {
         if (!m_tokenInitialRefreshStarted)
@@ -3731,6 +3740,104 @@ void ProcessDetailWindow::initializeActionTab()
         refreshActionAffinityControls();
     });
 
+    // 令牌特权区域：
+    // - 使用复选框表达启用/禁用状态，查询失败或令牌中不存在的项显示为灰色；
+    // - R3/R0 使用独立应用按钮，便于用户明确选择通信层；
+    // - 所有复选框右键都提供复制特权名称，保持详情页内容可复制。
+    m_privilegeActionGroup = new QGroupBox(
+        ks::i18n::text(QStringLiteral("process.detail.privileges.title"), QString()),
+        m_actionTab);
+    QVBoxLayout* privilegeGroupLayout = new QVBoxLayout(m_privilegeActionGroup);
+    privilegeGroupLayout->setContentsMargins(10, 10, 10, 10);
+    privilegeGroupLayout->setSpacing(8);
+
+    QLabel* privilegeDescriptionLabel = new QLabel(
+        ks::i18n::text(QStringLiteral("process.detail.privileges.description"), QString()),
+        m_privilegeActionGroup);
+    privilegeDescriptionLabel->setWordWrap(true);
+    privilegeDescriptionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    privilegeDescriptionLabel->setStyleSheet(
+        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    installCopyMenu(privilegeDescriptionLabel, [privilegeDescriptionLabel]()
+    {
+        return privilegeDescriptionLabel->text();
+    });
+    privilegeGroupLayout->addWidget(privilegeDescriptionLabel);
+
+    QHBoxLayout* privilegeActionTopLayout = new QHBoxLayout();
+    privilegeActionTopLayout->setContentsMargins(0, 0, 0, 0);
+    privilegeActionTopLayout->setSpacing(8);
+    m_actionPrivilegeStatusLabel = new QLabel(m_privilegeActionGroup);
+    m_actionPrivilegeStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_actionPrivilegeStatusLabel->setStyleSheet(
+        buildStateLabelStyle(statusSecondaryColor(), 600));
+    installCopyMenu(m_actionPrivilegeStatusLabel, [this]()
+    {
+        return m_actionPrivilegeStatusLabel != nullptr
+            ? m_actionPrivilegeStatusLabel->text()
+            : QString();
+    });
+    m_actionPrivilegeRefreshButton = buildTextActionButton(
+        ks::i18n::text(QStringLiteral("process.detail.privileges.refresh"), QString()),
+        ks::i18n::text(QStringLiteral("process.detail.privileges.refresh"), QString()),
+        m_privilegeActionGroup);
+    m_applyActionPrivilegeR3Button = buildTextActionButton(
+        ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r3"), QString()),
+        ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r3.tooltip"), QString()),
+        m_privilegeActionGroup);
+    m_applyActionPrivilegeR0Button = buildTextActionButton(
+        ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r0"), QString()),
+        ks::i18n::text(QStringLiteral("process.detail.privileges.apply_r0.tooltip"), QString()),
+        m_privilegeActionGroup);
+    // R0 Token IOCTL 在后续驱动协议提交后启用，当前 UI 先保留独立入口并避免误调用旧驱动。
+    m_applyActionPrivilegeR0Button->setEnabled(false);
+    privilegeActionTopLayout->addWidget(m_actionPrivilegeStatusLabel, 1);
+    privilegeActionTopLayout->addWidget(m_actionPrivilegeRefreshButton);
+    privilegeActionTopLayout->addWidget(m_applyActionPrivilegeR3Button);
+    privilegeActionTopLayout->addWidget(m_applyActionPrivilegeR0Button);
+    privilegeGroupLayout->addLayout(privilegeActionTopLayout);
+
+    QGridLayout* privilegeGridLayout = new QGridLayout();
+    privilegeGridLayout->setContentsMargins(0, 0, 0, 0);
+    privilegeGridLayout->setHorizontalSpacing(16);
+    privilegeGridLayout->setVerticalSpacing(4);
+    const std::vector<std::string>& knownPrivilegeNames =
+        ks::process::KnownTokenPrivilegeNames();
+    m_actionPrivilegeCheckBoxes.clear();
+    m_actionPrivilegeCheckBoxes.reserve(knownPrivilegeNames.size());
+    for (std::size_t privilegeIndex = 0U;
+         privilegeIndex < knownPrivilegeNames.size();
+         ++privilegeIndex)
+    {
+        QCheckBox* privilegeCheckBox = new QCheckBox(
+            QString::fromLatin1(knownPrivilegeNames[privilegeIndex].c_str()),
+            m_privilegeActionGroup);
+        privilegeCheckBox->setEnabled(false);
+        privilegeCheckBox->setToolTip(
+            ks::i18n::text(QStringLiteral("process.detail.privileges.waiting"), QString()));
+        privilegeCheckBox->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(privilegeCheckBox, &QWidget::customContextMenuRequested,
+            privilegeCheckBox, [privilegeCheckBox](const QPoint& localPosition)
+        {
+            QMenu copyMenu(privilegeCheckBox);
+            copyMenu.setStyleSheet(buildProcessDetailMenuStyle());
+            QAction* copyAction = copyMenu.addAction(
+                ks::i18n::text(QStringLiteral("process.detail.action.copy"), QString()));
+            if (copyMenu.exec(privilegeCheckBox->mapToGlobal(localPosition)) == copyAction)
+            {
+                QApplication::clipboard()->setText(privilegeCheckBox->text());
+            }
+        });
+        m_actionPrivilegeCheckBoxes.push_back(privilegeCheckBox);
+        privilegeGridLayout->addWidget(
+            privilegeCheckBox,
+            static_cast<int>(privilegeIndex / 3U),
+            static_cast<int>(privilegeIndex % 3U));
+    }
+    privilegeGridLayout->setColumnStretch(3, 1);
+    privilegeGroupLayout->addLayout(privilegeGridLayout);
+    m_actionLayout->addWidget(m_privilegeActionGroup);
+
     QGroupBox* gotoGroup = new QGroupBox(QStringLiteral("转到"), m_actionTab);
     QGridLayout* gotoLayout = new QGridLayout(gotoGroup);
     gotoLayout->setHorizontalSpacing(8);
@@ -3904,6 +4011,9 @@ void ProcessDetailWindow::initializeActionTab()
         m_applyPriorityButton,
         m_affinityRefreshButton,
         m_affinityAllCoresButton,
+        m_actionPrivilegeRefreshButton,
+        m_applyActionPrivilegeR3Button,
+        m_applyActionPrivilegeR0Button,
         m_openProcessFolderButton,
         m_refreshPplProtectionButton,
         m_enableEfficiencyModeButton,
@@ -4842,6 +4952,9 @@ void ProcessDetailWindow::initializeConnections()
     connect(m_setCriticalButton, &QPushButton::clicked, this, [this]() { executeSetCriticalAction(true); });
     connect(m_clearCriticalButton, &QPushButton::clicked, this, [this]() { executeSetCriticalAction(false); });
     connect(m_applyPriorityButton, &QPushButton::clicked, this, [this]() { executeSetPriorityAction(); });
+    connect(m_actionPrivilegeRefreshButton, &QPushButton::clicked, this, [this]() { requestAsyncActionPrivilegeRefresh(); });
+    connect(m_applyActionPrivilegeR3Button, &QPushButton::clicked, this, [this]() { executeApplyActionPrivileges(false); });
+    connect(m_applyActionPrivilegeR0Button, &QPushButton::clicked, this, [this]() { executeApplyActionPrivileges(true); });
     connect(m_openProcessFolderButton, &QPushButton::clicked, this, [this]() { executeOpenProcessFolderAction(); });
     connect(m_refreshPplProtectionButton, &QPushButton::clicked, this, [this]() { executeRefreshPplProtectionLevelAction(); });
     connect(m_enableEfficiencyModeButton, &QPushButton::clicked, this, [this]() { executeSetEfficiencyModeAction(true); });
