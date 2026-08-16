@@ -6408,21 +6408,6 @@ void MainWindow::initGlobalUiSearchController()
             m_customTitleBar->setSearchScopeSelection(searchScopeIndex);
             m_customTitleBar->setSearchScopeDisplayText(displayText);
         });
-    connect(
-        m_customTitleBar,
-        &ks::ui::CustomTitleBar::setSearchScopeDisplayText,
-        m_globalUiSearchController,
-        &ks::ui::GlobalUiSearchController::setSearchScopeDisplayText);
-    connect(
-        m_globalUiSearchController,
-        &ks::ui::GlobalUiSearchController::searchResultsOnlyChanged,
-        m_customTitleBar,
-        &ks::ui::CustomTitleBar::setSearchResultsOnlyChecked);
-    connect(
-        m_customTitleBar,
-        &ks::ui::CustomTitleBar::searchResultsOnlyChanged,
-        m_globalUiSearchController,
-        &ks::ui::GlobalUiSearchController::setSearchResultsOnly);
     m_customTitleBar->setSearchScopeDisplayText(
         m_globalUiSearchController->searchScopeDisplayText());
     m_globalUiSearchController->setSearchInputActive(
