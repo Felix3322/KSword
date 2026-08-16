@@ -177,6 +177,33 @@ namespace ksword::ark
         long lastStatus = 0;                 // lastStatus：Zw* token API 或 R0 DynData Token 兜底路径 NTSTATUS。
     };
 
+    // ProcessTokenPrivilegeEntry 是 R3/R0 共用的单个令牌特权快照或调整项。
+    // 名称由 UI 根据 LUID 解析，驱动协议只传稳定的 LUID、属性与动作数值。
+    struct ProcessTokenPrivilegeEntry
+    {
+        std::uint32_t luidLowPart = 0;       // luidLowPart：LUID 低 32 位。
+        std::int32_t luidHighPart = 0;       // luidHighPart：LUID 高 32 位。
+        std::uint32_t attributes = 0;        // attributes：SE_PRIVILEGE_* 当前属性。
+        std::uint32_t action = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_KEEP; // action：调整动作。
+    };
+
+    // ProcessTokenPrivilegeResult 承载 R0 查询/调整固定响应和部分成功信息。
+    struct ProcessTokenPrivilegeResult
+    {
+        IoResult io;                         // io：底层 DeviceIoControl 状态。
+        bool unsupported = false;            // unsupported：旧驱动尚未注册本 IOCTL。
+        std::uint32_t version = 0;            // version：协议版本。
+        std::uint32_t operation = 0;          // operation：QUERY 或 ADJUST。
+        std::uint32_t processId = 0;          // processId：目标 PID。
+        std::uint32_t status = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_UNKNOWN; // status：聚合结果。
+        std::uint32_t requestedCount = 0;     // requestedCount：请求调整行数。
+        std::uint32_t appliedCount = 0;       // appliedCount：已成功提交的前缀行数。
+        std::uint32_t failedIndex = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE; // failedIndex：首个失败行。
+        long lastStatus = 0;                  // lastStatus：R0 token API NTSTATUS。
+        std::uint64_t processCreateTime100ns = 0; // processCreateTime100ns：R0 观察到的稳定进程身份。
+        std::vector<ProcessTokenPrivilegeEntry> entries; // entries：查询返回的特权行。
+    };
+
     // ProcessSpecialFlagsResult 承载 BreakOnTermination/APC 插入控制响应。
     struct ProcessSpecialFlagsResult
     {

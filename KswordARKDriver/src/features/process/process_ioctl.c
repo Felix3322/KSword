@@ -487,6 +487,224 @@ Return Value:
 
     return STATUS_SUCCESS;
 }
+
+NTSTATUS
+KswordARKProcessIoctlTokenPrivileges(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+/*++
+
+Routine Description:
+
+    Handle bounded process-token privilege query and adjustment requests. The
+    handler owns protocol/access/safety validation while the feature backend
+    owns all process and token operations.
+
+Arguments:
+
+    Device - WDF device used for logging and mutation safety evaluation.
+    Request - Current METHOD_BUFFERED request.
+    InputBufferLength - Caller input length, validated by the WDF helper.
+    OutputBufferLength - Caller output length, validated by the WDF helper.
+    BytesReturned - Receives the fixed response size after protocol validation.
+
+Return Value:
+
+    Buffer/protocol validation status. A valid response returns STATUS_SUCCESS
+    and carries per-operation status in response->status/lastStatus.
+
+--*/
+{
+    KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST* tokenRequest = NULL;
+    KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE* tokenResponse = NULL;
+    PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
+    size_t actualOutputLength = 0U;
+    ULONG processId = 0UL;
+    ULONG operation = 0UL;
+    ULONG flags = 0UL;
+    ULONG entryCount = 0UL;
+    ULONG entryIndex = 0UL;
+    ULONG appliedCount = 0UL;
+    ULONG failedIndex = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE;
+    ULONG64 expectedCreateTime100ns = 0ULL;
+    ULONG64 processCreateTime100ns = 0ULL;
+    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS operationStatus = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0U;
+
+    status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+    if (!NT_SUCCESS(status)) {
+        KswordARKProcessIoctlLog(
+            Device,
+            "Warn",
+            "R0 process-token privilege denied: write access required, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        KswordARKProcessIoctlLog(
+            Device,
+            "Error",
+            "R0 process-token privilege input invalid, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE),
+        &outputBuffer,
+        &actualOutputLength);
+    if (!NT_SUCCESS(status)) {
+        KswordARKProcessIoctlLog(
+            Device,
+            "Error",
+            "R0 process-token privilege output invalid, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    tokenRequest = (KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST*)inputBuffer;
+    if (tokenRequest->size != sizeof(*tokenRequest) ||
+        tokenRequest->version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION ||
+        (tokenRequest->operation != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY &&
+         tokenRequest->operation != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST) ||
+        tokenRequest->entryCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES ||
+        (tokenRequest->flags & ~(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED |
+            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_ALLOW_REMOVE)) != 0UL) {
+        KswordARKProcessIoctlLog(Device, "Warn", "R0 process-token privilege protocol rejected.");
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    processId = tokenRequest->processId;
+    operation = tokenRequest->operation;
+    flags = tokenRequest->flags;
+    entryCount = tokenRequest->entryCount;
+    expectedCreateTime100ns = tokenRequest->expectedCreateTime100ns;
+
+    status = KswordARKValidateUserPid(processId);
+    if (!NT_SUCCESS(status)) {
+        KswordARKProcessIoctlLog(
+            Device,
+            "Warn",
+            "R0 process-token privilege pid rejected: pid=%lu.",
+            (unsigned long)processId);
+        return status;
+    }
+
+    if (operation == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY && entryCount != 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (operation == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST) {
+        if (entryCount == 0UL ||
+            (flags & KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED) == 0UL ||
+            tokenRequest->confirmationToken != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_CONFIRMATION_TOKEN) {
+            return STATUS_ACCESS_DENIED;
+        }
+        for (entryIndex = 0UL; entryIndex < entryCount; ++entryIndex) {
+            const ULONG requestedAction = tokenRequest->entries[entryIndex].action;
+            if (requestedAction != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE &&
+                requestedAction != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE &&
+                requestedAction != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_REMOVE) {
+                return STATUS_INVALID_PARAMETER;
+            }
+            if (requestedAction == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_REMOVE &&
+                (flags & KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_ALLOW_REMOVE) == 0UL) {
+                return STATUS_ACCESS_DENIED;
+            }
+        }
+
+        {
+            KSWORD_ARK_SAFETY_CONTEXT safetyContext;
+            RtlZeroMemory(&safetyContext, sizeof(safetyContext));
+            safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_PROCESS_SET_PROTECTION;
+            safetyContext.TargetProcessId = processId;
+            safetyContext.ContextFlags = KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
+            status = KswordARKSafetyEvaluate(Device, &safetyContext);
+            if (!NT_SUCCESS(status)) {
+                KswordARKProcessIoctlLog(
+                    Device,
+                    "Warn",
+                    "R0 process-token privilege adjustment denied by safety policy: pid=%lu, status=0x%08X.",
+                    (unsigned long)processId,
+                    (unsigned int)status);
+                return status;
+            }
+        }
+
+        operationStatus = KswordARKDriverAdjustProcessTokenPrivileges(
+            processId,
+            expectedCreateTime100ns,
+            tokenRequest->entries,
+            entryCount,
+            &appliedCount,
+            &failedIndex,
+            &processCreateTime100ns);
+    }
+
+    tokenResponse = (KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE*)outputBuffer;
+    RtlZeroMemory(tokenResponse, sizeof(*tokenResponse));
+    tokenResponse->size = sizeof(*tokenResponse);
+    tokenResponse->version = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION;
+    tokenResponse->operation = operation;
+    tokenResponse->processId = processId;
+    tokenResponse->failedIndex = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE;
+    *BytesReturned = sizeof(*tokenResponse);
+
+    if (operation == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY) {
+        operationStatus = KswordARKDriverQueryProcessTokenPrivileges(
+            processId,
+            expectedCreateTime100ns,
+            tokenResponse);
+        tokenResponse->status = operationStatus == STATUS_SUCCESS
+            ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+            : (operationStatus == STATUS_BUFFER_OVERFLOW
+                ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL
+                : KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED);
+    }
+    else {
+        tokenResponse->requestedCount = entryCount;
+        tokenResponse->appliedCount = appliedCount;
+        tokenResponse->failedIndex = failedIndex;
+        tokenResponse->processCreateTime100ns = processCreateTime100ns;
+        tokenResponse->status = operationStatus == STATUS_SUCCESS && appliedCount == entryCount
+            ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK
+            : (appliedCount != 0UL
+                ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL
+                : KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED);
+    }
+    tokenResponse->lastStatus = operationStatus;
+
+    KswordARKProcessIoctlLog(
+        Device,
+        tokenResponse->status == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK ? "Info" : "Warn",
+        "R0 process-token privilege completed: operation=%lu, pid=%lu, rows=%lu, applied=%lu, status=0x%08X.",
+        (unsigned long)operation,
+        (unsigned long)processId,
+        (unsigned long)tokenResponse->entryCount,
+        (unsigned long)tokenResponse->appliedCount,
+        (unsigned int)operationStatus);
+    return STATUS_SUCCESS;
+}
 NTSTATUS
 KswordARKProcessIoctlEnumProcess(
     _In_ WDFDEVICE Device,

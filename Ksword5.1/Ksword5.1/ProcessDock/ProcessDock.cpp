@@ -6,6 +6,7 @@
 
 #include "../theme.h"
 #include "ProcessDetailWindow.h"
+#include "ProcessTokenPrivilegeDialog.h"
 #include "ProcessMessageHookWindow.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../OnlineScan/SandboxUploadActions.h"
@@ -10768,6 +10769,17 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     highPriority->setData(4);
     realtimePriority->setData(5);
 
+    QAction* adjustTokenPrivilegesAction = contextMenu.addAction(
+        blueTintedIcon(":/Icon/process_critical.svg"),
+        processContextText(
+            "process.menu.adjust_token_privileges",
+            QStringLiteral("调整进程令牌特权（R3/R0）")));
+    adjustTokenPrivilegesAction->setEnabled(!hasBatchSelection);
+    adjustTokenPrivilegesAction->setToolTip(
+        processContextText(
+            "process.menu.adjust_token_privileges.tooltip",
+            QStringLiteral("读取目标主令牌的实际特权，并按项启用、禁用或永久移除。")));
+
     // 完整性二级菜单：
     // - 读取右键目标（批量时取第一个目标）的 TokenIntegrityLevel；
     // - 用前缀圆点标出当前 RID，避免 Qt 平台 checkmark 在不同主题下不可见；
@@ -10894,6 +10906,7 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         }
         else if (selectedAction == injectionPageAction) { openSelectedProcessInjectionPage(); }
         else if (selectedAction == scanHotkeyAction) { openSelectedProcessHotkeyScanner(); }
+        else if (selectedAction == adjustTokenPrivilegesAction) { executeAdjustProcessTokenPrivilegesAction(); }
         else if (selectedAction == detailsAction) { openProcessDetailsPlaceholder(); }
         else if (selectedAction->parent() == prioritySubMenu)
         {
@@ -14347,6 +14360,33 @@ void ProcessDock::executeSetProcessIntegrityAction(
         false,
         false,
         true);
+}
+
+void ProcessDock::executeAdjustProcessTokenPrivilegesAction()
+{
+    // 输入：右键菜单冻结的单个进程动作目标。
+    // 处理：打开共享 R3/R0 令牌特权编辑器，并在成功变更后刷新列表快照。
+    // 返回：无；批量选择或身份缺失时安全拒绝。
+    const std::vector<ProcessActionTarget> actionTargets = selectedActionTargets();
+    if (actionTargets.size() != 1U)
+    {
+        kLogEvent logEvent;
+        warn << logEvent
+            << "[ProcessDock] 调整进程令牌特权被忽略：该操作仅支持单个目标。"
+            << eol;
+        return;
+    }
+
+    const ks::process::ProcessRecord& targetRecord = actionTargets.front().record;
+    const bool changed = ks::process_ui::showProcessTokenPrivilegeDialog(
+        this,
+        targetRecord.pid,
+        targetRecord.creationTime100ns,
+        QString::fromStdString(targetRecord.processName));
+    if (changed)
+    {
+        requestAsyncRefresh(true);
+    }
 }
 
 void ProcessDock::executeSetEfficiencyModeAction(const bool enableEfficiencyMode)

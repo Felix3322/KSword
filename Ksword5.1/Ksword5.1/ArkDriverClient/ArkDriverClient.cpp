@@ -811,6 +811,200 @@ namespace ksword::ark
         return integrityResult;
     }
 
+    ProcessTokenPrivilegeResult DriverClient::queryProcessTokenPrivileges(
+        const std::uint32_t processId,
+        const std::uint64_t expectedCreateTime100ns) const
+    {
+        // 输入：目标 PID 与可选创建时间。
+        // 处理：发出 QUERY 请求并把固定 LUID/属性数组转换成 C++ 结果。
+        // 返回：可区分旧驱动、通信失败、截断快照和完整快照的结果。
+        ProcessTokenPrivilegeResult queryResult{};
+        KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST request{};
+        KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE response{};
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.version = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION;
+        request.operation = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY;
+        request.processId = processId;
+        request.expectedCreateTime100ns = expectedCreateTime100ns;
+
+        queryResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &response,
+            static_cast<unsigned long>(sizeof(response)));
+        if (!queryResult.io.ok)
+        {
+            queryResult.unsupported = isUnsupportedIoctlError(queryResult.io.win32Error);
+            queryResult.io.message = queryResult.unsupported
+                ? "IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES unsupported or driver version is too old"
+                : "DeviceIoControl(IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES query) failed, error=" +
+                    std::to_string(queryResult.io.win32Error);
+            return queryResult;
+        }
+        if (queryResult.io.bytesReturned < sizeof(response))
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "process-token privilege query response too small, bytesReturned=" +
+                std::to_string(queryResult.io.bytesReturned);
+            return queryResult;
+        }
+        if (response.size != sizeof(response) ||
+            response.version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION ||
+            response.operation != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_QUERY ||
+            response.processId != processId ||
+            response.entryCount > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES)
+        {
+            queryResult.io.ok = false;
+            queryResult.io.win32Error = ERROR_INVALID_DATA;
+            queryResult.io.message = "process-token privilege query response header is invalid";
+            return queryResult;
+        }
+
+        queryResult.version = static_cast<std::uint32_t>(response.version);
+        queryResult.operation = static_cast<std::uint32_t>(response.operation);
+        queryResult.processId = static_cast<std::uint32_t>(response.processId);
+        queryResult.status = static_cast<std::uint32_t>(response.status);
+        queryResult.lastStatus = static_cast<long>(response.lastStatus);
+        queryResult.processCreateTime100ns =
+            static_cast<std::uint64_t>(response.processCreateTime100ns);
+        const std::uint32_t entryCount = std::min<std::uint32_t>(
+            static_cast<std::uint32_t>(response.entryCount),
+            KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES);
+        queryResult.entries.reserve(entryCount);
+        for (std::uint32_t entryIndex = 0; entryIndex < entryCount; ++entryIndex)
+        {
+            ProcessTokenPrivilegeEntry entry{};
+            entry.luidLowPart = static_cast<std::uint32_t>(response.entries[entryIndex].luidLowPart);
+            entry.luidHighPart = static_cast<std::int32_t>(response.entries[entryIndex].luidHighPart);
+            entry.attributes = static_cast<std::uint32_t>(response.entries[entryIndex].attributes);
+            entry.action = static_cast<std::uint32_t>(response.entries[entryIndex].action);
+            queryResult.entries.push_back(entry);
+        }
+        queryResult.io.ntStatus = queryResult.lastStatus;
+
+        std::ostringstream stream;
+        stream << "pid=" << queryResult.processId
+            << ", operation=query, status=" << queryResult.status
+            << ", entries=" << queryResult.entries.size()
+            << ", lastStatus=0x" << std::hex << static_cast<unsigned long>(queryResult.lastStatus)
+            << std::dec << ", bytesReturned=" << queryResult.io.bytesReturned;
+        queryResult.io.message = stream.str();
+        return queryResult;
+    }
+
+    ProcessTokenPrivilegeResult DriverClient::adjustProcessTokenPrivileges(
+        const std::uint32_t processId,
+        const std::uint64_t expectedCreateTime100ns,
+        const std::vector<ProcessTokenPrivilegeEntry>& edits,
+        const bool allowRemove) const
+    {
+        // 输入：稳定进程身份、已解析 LUID 的调整项和移除许可。
+        // 处理：本地约束协议上限/动作，再发出 confirmation-gated ADJUST 请求。
+        // 返回：包含 appliedCount/failedIndex 的结果，调用方可明确提示部分成功。
+        ProcessTokenPrivilegeResult adjustResult{};
+        if (edits.empty() || edits.size() > KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES)
+        {
+            adjustResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            adjustResult.io.message = "process-token privilege edit count is invalid";
+            return adjustResult;
+        }
+
+        KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_REQUEST request{};
+        KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE response{};
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.version = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION;
+        request.operation = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST;
+        request.processId = processId;
+        request.flags = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED |
+            (allowRemove ? KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_ALLOW_REMOVE : 0UL);
+        request.entryCount = static_cast<unsigned long>(edits.size());
+        request.expectedCreateTime100ns = expectedCreateTime100ns;
+        request.confirmationToken = KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_CONFIRMATION_TOKEN;
+
+        for (std::size_t entryIndex = 0; entryIndex < edits.size(); ++entryIndex)
+        {
+            const ProcessTokenPrivilegeEntry& sourceEntry = edits[entryIndex];
+            const bool validAction =
+                sourceEntry.action == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE ||
+                sourceEntry.action == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE ||
+                sourceEntry.action == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_REMOVE;
+            if (!validAction ||
+                (sourceEntry.action == KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_REMOVE && !allowRemove))
+            {
+                adjustResult.io.win32Error = ERROR_INVALID_PARAMETER;
+                adjustResult.io.message = "process-token privilege edit action is invalid";
+                return adjustResult;
+            }
+            request.entries[entryIndex].luidLowPart = sourceEntry.luidLowPart;
+            request.entries[entryIndex].luidHighPart = sourceEntry.luidHighPart;
+            request.entries[entryIndex].attributes = sourceEntry.attributes;
+            request.entries[entryIndex].action = sourceEntry.action;
+        }
+
+        adjustResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &response,
+            static_cast<unsigned long>(sizeof(response)));
+        if (!adjustResult.io.ok)
+        {
+            adjustResult.unsupported = isUnsupportedIoctlError(adjustResult.io.win32Error);
+            adjustResult.io.message = adjustResult.unsupported
+                ? "IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES unsupported or driver version is too old"
+                : "DeviceIoControl(IOCTL_KSWORD_ARK_PROCESS_TOKEN_PRIVILEGES adjust) failed, error=" +
+                    std::to_string(adjustResult.io.win32Error);
+            return adjustResult;
+        }
+        if (adjustResult.io.bytesReturned < sizeof(response))
+        {
+            adjustResult.io.ok = false;
+            adjustResult.io.message =
+                "process-token privilege adjust response too small, bytesReturned=" +
+                std::to_string(adjustResult.io.bytesReturned);
+            return adjustResult;
+        }
+        if (response.size != sizeof(response) ||
+            response.version != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION ||
+            response.operation != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_OPERATION_ADJUST ||
+            response.processId != processId ||
+            response.requestedCount != static_cast<unsigned long>(edits.size()) ||
+            response.appliedCount > response.requestedCount ||
+            (response.failedIndex != KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FAILED_INDEX_NONE &&
+             response.failedIndex >= response.requestedCount))
+        {
+            adjustResult.io.ok = false;
+            adjustResult.io.win32Error = ERROR_INVALID_DATA;
+            adjustResult.io.message = "process-token privilege adjust response header is invalid";
+            return adjustResult;
+        }
+
+        adjustResult.version = static_cast<std::uint32_t>(response.version);
+        adjustResult.operation = static_cast<std::uint32_t>(response.operation);
+        adjustResult.processId = static_cast<std::uint32_t>(response.processId);
+        adjustResult.status = static_cast<std::uint32_t>(response.status);
+        adjustResult.requestedCount = static_cast<std::uint32_t>(response.requestedCount);
+        adjustResult.appliedCount = static_cast<std::uint32_t>(response.appliedCount);
+        adjustResult.failedIndex = static_cast<std::uint32_t>(response.failedIndex);
+        adjustResult.lastStatus = static_cast<long>(response.lastStatus);
+        adjustResult.processCreateTime100ns =
+            static_cast<std::uint64_t>(response.processCreateTime100ns);
+        adjustResult.io.ntStatus = adjustResult.lastStatus;
+
+        std::ostringstream stream;
+        stream << "pid=" << adjustResult.processId
+            << ", operation=adjust, status=" << adjustResult.status
+            << ", requested=" << adjustResult.requestedCount
+            << ", applied=" << adjustResult.appliedCount
+            << ", failedIndex=" << adjustResult.failedIndex
+            << ", lastStatus=0x" << std::hex << static_cast<unsigned long>(adjustResult.lastStatus)
+            << std::dec << ", bytesReturned=" << adjustResult.io.bytesReturned;
+        adjustResult.io.message = stream.str();
+        return adjustResult;
+    }
+
     ProcessVisibilityResult DriverClient::setProcessVisibility(
         const std::uint32_t processId,
     const unsigned long action,
