@@ -245,6 +245,7 @@ This project includes system-level debugging, auditing, and management capabilit
 
 ## License
 
+<img width="2172" height="724" alt="LICENSE-preview" src="https://github.com/user-attachments/assets/8a4eb66e-d27c-4139-ac57-6b5606cf4d71" />
 Ksword is source-available under the [KSword Community Source License v1.6](LICENSE). In this project, "open source" means source code visibility and access; it does not mean the project uses an Open Source Initiative (OSI)-approved license.
 Please follow the terms in LICENSE for what is permitted, especially around redistribution and commercial usage models. Third-party components keep their own licenses.
 
