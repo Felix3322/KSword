@@ -21,6 +21,7 @@
 #include "UI/SmoothScrollSupport.h"
 #include "UI/TextSearchReplaceSupport.h"
 #include "Internationalization/LanguageManager.h"
+#include "ksword/process/process.h"
 #include "../../shared/crash/WinCrashHandler.h"
 
 #ifndef NOMINMAX
@@ -540,25 +541,6 @@ namespace
         return queryOk != FALSE && tokenElevation.TokenIsElevated != 0;
     }
 
-    // narrowPrivilegeName 作用：
-    // - 输入 Windows privilege 常量宽字符串；
-    // - 处理：启动期日志只需要 ASCII privilege 名，逐字符窄化可避免引入 Qt 转码依赖；
-    // - 返回：可写入 startupTraceRaw/kLog 的窄字符串。
-    std::string narrowPrivilegeName(const wchar_t* const privilegeName)
-    {
-        if (privilegeName == nullptr)
-        {
-            return std::string("<null>");
-        }
-
-        std::string resultText;
-        for (const wchar_t* cursor = privilegeName; *cursor != L'\0'; ++cursor)
-        {
-            resultText.push_back(static_cast<char>(*cursor & 0x7F));
-        }
-        return resultText;
-    }
-
     // tryEnableStartupProcessPrivileges：
     // - 输入：无，直接作用于当前进程 token；
     // - 处理：管理员启动后逐项启用进程相关特权，覆盖权限页中 30-52 行常用系统特权；
@@ -574,35 +556,6 @@ namespace
                 << eol;
             return false;
         }
-
-        // kStartupPrivilegeNames 用途：
-        // - 与权限快照中 30-52 行对应；
-        // - 逐项启用可避免某一项 ERROR_NOT_ALL_ASSIGNED 影响其它已分配特权。
-        static constexpr const wchar_t* kStartupPrivilegeNames[] = {
-            SE_SECURITY_NAME,
-            SE_TAKE_OWNERSHIP_NAME,
-            SE_LOAD_DRIVER_NAME,
-            SE_SYSTEM_PROFILE_NAME,
-            SE_SYSTEMTIME_NAME,
-            SE_PROF_SINGLE_PROCESS_NAME,
-            SE_INC_BASE_PRIORITY_NAME,
-            SE_CREATE_PAGEFILE_NAME,
-            SE_BACKUP_NAME,
-            SE_RESTORE_NAME,
-            SE_SHUTDOWN_NAME,
-            SE_DEBUG_NAME,
-            SE_SYSTEM_ENVIRONMENT_NAME,
-            SE_CHANGE_NOTIFY_NAME,
-            SE_REMOTE_SHUTDOWN_NAME,
-            SE_UNDOCK_NAME,
-            SE_MANAGE_VOLUME_NAME,
-            SE_IMPERSONATE_NAME,
-            SE_CREATE_GLOBAL_NAME,
-            SE_INC_WORKING_SET_NAME,
-            SE_TIME_ZONE_NAME,
-            SE_CREATE_SYMBOLIC_LINK_NAME,
-            SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME
-        };
 
         HANDLE tokenHandle = nullptr;
         if (::OpenProcessToken(
@@ -627,11 +580,11 @@ namespace
         int failedCount = 0;
         std::string failedDetailText;
 
-        for (const wchar_t* const privilegeName : kStartupPrivilegeNames)
+        for (const std::string& privilegeNameText : ks::process::KnownTokenPrivilegeNames())
         {
-            const std::string privilegeNameText = narrowPrivilegeName(privilegeName);
+            const std::wstring privilegeName(privilegeNameText.begin(), privilegeNameText.end());
             LUID privilegeLuid{};
-            if (::LookupPrivilegeValueW(nullptr, privilegeName, &privilegeLuid) == FALSE)
+            if (::LookupPrivilegeValueW(nullptr, privilegeName.c_str(), &privilegeLuid) == FALSE)
             {
                 const DWORD errorCode = ::GetLastError();
                 ++failedCount;

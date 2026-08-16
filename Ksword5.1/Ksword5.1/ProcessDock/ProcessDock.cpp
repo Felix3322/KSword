@@ -3507,19 +3507,17 @@ namespace
             + QStringLiteral("background:transparent;background-color:transparent;"));
     }
 
-    // 常见令牌特权列表：用于“可视化调权”表格。
-    const QStringList CommonPrivilegeNames{
-        "SeDebugPrivilege",
-        "SeImpersonatePrivilege",
-        "SeAssignPrimaryTokenPrivilege",
-        "SeIncreaseQuotaPrivilege",
-        "SeTcbPrivilege",
-        "SeBackupPrivilege",
-        "SeRestorePrivilege",
-        "SeLoadDriverPrivilege",
-        "SeSecurityPrivilege",
-        "SeTakeOwnershipPrivilege"
-    };
+    // 完整令牌特权列表：复用进程模块维护的 Windows SDK Se*Privilege 目录。
+    QStringList tokenPrivilegeNames()
+    {
+        QStringList privilegeNames;
+        privilegeNames.reserve(static_cast<qsizetype>(ks::process::KnownTokenPrivilegeNames().size()));
+        for (const std::string& privilegeName : ks::process::KnownTokenPrivilegeNames())
+        {
+            privilegeNames.push_back(QString::fromLatin1(privilegeName.c_str()));
+        }
+        return privilegeNames;
+    }
 
     // BitmaskFlagDefinition 作用：
     // - 统一描述“复选框可勾选的位标志定义”；
@@ -5033,7 +5031,8 @@ void ProcessDock::initializeCreateProcessPage()
     QGroupBox* tokenPrivilegeGroup = new QGroupBox("Token 特权调整（AdjustTokenPrivileges）", contentWidget);
     applyTransparentContainerStyle(tokenPrivilegeGroup);
     QVBoxLayout* tokenPrivilegeLayout = new QVBoxLayout(tokenPrivilegeGroup);
-    m_tokenPrivilegeTable = new ks::ui::VisibleTableWidget(CommonPrivilegeNames.size(), 2, tokenPrivilegeGroup);
+    const QStringList privilegeNames = tokenPrivilegeNames();
+    m_tokenPrivilegeTable = new ks::ui::VisibleTableWidget(privilegeNames.size(), 2, tokenPrivilegeGroup);
     m_tokenPrivilegeTable->setHorizontalHeaderLabels(QStringList{ "Privilege", "Action" });
     m_tokenPrivilegeTable->horizontalHeader()->setStretchLastSection(true);
     m_tokenPrivilegeTable->verticalHeader()->setVisible(false);
@@ -5079,9 +5078,9 @@ void ProcessDock::initializeCreateProcessPage()
             QApplication::clipboard()->setText(rowFields.join(QChar('\t')));
         });
 
-    for (int row = 0; row < CommonPrivilegeNames.size(); ++row)
+    for (int row = 0; row < privilegeNames.size(); ++row)
     {
-        QTableWidgetItem* nameItem = new QTableWidgetItem(CommonPrivilegeNames.at(row));
+        QTableWidgetItem* nameItem = new QTableWidgetItem(privilegeNames.at(row));
         nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
         m_tokenPrivilegeTable->setItem(row, 0, nameItem);
 
