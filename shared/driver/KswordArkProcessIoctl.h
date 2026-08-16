@@ -50,6 +50,8 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_DETAIL 0x83CUL
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_RUNTIME_FIELDS 0x83EUL
 #define KSWORD_ARK_IOCTL_FUNCTION_SET_PROCESS_INTEGRITY 0x84CUL
+#define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_TOKEN_PRIVILEGES 0x853UL
+#define KSWORD_ARK_IOCTL_FUNCTION_ADJUST_PROCESS_TOKEN_PRIVILEGE 0x854UL
 
 #define IOCTL_KSWORD_ARK_TERMINATE_PROCESS \
     CTL_CODE( \
@@ -152,6 +154,94 @@ typedef struct _KSWORD_ARK_SET_PROCESS_INTEGRITY_RESPONSE
     unsigned long status;
     long lastStatus;
 } KSWORD_ARK_SET_PROCESS_INTEGRITY_RESPONSE;
+
+// Process token privilege protocol:
+// - Uses only documented process/token Zw APIs and raw LUID values.
+// - No EPROCESS/TOKEN private offsets or DynData matrix fields are accepted.
+// - R3 resolves display names through LookupPrivilegeValue and the SDK catalog.
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_MAX_ENTRIES 64UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_UNKNOWN 0UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_OK 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_PARTIAL 2UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_STATUS_FAILED 3UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_ENABLE 1UL
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ACTION_DISABLE 2UL
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_FLAG_UI_CONFIRMED 0x00000001UL
+
+#define IOCTL_KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_TOKEN_PRIVILEGES, \
+        METHOD_BUFFERED, \
+        FILE_ANY_ACCESS)
+
+#define IOCTL_KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_ADJUST_PROCESS_TOKEN_PRIVILEGE, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
+typedef struct _KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_REQUEST
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long processId;
+    unsigned long flags;
+} KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_REQUEST;
+
+typedef struct _KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY
+{
+    unsigned long luidLowPart;
+    long luidHighPart;
+    unsigned long attributes;
+    unsigned long reserved;
+} KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY;
+
+typedef struct _KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long processId;
+    unsigned long status;
+    unsigned long totalCount;
+    unsigned long returnedCount;
+    unsigned long entrySize;
+    long lastStatus;
+    KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY entries[1];
+} KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_RESPONSE;
+
+#define KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE_HEADER_SIZE \
+    ((unsigned long)(sizeof(KSWORD_ARK_QUERY_PROCESS_TOKEN_PRIVILEGES_RESPONSE) - \
+        sizeof(KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_ENTRY)))
+
+typedef struct _KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_REQUEST
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long processId;
+    unsigned long luidLowPart;
+    long luidHighPart;
+    unsigned long action;
+    unsigned long flags;
+    unsigned long reserved;
+} KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_REQUEST;
+
+typedef struct _KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long processId;
+    unsigned long luidLowPart;
+    long luidHighPart;
+    unsigned long action;
+    unsigned long status;
+    long lastStatus;
+} KSWORD_ARK_ADJUST_PROCESS_TOKEN_PRIVILEGE_RESPONSE;
 
 #define IOCTL_KSWORD_ARK_ENUM_PROCESS \
     CTL_CODE( \
