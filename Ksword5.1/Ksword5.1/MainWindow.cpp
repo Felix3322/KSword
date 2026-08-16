@@ -6388,9 +6388,26 @@ void MainWindow::initGlobalUiSearchController()
         &ks::ui::CustomTitleBar::activateSearchInput);
     connect(
         m_globalUiSearchController,
-        &ks::ui::GlobalUiSearchController::searchScopeDisplayTextChanged,
+        &ks::ui::GlobalUiSearchController::requestCommandInputActivation,
         m_customTitleBar,
-        &ks::ui::CustomTitleBar::setSearchScopeDisplayText);
+        &ks::ui::CustomTitleBar::activateCommandInput);
+    connect(
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::searchScopeSelectionRequested,
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::selectSearchScope);
+    connect(
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::searchScopeDisplayTextChanged,
+        this,
+        [this](const QString& displayText, const int searchScopeIndex) {
+            if (m_customTitleBar == nullptr)
+            {
+                return;
+            }
+            m_customTitleBar->setSearchScopeSelection(searchScopeIndex);
+            m_customTitleBar->setSearchScopeDisplayText(displayText);
+        });
     m_customTitleBar->setSearchScopeDisplayText(
         m_globalUiSearchController->searchScopeDisplayText());
     m_globalUiSearchController->setSearchInputActive(

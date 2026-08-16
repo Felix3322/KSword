@@ -1,10 +1,11 @@
-# KSword 标题栏全局搜索 / 双模式输入
+# KSword 标题栏全局搜索 / 四项循环输入
 
-主程序标题栏中间输入框是“搜索 / CMD”双模式（默认搜索），实现分三层：
+主程序标题栏中间输入框提供“全局 / 当前页面 / 当前表格 / CMD 命令”四项循环（默认全局搜索），实现分三层：
 
 - `Framework/CustomTitleBar`：输入组 `ksTitleInputGroup`（QToolButton 模式按钮 + QLineEdit 一体外观）。
-  模式按钮 InstantPopup 菜单切换；搜索模式发 `searchTextEdited`，CMD 模式回车发 `commandSubmitted`
-  （cmd /K 新控制台，MainWindow::executeCommandInNewConsole）。模式切换发 `inputModeChanged`。
+  InstantPopup 菜单直接列出三个搜索范围和 CMD 命令；搜索模式发 `searchTextEdited`，CMD 模式回车发
+  `commandSubmitted`（cmd /K 新控制台，MainWindow::executeCommandInNewConsole）。输入框内 Tab/Shift+Tab 按
+  全局 ↔ 当前页面 ↔ 当前表格 ↔ CMD 命令循环，模式切换仍发 `inputModeChanged`。
 - `UI/GlobalUiSearch`（ks::ui::GlobalUiSearchController，Q_OBJECT/QtMoc）：防抖 220ms 后**异步分片**扫描——
   控件树只能在 UI 线程碰，所以按“每个事件循环周期扫一个 Dock”切片（singleShot(0) 链），
   分片间让出事件循环保持 UI 响应；`m_searchGeneration` 代数自增实现取消（新输入/Esc/切模式/收起弹层

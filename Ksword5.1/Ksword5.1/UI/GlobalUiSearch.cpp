@@ -904,6 +904,16 @@ namespace ks::ui
         }
     }
 
+    void GlobalUiSearchController::selectSearchScope(const int searchScopeIndex)
+    {
+        if (searchScopeIndex < static_cast<int>(UiSearchScope::Global)
+            || searchScopeIndex > static_cast<int>(UiSearchScope::CurrentTable))
+        {
+            return;
+        }
+        setSearchScope(static_cast<UiSearchScope>(searchScopeIndex));
+    }
+
     void GlobalUiSearchController::dismissPopup()
     {
         // 代数自增让仍在事件队列里的异步分片全部作废。
@@ -925,20 +935,40 @@ namespace ks::ui
 
         if (watchedObject == m_searchInputEdit)
         {
-            if (eventType == QEvent::KeyPress && m_searchModeActive)
+            if (eventType == QEvent::KeyPress)
             {
                 auto* keyEvent = static_cast<QKeyEvent*>(eventObject);
+                const bool isTabKey = keyEvent->key() == Qt::Key_Tab
+                    || keyEvent->key() == Qt::Key_Backtab;
+                if (isTabKey)
+                {
+                    const int direction = keyEvent->key() == Qt::Key_Backtab
+                        || keyEvent->modifiers().testFlag(Qt::ShiftModifier)
+                        ? -1
+                        : 1;
+                    if (m_searchModeActive)
+                    {
+                        cycleSearchScope(direction);
+                    }
+                    else
+                    {
+                        setSearchScope(direction < 0
+                            ? UiSearchScope::CurrentTable
+                            : UiSearchScope::Global);
+                        emit requestSearchInputActivation(true);
+                    }
+                    keyEvent->accept();
+                    return true;
+                }
+
+                if (!m_searchModeActive)
+                {
+                    return false;
+                }
+
                 const bool popupVisible = m_popupPanel != nullptr && m_popupPanel->isVisible();
                 switch (keyEvent->key())
                 {
-                case Qt::Key_Tab:
-                    cycleSearchScope(1);
-                    keyEvent->accept();
-                    return true;
-                case Qt::Key_Backtab:
-                    cycleSearchScope(-1);
-                    keyEvent->accept();
-                    return true;
                 case Qt::Key_Down:
                     if (popupVisible)
                     {
@@ -1559,6 +1589,13 @@ namespace ks::ui
         constexpr int kScopeCount = 3;
         const int currentScopeIndex = static_cast<int>(m_searchScope);
         const int normalizedDirection = direction < 0 ? -1 : 1;
+        if ((normalizedDirection > 0 && m_searchScope == UiSearchScope::CurrentTable)
+            || (normalizedDirection < 0 && m_searchScope == UiSearchScope::Global))
+        {
+            dismissPopup();
+            emit requestCommandInputActivation(true);
+            return;
+        }
         const int nextScopeIndex =
             (currentScopeIndex + normalizedDirection + kScopeCount) % kScopeCount;
         if (static_cast<UiSearchScope>(nextScopeIndex) == UiSearchScope::CurrentTable)
@@ -1641,7 +1678,9 @@ namespace ks::ui
 
     void GlobalUiSearchController::refreshSearchScopeDisplayText()
     {
-        emit searchScopeDisplayTextChanged(searchScopeDisplayText());
+        emit searchScopeDisplayTextChanged(
+            searchScopeDisplayText(),
+            static_cast<int>(m_searchScope));
     }
 
     bool GlobalUiSearchController::isQueryLongEnough(const QString& queryText)

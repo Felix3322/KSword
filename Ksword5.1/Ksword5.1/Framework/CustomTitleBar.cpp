@@ -607,8 +607,8 @@ namespace ks::ui
         m_leftLayout->addWidget(m_titleTextLabel, 0);
         m_leftLayout->addWidget(m_userBadgeButton, 0);
 
-        // 中间输入组：左侧模式按钮（搜索/CMD）+ 输入框，外观合并为一个整体。
-        // 默认“搜索”模式做全局页面文本搜索；切到 CMD 模式后回车在新控制台执行。
+        // 中间输入组：左侧范围/模式按钮 + 输入框，外观合并为一个整体。
+        // 默认做全局页面文本搜索；菜单可选择三个搜索范围或 CMD 命令模式。
         m_centerInputGroup = new QWidget(this);
         m_centerInputGroup->setObjectName(QStringLiteral("ksTitleInputGroup"));
         m_centerInputGroup->setAttribute(Qt::WA_StyledBackground, true);
@@ -627,8 +627,12 @@ namespace ks::ui
         m_inputModeButton->setToolTip(QStringLiteral("切换输入模式：页面搜索或 CMD 命令执行"));
 
         m_inputModeMenu = new QMenu(m_inputModeButton);
-        m_searchModeAction = m_inputModeMenu->addAction(QStringLiteral("搜索"));
-        m_searchModeAction->setCheckable(true);
+        m_globalSearchAction = m_inputModeMenu->addAction(QStringLiteral("全局"));
+        m_globalSearchAction->setCheckable(true);
+        m_currentPageSearchAction = m_inputModeMenu->addAction(QStringLiteral("当前页面"));
+        m_currentPageSearchAction->setCheckable(true);
+        m_currentTableSearchAction = m_inputModeMenu->addAction(QStringLiteral("当前表格"));
+        m_currentTableSearchAction->setCheckable(true);
         m_commandModeAction = m_inputModeMenu->addAction(QStringLiteral("CMD 命令"));
         m_commandModeAction->setCheckable(true);
         m_inputModeButton->setMenu(m_inputModeMenu);
@@ -749,7 +753,19 @@ namespace ks::ui
                 emit searchTextEdited(changedText);
             }
         });
-        connect(m_searchModeAction, &QAction::triggered, this, [this]() {
+        connect(m_globalSearchAction, &QAction::triggered, this, [this]() {
+            m_searchScopeIndex = 0;
+            emit searchScopeSelectionRequested(m_searchScopeIndex);
+            setTitleInputMode(true);
+        });
+        connect(m_currentPageSearchAction, &QAction::triggered, this, [this]() {
+            m_searchScopeIndex = 1;
+            emit searchScopeSelectionRequested(m_searchScopeIndex);
+            setTitleInputMode(true);
+        });
+        connect(m_currentTableSearchAction, &QAction::triggered, this, [this]() {
+            m_searchScopeIndex = 2;
+            emit searchScopeSelectionRequested(m_searchScopeIndex);
             setTitleInputMode(true);
         });
         connect(m_commandModeAction, &QAction::triggered, this, [this]() {
@@ -980,12 +996,27 @@ namespace ks::ui
         setTitleInputMode(true, focusInput);
     }
 
+    void CustomTitleBar::activateCommandInput(const bool focusInput)
+    {
+        setTitleInputMode(false, focusInput);
+    }
+
     void CustomTitleBar::setSearchScopeDisplayText(const QString& displayText)
     {
         const QString normalizedText = displayText.trimmed();
         m_searchScopeDisplayText = normalizedText.isEmpty()
             ? ks::i18n::sourceText(QStringLiteral("全局"))
             : normalizedText;
+        updateTitleInputModeVisuals();
+    }
+
+    void CustomTitleBar::setSearchScopeSelection(const int searchScopeIndex)
+    {
+        if (searchScopeIndex < 0 || searchScopeIndex > 2)
+        {
+            return;
+        }
+        m_searchScopeIndex = searchScopeIndex;
         updateTitleInputModeVisuals();
     }
 
@@ -1022,23 +1053,27 @@ namespace ks::ui
     {
         if (m_inputModeButton == nullptr
             || m_commandLineEdit == nullptr
-            || m_searchModeAction == nullptr
+            || m_globalSearchAction == nullptr
+            || m_currentPageSearchAction == nullptr
+            || m_currentTableSearchAction == nullptr
             || m_commandModeAction == nullptr)
         {
             return;
         }
 
-        m_searchModeAction->setChecked(m_searchInputModeActive);
+        m_globalSearchAction->setChecked(m_searchInputModeActive && m_searchScopeIndex == 0);
+        m_currentPageSearchAction->setChecked(m_searchInputModeActive && m_searchScopeIndex == 1);
+        m_currentTableSearchAction->setChecked(m_searchInputModeActive && m_searchScopeIndex == 2);
         m_commandModeAction->setChecked(!m_searchInputModeActive);
         if (m_searchInputModeActive)
         {
             m_inputModeButton->setText(m_searchScopeDisplayText + QStringLiteral(" ▾"));
             m_inputModeButton->setToolTip(
-                ks::i18n::sourceText(QStringLiteral("搜索范围：%1。聚焦输入框后按 Tab 切换范围。"))
+                ks::i18n::sourceText(QStringLiteral("搜索范围：%1。聚焦输入框后按 Tab 切换范围或 CMD 命令。"))
                     .arg(m_searchScopeDisplayText));
             m_commandLineEdit->setPlaceholderText(
                 ks::i18n::sourceText(
-                    QStringLiteral("在%1中搜索；按 Tab 切换全局、当前页面和当前表格"))
+                    QStringLiteral("在%1中搜索；按 Tab 切换全局、当前页面、当前表格和 CMD 命令"))
                     .arg(m_searchScopeDisplayText));
         }
         else

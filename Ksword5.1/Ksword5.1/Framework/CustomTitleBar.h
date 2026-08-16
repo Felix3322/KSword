@@ -3,10 +3,10 @@
 // ============================================================
 // CustomTitleBar.h
 // 作用说明：
-// 1) 提供主窗口自绘标题栏（左信息、中“搜索/CMD”双模式输入、右控制按钮）；
+// 1) 提供主窗口自绘标题栏（左信息、中“搜索范围/CMD”输入、右控制按钮）；
 // 2) 提供置顶/最小化/最大化/关闭等交互信号；
-// 3) 中间输入框默认为“搜索”模式（全局页面文本搜索），
-//    点击左侧模式按钮可切换为 CMD 模式（cmd /K 新控制台执行）；
+// 3) 中间输入框默认为“全局”搜索，可从左侧菜单选择全局/当前页面/当前表格，
+//    或切换为 CMD 模式（cmd /K 新控制台执行）；
 // 4) 支持深浅色主题切换和“33251 -> WangWei_CM”用户名特判展示。
 // ============================================================
 
@@ -117,8 +117,14 @@ namespace ks::ui
         // activateSearchInput：切回搜索模式；focusInput 决定是否把焦点跳到顶部输入框。
         void activateSearchInput(bool focusInput = true);
 
+        // activateCommandInput：切到 CMD 模式；focusInput 决定是否把焦点跳到顶部输入框。
+        void activateCommandInput(bool focusInput = true);
+
         // setSearchScopeDisplayText：刷新顶部搜索范围标签与 Tab 切换提示。
         void setSearchScopeDisplayText(const QString& displayText);
+
+        // setSearchScopeSelection：同步菜单中当前选中的搜索范围（0=全局，1=当前页面，2=当前表格）。
+        void setSearchScopeSelection(int searchScopeIndex);
 
     signals:
         // requestTogglePinned：
@@ -163,6 +169,9 @@ namespace ks::ui
         // - 触发：用户在模式菜单中切换搜索/CMD 时触发；
         // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
         void inputModeChanged(bool searchModeActive);
+
+        // searchScopeSelectionRequested：用户从左侧菜单选择搜索范围。
+        void searchScopeSelectionRequested(int searchScopeIndex);
 
     protected:
         // resizeEvent：
@@ -280,9 +289,11 @@ namespace ks::ui
 
         QWidget* m_centerInputGroup = nullptr;    // m_centerInputGroup：中间输入组容器（模式按钮+输入框一体外观）。
         QHBoxLayout* m_centerInputLayout = nullptr; // m_centerInputLayout：中间输入组水平布局。
-        QToolButton* m_inputModeButton = nullptr; // m_inputModeButton：输入模式切换按钮（搜索/CMD）。
+        QToolButton* m_inputModeButton = nullptr; // m_inputModeButton：搜索范围/CMD 切换按钮。
         QMenu* m_inputModeMenu = nullptr;         // m_inputModeMenu：输入模式选择菜单。
-        QAction* m_searchModeAction = nullptr;    // m_searchModeAction：菜单“搜索”模式选项。
+        QAction* m_globalSearchAction = nullptr;  // m_globalSearchAction：菜单“全局”搜索选项。
+        QAction* m_currentPageSearchAction = nullptr; // m_currentPageSearchAction：菜单“当前页面”搜索选项。
+        QAction* m_currentTableSearchAction = nullptr; // m_currentTableSearchAction：菜单“当前表格”搜索选项。
         QAction* m_commandModeAction = nullptr;   // m_commandModeAction：菜单“CMD 命令”模式选项。
         QLineEdit* m_commandLineEdit = nullptr;   // m_commandLineEdit：标题栏中间输入框（搜索/命令共用）。
 
@@ -302,6 +313,7 @@ namespace ks::ui
 
         QString m_rawUserNameText;                // m_rawUserNameText：读取到的原始用户名。
         QString m_searchScopeDisplayText = QStringLiteral("全局"); // m_searchScopeDisplayText：顶部搜索当前范围标签。
+        int m_searchScopeIndex = 0;                // m_searchScopeIndex：当前搜索范围（0=全局，1=当前页面，2=当前表格）。
         bool m_isSpecialUser = false;             // m_isSpecialUser：是否命中“33251”特判。
         bool m_captureProtectionEnabled = false;  // m_captureProtectionEnabled：当前是否启用截屏屏蔽。
         bool m_isPinned = false;                  // m_isPinned：当前置顶状态。

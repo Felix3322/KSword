@@ -39,7 +39,7 @@ namespace ads
 
 namespace ks::ui
 {
-    // UiSearchScope：标题栏搜索的三个作用域，Tab/Shift+Tab 循环切换。
+    // UiSearchScope：标题栏搜索的三个作用域；Tab/Shift+Tab 还会把 CMD 模式纳入循环。
     enum class UiSearchScope
     {
         Global,
@@ -128,7 +128,10 @@ namespace ks::ui
         void requestSearchInputActivation(bool focusTopInput);
 
         // searchScopeDisplayTextChanged：范围变化后刷新标题栏模式标签和提示。
-        void searchScopeDisplayTextChanged(const QString& displayText);
+        void searchScopeDisplayTextChanged(const QString& displayText, int searchScopeIndex);
+
+        // requestCommandInputActivation：Tab 循环到 CMD 节点时请求标题栏切到命令模式。
+        void requestCommandInputActivation(bool focusTopInput);
 
     public slots:
         // handleQueryEdited：
@@ -142,6 +145,9 @@ namespace ks::ui
         // - 触发：CustomTitleBar::inputModeChanged；
         // - 传入 searchModeActive：false 时立即收起结果弹层。
         void setSearchInputActive(bool searchModeActive);
+
+        // selectSearchScope：接收标题栏菜单选择（0=全局，1=当前页面，2=当前表格）。
+        void selectSearchScope(int searchScopeIndex);
 
         // dismissPopup：
         // - 作用：收起结果弹层并停止未决的防抖搜索。
