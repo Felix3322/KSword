@@ -5,6 +5,7 @@
 #include "TableFreezeSupport.h"
 #include "TableHeaderSortingSupport.h"
 #include "TableSnapshotCompare.h"
+#include "TableSearchSupport.h"
 #include "VisibleTableWidget.h"
 
 #include <QAbstractItemModel>
@@ -2502,6 +2503,8 @@ namespace
         ks::ui::InstallTableHeaderClickSorting(
             qobject_cast<QTableWidget*>(tableView));
         installActionBar(tableView);
+        ks::ui::InstallTableSearchSupport(tableView);
+        ks::ui::RefreshTableSearchSupport(tableView);
         installDefaultContextMenu(tableView);
     }
 

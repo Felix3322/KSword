@@ -15,6 +15,7 @@
 // ============================================================
 
 #include <QObject>
+#include <QPersistentModelIndex>
 #include <QPointer>
 #include <QString>
 #include <QVector>
@@ -27,6 +28,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QProgressBar;
+class QTableView;
 class QTimer;
 class QWidget;
 
@@ -37,6 +39,14 @@ namespace ads
 
 namespace ks::ui
 {
+    // UiSearchScope：标题栏搜索的三个作用域，Tab/Shift+Tab 循环切换。
+    enum class UiSearchScope
+    {
+        Global,
+        CurrentPage,
+        CurrentTable
+    };
+
     // ============================================================
     // UiSearchHit
     // 说明：
@@ -47,6 +57,8 @@ namespace ks::ui
     {
         QPointer<ads::CDockWidget> pageDockWidget; // pageDockWidget：命中文本所属的主功能 Dock。
         QPointer<QWidget> targetWidget;            // targetWidget：承载命中文本的具体控件（页签命中时为页签对应页面）。
+        QPointer<QTableView> targetTableView;      // targetTableView：表格单元格命中所属表格，普通 UI 命中为空。
+        QPersistentModelIndex targetModelIndex;    // targetModelIndex：表格单元格命中的稳定模型索引。
         QString matchedText;                       // matchedText：命中控件的完整原始文本（单行化处理后）。
         QString pagePathText;                      // pagePathText：形如“内核 › 回调审计”的页面路径文本。
         int matchRank = 2;                         // matchRank：排序权重（0=整串相等，1=前缀，2=包含）。
@@ -99,6 +111,24 @@ namespace ks::ui
         // - 作用：注入 Dock 置前激活回调（激活结果时调用）；
         // - 调用：MainWindow 接线时调用一次。
         void setDockActivator(DockActivator dockActivator);
+
+        // activateForTable：
+        // - 作用：由表格内搜索框/按钮切到“当前表格”范围，并同步顶部输入框；
+        // - focusTopInput=true 时把键盘焦点跳到顶部，false 时保留表格内输入焦点。
+        void activateForTable(
+            QTableView* tableView,
+            const QString& queryText,
+            bool focusTopInput);
+
+        // searchScopeDisplayText：返回标题栏当前应展示的范围文本。
+        QString searchScopeDisplayText() const;
+
+    signals:
+        // requestSearchInputActivation：请求标题栏切回搜索模式，可选择是否抢占焦点。
+        void requestSearchInputActivation(bool focusTopInput);
+
+        // searchScopeDisplayTextChanged：范围变化后刷新标题栏模式标签和提示。
+        void searchScopeDisplayTextChanged(const QString& displayText);
 
     public slots:
         // handleQueryEdited：
@@ -181,6 +211,20 @@ namespace ks::ui
         // - 规则：≥2 个字符，或单个 CJK 等宽字符（U+2E80 起）。
         static bool isQueryLongEnough(const QString& queryText);
 
+        // isCurrentQueryLongEnough：当前表格允许任意单字符，其余范围沿用全局降噪规则。
+        bool isCurrentQueryLongEnough(const QString& queryText) const;
+
+        // setSearchScope/cycleSearchScope：设置或循环搜索范围，并重启当前查询。
+        void setSearchScope(UiSearchScope searchScope);
+        void cycleSearchScope(int direction);
+
+        // resolveCurrentPageDock/resolveCurrentTable：从最近交互上下文解析当前页面与表格。
+        ads::CDockWidget* resolveCurrentPageDock() const;
+        QTableView* resolveCurrentTable() const;
+
+        // refreshSearchScopeDisplayText：生成“全局/当前页面/当前表格（名称）”并通知标题栏。
+        void refreshSearchScopeDisplayText();
+
     private:
         QPointer<QWidget> m_popupHostWindow;      // m_popupHostWindow：弹层父窗口（主窗口）。
         QPointer<QLineEdit> m_searchInputEdit;    // m_searchInputEdit：标题栏中间输入框。
@@ -206,5 +250,17 @@ namespace ks::ui
         quint64 m_searchGeneration = 0;           // m_searchGeneration：搜索代数；新搜索/取消时自增使在途分片作废。
         bool m_searchInProgress = false;          // m_searchInProgress：当前是否有异步扫描在进行。
         bool m_searchModeActive = true;           // m_searchModeActive：标题栏是否处于搜索输入模式。
+        UiSearchScope m_searchScope = UiSearchScope::Global; // m_searchScope：用户当前选择的搜索范围。
+        UiSearchScope m_activeSearchScope = UiSearchScope::Global; // m_activeSearchScope：在途搜索采用的范围快照。
+        QPointer<QTableView> m_targetTableView;     // m_targetTableView：表格入口显式指定的目标表格。
+        QPointer<QTableView> m_recentTableView;     // m_recentTableView：最近鼠标/键盘交互过的表格。
+        QPointer<ads::CDockWidget> m_recentPageDockWidget; // m_recentPageDockWidget：最近交互控件所属 Dock。
+        QPointer<QTableView> m_pendingDirectTableView; // m_pendingDirectTableView：当前表格范围待扫描对象。
     };
+
+    // ActivateGlobalUiSearchForTable：表格通用入口调用当前主窗口搜索控制器。
+    void ActivateGlobalUiSearchForTable(
+        QTableView* tableView,
+        const QString& queryText = QString(),
+        bool focusTopInput = true);
 }

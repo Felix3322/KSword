@@ -114,6 +114,12 @@ namespace ks::ui
         // - 传出：true=搜索模式，false=CMD 模式。
         bool isSearchInputModeActive() const;
 
+        // activateSearchInput：切回搜索模式；focusInput 决定是否把焦点跳到顶部输入框。
+        void activateSearchInput(bool focusInput = true);
+
+        // setSearchScopeDisplayText：刷新顶部搜索范围标签与 Tab 切换提示。
+        void setSearchScopeDisplayText(const QString& displayText);
+
     signals:
         // requestTogglePinned：
         // - 作用：请求切换置顶状态；
@@ -205,7 +211,7 @@ namespace ks::ui
         // - 作用：切换搜索/CMD 输入模式并同步按钮、占位符与信号；
         // - 调用：模式菜单动作触发时调用；
         // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
-        void setTitleInputMode(bool searchModeActive);
+        void setTitleInputMode(bool searchModeActive, bool focusInput = true);
 
         // updateTitleInputModeVisuals：
         // - 作用：按当前模式刷新模式按钮文本、菜单勾选与输入框占位符；
@@ -295,6 +301,7 @@ namespace ks::ui
         QGridLayout* m_rootLayout = nullptr;      // m_rootLayout：标题栏主布局（左/中/右三段）。
 
         QString m_rawUserNameText;                // m_rawUserNameText：读取到的原始用户名。
+        QString m_searchScopeDisplayText = QStringLiteral("全局"); // m_searchScopeDisplayText：顶部搜索当前范围标签。
         bool m_isSpecialUser = false;             // m_isSpecialUser：是否命中“33251”特判。
         bool m_captureProtectionEnabled = false;  // m_captureProtectionEnabled：当前是否启用截屏屏蔽。
         bool m_isPinned = false;                  // m_isPinned：当前置顶状态。

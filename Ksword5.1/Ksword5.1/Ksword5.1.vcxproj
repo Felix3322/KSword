@@ -434,6 +434,7 @@
     <ClCompile Include="UI\TableFreezeSupport.cpp" />
     <ClCompile Include="UI\TableHeaderSortingSupport.cpp" />
     <ClCompile Include="UI\TableInteractionSupport.cpp" />
+    <ClCompile Include="UI\TableSearchSupport.cpp" />
     <ClCompile Include="UI\TextSearchReplaceSupport.cpp" />
     <ClCompile Include="UI\TableSnapshotCompare.cpp" />
     <ClCompile Include="UI\ThemedMessageBox.cpp" />
@@ -602,6 +603,7 @@
     <ClInclude Include="UI\TableFreezeSupport.h" />
     <ClInclude Include="UI\TableHeaderSortingSupport.h" />
     <ClInclude Include="UI\TableInteractionSupport.h" />
+    <ClInclude Include="UI\TableSearchSupport.h" />
     <ClInclude Include="UI\TextSearchReplaceSupport.h" />
     <ClInclude Include="UI\TableSnapshotCompare.h" />
     <ClInclude Include="UI\VisibleTableWidget.h" />

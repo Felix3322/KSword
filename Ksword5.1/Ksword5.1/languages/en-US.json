@@ -30117,6 +30117,18 @@
     "配置文件无效：%1": "The configuration file is invalid: %1",
     "（导入）": " (Imported)",
     "筛选器配置格式无效。": "The filter configuration format is invalid.",
-    "第 %1 条规则的 ID 无效或重复。": "Rule %1 has an invalid or duplicate ID."
+    "第 %1 条规则的 ID 无效或重复。": "Rule %1 has an invalid or duplicate ID.",
+    "%1，第 %2 行": "%1, row %2",
+    "%1，第 %2 行，%3 列": "%1, row %2, column %3",
+    "TableSearchSupport.h": "TableSearchSupport.h",
+    "tableView": "tableView",
+    "tableWidget": "tableWidget",
+    "在%1中搜索；按 Tab 切换全局、当前页面和当前表格": "Search in %1; press Tab to switch between global, current page, and current table",
+    "当前表格（%1）": "Current table (%1)",
+    "当前页面": "Current page",
+    "搜索%1": "Search %1",
+    "搜索当前表格：%1": "Search current table: %1",
+    "搜索范围：%1。聚焦输入框后按 Tab 切换范围。": "Search scope: %1. Focus the input and press Tab to switch scope.",
+    "表格": "Table"
   }
 }

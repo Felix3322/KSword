@@ -6381,6 +6381,18 @@ void MainWindow::initGlobalUiSearchController()
     m_globalUiSearchController->setDockActivator([this](ads::CDockWidget* dockWidget) {
         activateDockForSearchNavigation(dockWidget);
     });
+    connect(
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::requestSearchInputActivation,
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::activateSearchInput);
+    connect(
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::searchScopeDisplayTextChanged,
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::setSearchScopeDisplayText);
+    m_customTitleBar->setSearchScopeDisplayText(
+        m_globalUiSearchController->searchScopeDisplayText());
     m_globalUiSearchController->setSearchInputActive(
         m_customTitleBar->isSearchInputModeActive());
 

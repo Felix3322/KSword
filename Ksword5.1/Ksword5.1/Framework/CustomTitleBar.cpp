@@ -634,6 +634,7 @@ namespace ks::ui
         m_inputModeButton->setMenu(m_inputModeMenu);
 
         m_commandLineEdit = new QLineEdit(m_centerInputGroup);
+        m_commandLineEdit->setProperty("ksword_global_ui_search_input", true);
         m_commandLineEdit->setClearButtonEnabled(true);
         m_commandLineEdit->setFixedHeight(20);
 
@@ -974,11 +975,31 @@ namespace ks::ui
         return m_searchInputModeActive;
     }
 
-    void CustomTitleBar::setTitleInputMode(const bool searchModeActive)
+    void CustomTitleBar::activateSearchInput(const bool focusInput)
+    {
+        setTitleInputMode(true, focusInput);
+    }
+
+    void CustomTitleBar::setSearchScopeDisplayText(const QString& displayText)
+    {
+        const QString normalizedText = displayText.trimmed();
+        m_searchScopeDisplayText = normalizedText.isEmpty()
+            ? ks::i18n::sourceText(QStringLiteral("全局"))
+            : normalizedText;
+        updateTitleInputModeVisuals();
+    }
+
+    void CustomTitleBar::setTitleInputMode(
+        const bool searchModeActive,
+        const bool focusInput)
     {
         if (m_searchInputModeActive == searchModeActive)
         {
             updateTitleInputModeVisuals();
+            if (focusInput && m_commandLineEdit != nullptr)
+            {
+                m_commandLineEdit->setFocus(Qt::OtherFocusReason);
+            }
             return;
         }
 
@@ -991,7 +1012,7 @@ namespace ks::ui
             // 切回搜索模式时把已有文本重新交给搜索控制器恢复结果弹层。
             emit searchTextEdited(m_commandLineEdit->text());
         }
-        if (m_commandLineEdit != nullptr)
+        if (focusInput && m_commandLineEdit != nullptr)
         {
             m_commandLineEdit->setFocus(Qt::OtherFocusReason);
         }
@@ -1011,9 +1032,14 @@ namespace ks::ui
         m_commandModeAction->setChecked(!m_searchInputModeActive);
         if (m_searchInputModeActive)
         {
-            m_inputModeButton->setText(QStringLiteral("搜索 ▾"));
+            m_inputModeButton->setText(m_searchScopeDisplayText + QStringLiteral(" ▾"));
+            m_inputModeButton->setToolTip(
+                ks::i18n::sourceText(QStringLiteral("搜索范围：%1。聚焦输入框后按 Tab 切换范围。"))
+                    .arg(m_searchScopeDisplayText));
             m_commandLineEdit->setPlaceholderText(
-                QStringLiteral("搜索页面功能：输入关键词，Enter 跳转到匹配页面"));
+                ks::i18n::sourceText(
+                    QStringLiteral("在%1中搜索；按 Tab 切换全局、当前页面和当前表格"))
+                    .arg(m_searchScopeDisplayText));
         }
         else
         {

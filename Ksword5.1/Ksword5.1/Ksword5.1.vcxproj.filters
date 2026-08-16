@@ -820,6 +820,9 @@
     <ClCompile Include="UI\TableInteractionSupport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\TableSearchSupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\TableSnapshotCompare.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1478,6 +1481,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableInteractionSupport.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\TableSearchSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableSnapshotCompare.h">
