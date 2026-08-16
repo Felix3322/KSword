@@ -12,9 +12,7 @@ Abstract:
 
 #include "bugcheck_internal.h"
 #include "bugcheck_font.h"
-
-#include <ntstrsafe.h>
-#include <stdarg.h>
+#include "bugcheck_layout.h"
 
 #define KSW_SVGA_PCI_MAX_BUSES 256UL
 #define KSW_SVGA_PCI_MAX_DEVICES 32UL
@@ -662,113 +660,32 @@ KswordARKSvgaDrawText(
     }
 }
 
-static VOID
-KswordARKSvgaDrawWrappedText(
-    _In_ PKSWORD_ARK_SVGA_CONTEXT Context,
-    _In_ ULONG X,
-    _In_ ULONG Y,
-    _In_ ULONG Width,
-    _In_z_ PCSTR Text,
-    _In_ ULONG Color
-    )
-{
-    CHAR line[KSWORD_ARK_BUGCHECK_PANEL_LINE_CHARS];
-    ULONG maxChars;
-    ULONG lineLength = 0;
-    PCSTR cursor = Text;
-
-    if (Text == NULL || Width < (KSWORD_ARK_BUGCHECK_FONT_WIDTH + 1UL)) {
-        return;
-    }
-    maxChars = Width / (KSWORD_ARK_BUGCHECK_FONT_WIDTH + 1UL);
-    if (maxChars >= RTL_NUMBER_OF(line)) {
-        maxChars = RTL_NUMBER_OF(line) - 1UL;
-    }
-    line[0] = '\0';
-
-    while (*cursor != '\0') {
-        PCSTR wordStart;
-        ULONG wordLength = 0;
-        ULONG index;
-
-        while (*cursor == ' ') {
-            ++cursor;
-        }
-        wordStart = cursor;
-        while (*cursor != '\0' && *cursor != ' ') {
-            ++cursor;
-            ++wordLength;
-        }
-        if (wordLength == 0) {
-            break;
-        }
-        if (lineLength != 0 && lineLength + 1UL + wordLength > maxChars) {
-            KswordARKSvgaDrawText(Context, X, Y, line, Color, 1);
-            Y += KSWORD_ARK_BUGCHECK_FONT_HEIGHT + 3UL;
-            lineLength = 0;
-        }
-        if (lineLength != 0) {
-            line[lineLength++] = ' ';
-        }
-        for (index = 0;
-             index < wordLength && lineLength < RTL_NUMBER_OF(line) - 1UL;
-             ++index) {
-            line[lineLength++] = wordStart[index];
-        }
-        line[lineLength] = '\0';
-    }
-    if (lineLength != 0) {
-        KswordARKSvgaDrawText(Context, X, Y, line, Color, 1);
-    }
-}
-
-static VOID
-KswordARKSvgaDrawPanelLine(
-    _In_ PKSWORD_ARK_SVGA_CONTEXT Context,
-    _In_ ULONG X,
-    _Inout_ PULONG Y,
-    _In_ ULONG Color,
-    _In_z_ _Printf_format_string_ PCSTR Format,
-    ...
-    )
-{
-    CHAR line[KSWORD_ARK_BUGCHECK_PANEL_LINE_CHARS];
-    va_list arguments;
-
-    line[0] = '\0';
-    va_start(arguments, Format);
-    (VOID)RtlStringCbVPrintfA(line, sizeof(line), Format, arguments);
-    va_end(arguments);
-    line[RTL_NUMBER_OF(line) - 1] = '\0';
-    KswordARKSvgaDrawText(Context, X, *Y, line, Color, 1);
-    *Y += KSWORD_ARK_BUGCHECK_FONT_HEIGHT + 3UL;
-}
-
 static BOOLEAN
 KswordARKSvgaDrawBitmap(
     _In_ PKSWORD_ARK_BUGCHECK_STATE State,
     _In_ ULONG DestinationX,
     _In_ ULONG DestinationY,
-    _Out_ PULONG DrawnWidth,
-    _Out_ PULONG DrawnHeight
+    _In_ ULONG DestinationWidth,
+    _In_ ULONG DestinationHeight
     )
 {
+    ULONG backgroundBlue;
+    ULONG backgroundGreen;
+    ULONG backgroundRed;
     ULONG width;
     ULONG height;
     ULONG x;
     ULONG y;
-    const UCHAR* source;
     ULONG pixel;
 
-    *DrawnWidth = 0;
-    *DrawnHeight = 0;
-    if (InterlockedCompareExchange(&State->Bitmap.Valid, 1, 1) == 0 ||
+    if (State == NULL || DestinationWidth == 0 || DestinationHeight == 0 ||
+        InterlockedCompareExchange(&State->Bitmap.Valid, 1, 1) == 0 ||
         DestinationX >= State->Svga.Width || DestinationY >= State->Svga.Height) {
         return FALSE;
     }
 
-    width = State->Bitmap.Width;
-    height = State->Bitmap.Height;
+    width = DestinationWidth;
+    height = DestinationHeight;
     if (DestinationX + width > State->Svga.Width) {
         width = State->Svga.Width - DestinationX;
     }
@@ -776,14 +693,37 @@ KswordARKSvgaDrawBitmap(
         height = State->Svga.Height - DestinationY;
     }
 
+    backgroundRed = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_RED;
+    backgroundGreen = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_GREEN;
+    backgroundBlue = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_BLUE;
     for (y = 0; y < height; ++y) {
-        source = g_KswordArkBugcheckBitmapPixels + ((SIZE_T)y * State->Bitmap.Stride);
+        ULONG sourceY;
+
+        sourceY = (y * State->Bitmap.Height) / height;
         for (x = 0; x < width; ++x) {
+            ULONG alpha;
+            ULONG sourceBlue;
+            ULONG sourceGreen;
+            ULONG sourceRed;
+            ULONG sourceX;
+            const UCHAR* source;
+
+            sourceX = (x * State->Bitmap.Width) / width;
+            source = g_KswordArkBugcheckBitmapPixels +
+                ((SIZE_T)sourceY * State->Bitmap.Stride) +
+                ((SIZE_T)sourceX * 4UL);
+            sourceBlue = source[0];
+            sourceGreen = source[1];
+            sourceRed = source[2];
+            alpha = source[3];
             pixel = KswordARKSvgaPixelFromRgb(
                 &State->Svga,
-                source[(SIZE_T)x * 4UL + 2UL],
-                source[(SIZE_T)x * 4UL + 1UL],
-                source[(SIZE_T)x * 4UL + 0UL]);
+                (UCHAR)((sourceRed * alpha +
+                         backgroundRed * (255UL - alpha)) / 255UL),
+                (UCHAR)((sourceGreen * alpha +
+                         backgroundGreen * (255UL - alpha)) / 255UL),
+                (UCHAR)((sourceBlue * alpha +
+                         backgroundBlue * (255UL - alpha)) / 255UL));
             KswordARKSvgaWritePixel(
                 &State->Svga,
                 DestinationX + x,
@@ -791,9 +731,96 @@ KswordARKSvgaDrawBitmap(
                 pixel);
         }
     }
-    *DrawnWidth = width;
-    *DrawnHeight = height;
     return TRUE;
+}
+
+typedef struct _KSWORD_ARK_SVGA_LAYOUT_CONTEXT
+{
+    PKSWORD_ARK_SVGA_CONTEXT Svga;
+    ULONG Colors[KswordArkBugcheckLayoutColorCount];
+    ULONG Border;
+} KSWORD_ARK_SVGA_LAYOUT_CONTEXT, *PKSWORD_ARK_SVGA_LAYOUT_CONTEXT;
+
+static NTSTATUS
+KswordARKSvgaLayoutDrawText(
+    _In_opt_ PVOID Context,
+    _In_ LONG X,
+    _In_ LONG Y,
+    _In_z_ PCSTR Text,
+    _In_ ULONG ColorIndex
+    )
+{
+    PKSWORD_ARK_SVGA_LAYOUT_CONTEXT layout;
+
+    layout = (PKSWORD_ARK_SVGA_LAYOUT_CONTEXT)Context;
+    if (layout == NULL || layout->Svga == NULL || Text == NULL ||
+        X < 0 || Y < 0 ||
+        ColorIndex >= (ULONG)KswordArkBugcheckLayoutColorCount) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    KswordARKSvgaDrawText(
+        layout->Svga,
+        (ULONG)X,
+        (ULONG)Y,
+        Text,
+        layout->Colors[ColorIndex],
+        1UL);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswordARKSvgaLayoutDrawFrame(
+    _In_opt_ PVOID Context,
+    _In_ LONG X,
+    _In_ LONG Y,
+    _In_ KSWORD_ARK_BUGCHECK_LAYOUT_FRAME Frame
+    )
+{
+    PKSWORD_ARK_SVGA_LAYOUT_CONTEXT layout;
+    ULONG width;
+    ULONG height;
+    ULONG left;
+    ULONG top;
+
+    layout = (PKSWORD_ARK_SVGA_LAYOUT_CONTEXT)Context;
+    if (layout == NULL || layout->Svga == NULL || X < 0 || Y < 0 ||
+        !KswordARKBugcheckLayoutGetFrameMetrics(Frame, &width, &height)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    left = (ULONG)X;
+    top = (ULONG)Y;
+    // Draw one-pixel outlines without allocating any crash-time resources.
+    KswordARKSvgaFillRect(
+        layout->Svga,
+        left,
+        top,
+        left + width,
+        top + 1UL,
+        layout->Border);
+    KswordARKSvgaFillRect(
+        layout->Svga,
+        left,
+        top + height - 1UL,
+        left + width,
+        top + height,
+        layout->Border);
+    KswordARKSvgaFillRect(
+        layout->Svga,
+        left,
+        top,
+        left + 1UL,
+        top + height,
+        layout->Border);
+    KswordARKSvgaFillRect(
+        layout->Svga,
+        left + width - 1UL,
+        top,
+        left + width,
+        top + height,
+        layout->Border);
+    return STATUS_SUCCESS;
 }
 
 VOID
@@ -801,134 +828,127 @@ KswordARKBugcheckSvgaDrawPanelNoLog(
     _Inout_ PKSWORD_ARK_BUGCHECK_STATE State
     )
 {
+    KSWORD_ARK_BUGCHECK_LAYOUT_CANVAS canvas;
+    KSWORD_ARK_SVGA_LAYOUT_CONTEXT layout;
     PKSWORD_ARK_SVGA_CONTEXT svga;
-    PKSWORD_ARK_BUGCHECK_DIAGNOSTICS diag;
-    ULONG white;
-    ULONG brand;
-    ULONG logoX = 24;
-    ULONG logoY = 20;
-    ULONG logoWidth = 0;
-    ULONG logoHeight = 0;
-    ULONG textX;
-    ULONG textY;
-    ULONG y;
-    ULONG fallbackRight;
-    ULONG fallbackBottom;
+    LONG originX;
+    ULONG background;
+    ULONG callbackMask;
 
     if (State == NULL ||
         InterlockedCompareExchange(&State->Active, 1, 1) == 0) {
         return;
     }
     svga = &State->Svga;
-    diag = &State->Diagnostics;
     if (!svga->Mapped || svga->Framebuffer == NULL ||
-        svga->Width == 0 || svga->Height == 0) {
+        svga->Width < KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_WIDTH ||
+        svga->Height < KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_HEIGHT) {
         return;
     }
 
-    white = KswordARKSvgaPixelFromRgb(svga, 255, 255, 255);
-    brand = KswordARKSvgaPixelFromRgb(
+    RtlZeroMemory(&layout, sizeof(layout));
+    layout.Svga = svga;
+    background = KswordARKSvgaPixelFromRgb(
         svga,
-        (UCHAR)((State->Bitmap.BrandColorRgb >> 16) & 0xFF),
-        (UCHAR)((State->Bitmap.BrandColorRgb >> 8) & 0xFF),
-        (UCHAR)(State->Bitmap.BrandColorRgb & 0xFF));
-    KswordARKSvgaFillRect(svga, 0, 0, svga->Width, svga->Height, white);
+        KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_RED,
+        KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_GREEN,
+        KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_BLUE);
+    layout.Colors[KswordArkBugcheckLayoutColorText] =
+        KswordARKSvgaPixelFromRgb(
+            svga,
+            KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_RED,
+            KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_GREEN,
+            KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_BLUE);
+    layout.Colors[KswordArkBugcheckLayoutColorAccent] =
+        KswordARKSvgaPixelFromRgb(
+            svga,
+            KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_RED,
+            KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_GREEN,
+            KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_BLUE);
+    layout.Colors[KswordArkBugcheckLayoutColorMuted] =
+        KswordARKSvgaPixelFromRgb(
+            svga,
+            KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_RED,
+            KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_GREEN,
+            KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_BLUE);
+    layout.Colors[KswordArkBugcheckLayoutColorWarning] =
+        KswordARKSvgaPixelFromRgb(
+            svga,
+            KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_RED,
+            KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_GREEN,
+            KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_BLUE);
+    layout.Border = KswordARKSvgaPixelFromRgb(
+        svga,
+        KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_RED,
+        KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_GREEN,
+        KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_BLUE);
 
+    KswordARKSvgaFillRect(
+        svga,
+        0UL,
+        0UL,
+        svga->Width,
+        svga->Height,
+        background);
+    originX = KswordARKBugcheckLayoutOriginX(
+        svga->Width,
+        svga->Height);
     if (!KswordARKSvgaDrawBitmap(
             State,
-            logoX,
-            logoY,
-            &logoWidth,
-            &logoHeight)) {
-        logoWidth = 300;
-        logoHeight = 76;
-        fallbackRight = logoX + logoWidth;
-        fallbackBottom = logoY + logoHeight;
-        if (fallbackRight > svga->Width) {
-            fallbackRight = svga->Width;
-            logoWidth = fallbackRight > logoX ? fallbackRight - logoX : 0;
-        }
-        if (fallbackBottom > svga->Height) {
-            fallbackBottom = svga->Height;
-            logoHeight = fallbackBottom > logoY ? fallbackBottom - logoY : 0;
-        }
-        KswordARKSvgaFillRect(
-            svga,
-            logoX,
-            logoY,
-            fallbackRight,
-            fallbackBottom,
-            brand);
+            (ULONG)(originX + KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_X),
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_Y,
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_WIDTH,
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_HEIGHT)) {
+        // The text fallback deliberately uses the requested KSwordDEV brand.
         KswordARKSvgaDrawText(
             svga,
-            logoX + 16,
-            logoY + 25,
-            "KswordARK",
-            white,
-            2);
-    }
-
-    textX = logoX + logoWidth + 24;
-    if (svga->Width <= 344 || textX > svga->Width - 320) {
-        textX = 24;
-        textY = logoY + logoHeight + 10;
-    } else {
-        textY = logoY + 18;
-    }
-    KswordARKSvgaDrawText(
-        svga,
-        textX,
-        textY,
-        "KSWORDARK VMWARE BUGCHECK PANEL",
-        brand,
-        1);
-    textY += 22;
-    if (textX + 24 < svga->Width) {
-        KswordARKSvgaDrawWrappedText(
+            (ULONG)(originX + KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_X),
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_Y + 18UL,
+            "KSWORDDEV",
+            layout.Colors[KswordArkBugcheckLayoutColorAccent],
+            2UL);
+        KswordARKSvgaDrawText(
             svga,
-            textX,
-            textY,
-            svga->Width - textX - 24,
-            KswordARKBugcheckVerdictText(diag->CandidateClass),
-            brand);
+            (ULONG)(originX + KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_X),
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_Y + 50UL,
+            "KERNEL TOOLKIT",
+            layout.Colors[KswordArkBugcheckLayoutColorMuted],
+            1UL);
     }
 
-    y = logoY + logoHeight + 24;
-    if (y < 250) {
-        y = 250;
+    callbackMask = 0UL;
+    if (State->ClassicRegistered) {
+        callbackMask |= 0x1UL;
     }
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "STOP CODE : 0x%08lX", diag->BugCheckCode);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "STOP NAME : %s", KswordARKBugcheckName(diag->BugCheckCode));
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "PARAM1    : 0x%p", (PVOID)diag->Parameter1);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "PARAM2    : 0x%p", (PVOID)diag->Parameter2);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "PARAM3    : 0x%p", (PVOID)diag->Parameter3);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "PARAM4    : 0x%p", (PVOID)diag->Parameter4);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "FAULT IP  : param%lu 0x%p (%s)", diag->FaultParameter, (PVOID)diag->FaultAddress, diag->FaultMeaning);
-    y += 6;
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "REASON    : %s (%lu)", KswordARKBugcheckReasonText(diag->LastReason), diag->LastReason);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "DUMP TYPE : %s (%lu)", KswordARKBugcheckDumpTypeText(diag->LastDumpType), diag->LastDumpType);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "IRQL/CPU  : %lu / %lu", diag->Irql, diag->Cpu);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "DUMP I/O  : offset=0x%p length=0x%lX", (PVOID)(ULONG_PTR)diag->DumpOffset, diag->DumpBufferLength);
-    y += 6;
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "MODULE    : %s", diag->CandidateModule);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "ADDRESS   : 0x%p", (PVOID)diag->CandidateAddress);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "MOD RANGE : base=0x%p size=0x%lX off=0x%p", (PVOID)diag->CandidateModuleBase, diag->CandidateModuleSize, (PVOID)diag->CandidateModuleOffset);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "CAND SRC  : param%lu / %s", diag->CandidateParameter, diag->CandidateSource);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "CLASS     : %s", KswordARKBugcheckModuleClassText(diag->CandidateClass));
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "CONFIDENCE: %s", KswordARKBugcheckConfidenceText(diag->CandidateConfidence));
-    y += 6;
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "DRIVER    : DriverObject=0x%p DeviceObject=0x%p", State->DriverObject, State->DeviceObject);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "CALLBACKS : BC=%u TRIAGE=%u DUMP=%u SECONDARY=%u", State->ClassicRegistered ? 1UL : 0UL, State->TriageRegistered ? 1UL : 0UL, State->DumpIoRegistered ? 1UL : 0UL, State->SecondaryRegistered ? 1UL : 0UL);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "MODULES   : cached=%lu", State->ModuleCount);
-    y += 6;
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "SVGA PCI  : %lu:%lu.%lu vendor=0x%04X device=0x%04X", svga->Bus, svga->Device, svga->Function, svga->VendorId, svga->DeviceId);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "SVGA MODE : %lux%lux%lu pitch=%lu depth=%lu", svga->Width, svga->Height, svga->Bpp, svga->Pitch, svga->Depth);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "SVGA FB   : phys=0x%p va=0x%p bytes=0x%p", (PVOID)(ULONG_PTR)svga->FramebufferPhysical.QuadPart, (PVOID)svga->Framebuffer, (PVOID)(ULONG_PTR)svga->FramebufferLength);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "SVGA FIFO : phys=0x%p va=0x%p bytes=0x%p", (PVOID)(ULONG_PTR)svga->FifoPhysical.QuadPart, (PVOID)svga->Fifo, (PVOID)(ULONG_PTR)svga->FifoLength);
-    KswordARKSvgaDrawPanelLine(svga, 28, &y, brand, "BITMAP    : uploaded=%u %lux%lu bytes=0x%lX color=#%06lX", InterlockedCompareExchange(&State->Bitmap.Valid, 1, 1) != 0 ? 1UL : 0UL, State->Bitmap.Width, State->Bitmap.Height, State->Bitmap.DataLength, State->Bitmap.BrandColorRgb & 0xFFFFFFUL);
+    if (State->SecondaryRegistered) {
+        callbackMask |= 0x2UL;
+    }
+    if (State->DumpIoRegistered) {
+        callbackMask |= 0x4UL;
+    }
+    if (State->TriageRegistered) {
+        callbackMask |= 0x8UL;
+    }
+
+    RtlZeroMemory(&canvas, sizeof(canvas));
+    canvas.Context = &layout;
+    canvas.Width = svga->Width;
+    canvas.Height = svga->Height;
+    canvas.DrawText = KswordARKSvgaLayoutDrawText;
+    canvas.DrawFrame = KswordARKSvgaLayoutDrawFrame;
+    (VOID)KswordARKBugcheckLayoutDraw(
+        &canvas,
+        &State->Diagnostics,
+        callbackMask,
+        State->ModuleCount);
 
     KeMemoryBarrier();
-    if (!KswordARKSvgaFifoUpdateNoLog(svga, 0, 0, svga->Width, svga->Height)) {
+    if (!KswordARKSvgaFifoUpdateNoLog(
+            svga,
+            0UL,
+            0UL,
+            svga->Width,
+            svga->Height)) {
         KswordARKSvgaPortSyncNoLog(svga);
     }
 }

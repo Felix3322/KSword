@@ -187,7 +187,7 @@ KswordARKBugcheckWritePreparationLog(
         "callback_secondary=%lu\r\n"
         "callback_dump_io=%lu\r\n"
         "callback_triage=%lu\r\n"
-        "logo_source=qrc MainLogo.png -> embedded MainLogoBitmap.h\r\n"
+        "logo_source=qrc KswordHome-En.png -> embedded MainLogoBitmap.h\r\n"
         "runtime_bmp_file_dependency=none\r\n",
         osMajor,
         osMinor,

@@ -206,6 +206,12 @@
     <ClInclude Include="src\features\bugcheck\bugcheck_bgp_internal.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_layout.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_layout_detailed.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="src\features\bugcheck\bugcheck_panel.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -741,6 +747,12 @@
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_bgp_lifecycle.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_layout.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_layout_detailed.c">
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_panel.c">

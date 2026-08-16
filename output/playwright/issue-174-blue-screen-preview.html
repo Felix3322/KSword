@@ -1,0 +1,1529 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>KSword #174 蓝屏诊断页预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #030711;
+      --page-elevated: #08101f;
+      --page-border: #15233a;
+      --screen-bg: #050f21;
+      --screen-text: #e2e8f4;
+      --screen-accent: #447eff;
+      --screen-muted: #94a3be;
+      --screen-border: #182d4b;
+      --screen-glow: rgba(68, 126, 255, 0.14);
+      --scale: 1;
+      --screen-width: 1280px;
+      --screen-height: 720px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 720px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% -20%, rgba(38, 78, 154, 0.18), transparent 44%),
+        linear-gradient(180deg, #060b14 0%, var(--page) 100%);
+      color: #e7edf8;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .preview-toolbar {
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--page-border);
+      background: rgba(5, 10, 20, 0.88);
+      backdrop-filter: blur(18px);
+      z-index: 5;
+    }
+
+    .preview-heading {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 330px;
+    }
+
+    .preview-heading__mark {
+      width: 8px;
+      height: 34px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #5e93ff, #2856d9);
+      box-shadow: 0 0 18px rgba(68, 126, 255, 0.45);
+    }
+
+    .preview-heading h1 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      font-weight: 650;
+    }
+
+    .preview-heading p {
+      margin: 4px 0 0;
+      color: #8191ac;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    .preview-badge {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 9px;
+      border: 1px solid rgba(68, 126, 255, 0.42);
+      border-radius: 999px;
+      background: rgba(68, 126, 255, 0.11);
+      color: #8cadff;
+      font: 700 10px/1 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .resolution-switch {
+      display: inline-flex;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--page-border);
+      border-radius: 9px;
+      background: #050b16;
+    }
+
+    .resolution-switch button {
+      min-height: 32px;
+      padding: 0 13px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #7f8ea8;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      transition: color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+    }
+
+    .resolution-switch button:hover {
+      color: #dce6fa;
+      background: #0d1728;
+    }
+
+    .resolution-switch button[aria-pressed="true"] {
+      color: #eef4ff;
+      background: #162442;
+      box-shadow: inset 0 0 0 1px rgba(68, 126, 255, 0.28);
+    }
+
+    .preview-note {
+      margin-left: auto;
+      color: #6f7d96;
+      font-size: 11px;
+      line-height: 1.5;
+      text-align: right;
+    }
+
+    .preview-note strong {
+      color: #aab8cf;
+      font-weight: 600;
+    }
+
+    .capture-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-top: 2px;
+      color: #6f7d96;
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .capture-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .capture-legend i {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    .capture-legend__live {
+      color: #6f9aff;
+    }
+
+    .capture-legend__dump {
+      color: #d5a75b;
+    }
+
+    .capture-legend__planned {
+      color: #6d7890;
+    }
+
+    .preview-stage {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      overflow: hidden;
+    }
+
+    .screen-shadow {
+      position: absolute;
+      width: min(82vw, 1180px);
+      height: min(66vh, 680px);
+      border-radius: 50%;
+      background: rgba(33, 78, 170, 0.12);
+      filter: blur(70px);
+      pointer-events: none;
+    }
+
+    .screen-wrap {
+      position: relative;
+      width: calc(var(--screen-width) * var(--scale));
+      height: calc(var(--screen-height) * var(--scale));
+      flex: none;
+    }
+
+    .crash-screen {
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: var(--screen-width);
+      height: var(--screen-height);
+      overflow: hidden;
+      transform: scale(var(--scale));
+      transform-origin: 0 0;
+      background: var(--screen-bg);
+      color: var(--screen-text);
+      border: 1px solid #102541;
+      box-shadow:
+        0 22px 90px rgba(0, 0, 0, 0.58),
+        0 0 0 1px rgba(75, 119, 200, 0.08),
+        inset 0 0 80px rgba(0, 17, 44, 0.25);
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      letter-spacing: 0.018em;
+      text-transform: uppercase;
+      text-rendering: geometricPrecision;
+    }
+
+    .crash-screen::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.012) 0,
+        rgba(255, 255, 255, 0.012) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      mix-blend-mode: screen;
+    }
+
+    .crash-screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 68% 20%, rgba(61, 111, 220, 0.025), transparent 35%),
+        linear-gradient(90deg, rgba(255,255,255,0.012), transparent 10%, transparent 90%, rgba(0,0,0,0.05));
+    }
+
+    .brand-logo {
+      position: absolute;
+      left: 16px;
+      top: 12px;
+      width: 240px;
+      height: 84px;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .brand-logo img {
+      display: block;
+      width: 240px;
+      height: 84px;
+      object-fit: fill;
+      opacity: 0.96;
+      filter: saturate(1.13) contrast(1.04);
+      mix-blend-mode: screen;
+    }
+
+    .brand-logo::after {
+      content: "KSWORDDEV";
+      position: absolute;
+      left: 73px;
+      bottom: 4px;
+      padding: 2px 6px 2px 5px;
+      background: rgba(5, 15, 33, 0.84);
+      color: #78a0ff;
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.34em;
+    }
+
+    .crash-header {
+      position: absolute;
+      left: 280px;
+      top: 16px;
+      width: 590px;
+    }
+
+    .crash-header__title {
+      margin: 0 0 7px;
+      color: var(--screen-accent);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0.07em;
+    }
+
+    .crash-header__line {
+      margin: 0;
+      color: var(--screen-text);
+      font-size: 11px;
+      line-height: 1.48;
+      letter-spacing: 0.025em;
+    }
+
+    .crash-header__line--muted {
+      color: var(--screen-muted);
+    }
+
+    .crash-meta {
+      position: absolute;
+      top: 17px;
+      right: 18px;
+      width: 128px;
+      color: var(--screen-muted);
+      font-size: 11px;
+      line-height: 1.9;
+      text-align: right;
+      letter-spacing: 0.04em;
+    }
+
+    .crash-meta b {
+      color: var(--screen-text);
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .panel {
+      position: absolute;
+      overflow: hidden;
+      border: 1px solid var(--screen-border);
+      background: rgba(4, 15, 34, 0.16);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.008);
+    }
+
+    .panel__inner {
+      position: absolute;
+      inset: 10px 11px;
+    }
+
+    .panel__title {
+      margin: 0 0 9px;
+      color: var(--screen-muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+    }
+
+    .panel__title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 8px;
+    }
+
+    .panel__title-row .panel__title {
+      margin: 0;
+    }
+
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 14px;
+      padding: 0 5px;
+      border: 1px solid currentColor;
+      border-radius: 2px;
+      font-size: 7px;
+      line-height: 1;
+      letter-spacing: 0.08em;
+      opacity: 0.86;
+      white-space: nowrap;
+    }
+
+    .source-chip--live {
+      color: #6f9aff;
+      background: rgba(68, 126, 255, 0.08);
+    }
+
+    .source-chip--dump {
+      color: #d5a75b;
+      background: rgba(213, 167, 91, 0.07);
+    }
+
+    .source-chip--planned {
+      color: #6d7890;
+      background: rgba(109, 120, 144, 0.07);
+    }
+
+    .panel__hero {
+      margin: -1px 0 8px;
+      color: var(--screen-accent);
+      font-size: 16px;
+      line-height: 1.2;
+      font-weight: 650;
+      letter-spacing: 0.035em;
+      text-shadow: 0 0 18px var(--screen-glow);
+      white-space: nowrap;
+    }
+
+    .panel__hero--small {
+      font-size: 13px;
+    }
+
+    .panel__summary {
+      margin: 1px 0 8px;
+      color: var(--screen-accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      column-gap: 13px;
+      row-gap: 3px;
+      align-items: baseline;
+      margin: 0;
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .kv dt,
+    .kv dd {
+      min-width: 0;
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .kv dt {
+      color: var(--screen-muted);
+    }
+
+    .kv dd {
+      color: var(--screen-text);
+    }
+
+    .kv dd.accent {
+      color: var(--screen-accent);
+    }
+
+    .plain-lines {
+      display: grid;
+      gap: 5px;
+      margin: 0;
+      color: var(--screen-text);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .plain-lines p {
+      margin: 0;
+    }
+
+    .plain-lines .muted {
+      color: var(--screen-muted);
+    }
+
+    .help-lines {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      color: var(--screen-text);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .help-lines p {
+      margin: 0;
+    }
+
+    .help-lines p::before {
+      content: "> ";
+      color: var(--screen-accent);
+    }
+
+    .footer-status {
+      position: absolute;
+      left: 16px;
+      bottom: 28px;
+      color: var(--screen-muted);
+      font-size: 10px;
+      letter-spacing: 0.035em;
+    }
+
+    .footer-status__cursor {
+      display: inline-block;
+      width: 5px;
+      height: 10px;
+      margin-left: 5px;
+      vertical-align: -1px;
+      background: var(--screen-accent);
+      animation: cursor-blink 1.05s steps(1, end) infinite;
+      box-shadow: 0 0 10px rgba(68, 126, 255, 0.4);
+    }
+
+    .windows-reserved-band {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: 60px;
+      height: 50px;
+      border-top: 1px dashed rgba(148, 163, 190, 0.08);
+      border-bottom: 1px dashed rgba(148, 163, 190, 0.08);
+      opacity: 0.78;
+    }
+
+    .windows-reserved-band span {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      color: rgba(148, 163, 190, 0.28);
+      font-size: 8px;
+      letter-spacing: 0.08em;
+    }
+
+    .full-only {
+      display: block;
+    }
+
+    .compact-only,
+    .detailed-only {
+      display: none;
+    }
+
+    .crash-screen[data-mode="detailed"] {
+      --screen-width: 1280px;
+      --screen-height: 720px;
+      font-size: 10px;
+    }
+
+    .crash-screen[data-mode="detailed"] .full-only,
+    .crash-screen[data-mode="detailed"] .compact-only {
+      display: none;
+    }
+
+    .crash-screen[data-mode="detailed"] .detailed-only {
+      display: block;
+    }
+
+    .crash-screen[data-mode="detailed"] .detailed-meta {
+      display: grid;
+    }
+
+    .crash-screen[data-mode="detailed"] .detailed-footer {
+      display: flex;
+    }
+
+    .crash-screen[data-mode="detailed"] .footer-status {
+      display: none;
+    }
+
+    .crash-screen[data-mode="detailed"] .crash-header {
+      width: 665px;
+      top: 14px;
+    }
+
+    .crash-screen[data-mode="detailed"] .crash-header__title {
+      margin-bottom: 5px;
+      font-size: 11px;
+    }
+
+    .crash-screen[data-mode="detailed"] .crash-header__line {
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    .detailed-meta {
+      position: absolute;
+      top: 15px;
+      right: 18px;
+      display: grid;
+      grid-template-columns: auto auto;
+      column-gap: 12px;
+      row-gap: 7px;
+      color: var(--screen-muted);
+      font-size: 9px;
+      line-height: 1.2;
+      text-align: right;
+      letter-spacing: 0.04em;
+    }
+
+    .detailed-meta b {
+      color: var(--screen-text);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .crash-screen[data-mode="detailed"] .panel__inner {
+      inset: 8px 10px;
+    }
+
+    .crash-screen[data-mode="detailed"] .panel__title {
+      font-size: 9px;
+    }
+
+    .crash-screen[data-mode="detailed"] .panel__hero {
+      margin-bottom: 5px;
+      font-size: 14px;
+    }
+
+    .crash-screen[data-mode="detailed"] .panel__hero--small {
+      font-size: 11px;
+    }
+
+    .crash-screen[data-mode="detailed"] .panel__summary {
+      margin-bottom: 5px;
+      font-size: 10px;
+    }
+
+    .crash-screen[data-mode="detailed"] .kv {
+      column-gap: 9px;
+      row-gap: 2px;
+      font-size: 8px;
+      line-height: 1.35;
+    }
+
+    .detailed-top-left {
+      left: 16px;
+      top: 100px;
+      width: 470px;
+      height: 207px;
+    }
+
+    .detailed-top-middle {
+      left: 492px;
+      top: 100px;
+      width: 350px;
+      height: 207px;
+    }
+
+    .detailed-top-right {
+      left: 848px;
+      top: 100px;
+      width: 416px;
+      height: 207px;
+    }
+
+    .detailed-mid-thread {
+      left: 16px;
+      top: 311px;
+      width: 314px;
+      height: 162px;
+    }
+
+    .detailed-mid-stack {
+      left: 334px;
+      top: 311px;
+      width: 328px;
+      height: 162px;
+    }
+
+    .detailed-mid-module {
+      left: 666px;
+      top: 311px;
+      width: 278px;
+      height: 162px;
+    }
+
+    .detailed-mid-blackbox {
+      left: 948px;
+      top: 311px;
+      width: 316px;
+      height: 162px;
+    }
+
+    .detailed-bottom-cpu {
+      left: 16px;
+      top: 477px;
+      width: 480px;
+      height: 205px;
+    }
+
+    .detailed-bottom-dump {
+      left: 500px;
+      top: 477px;
+      width: 348px;
+      height: 205px;
+    }
+
+    .detailed-bottom-event {
+      left: 852px;
+      top: 477px;
+      width: 412px;
+      height: 98px;
+    }
+
+    .detailed-bottom-help {
+      left: 852px;
+      top: 579px;
+      width: 412px;
+      height: 103px;
+    }
+
+    .instruction-list,
+    .stack-list,
+    .cpu-list,
+    .blackbox-list {
+      display: grid;
+      gap: 3px;
+      margin: 0;
+      color: var(--screen-text);
+      font-size: 8px;
+      line-height: 1.32;
+    }
+
+    .instruction-line,
+    .stack-line,
+    .cpu-line,
+    .blackbox-line {
+      display: grid;
+      align-items: baseline;
+      column-gap: 8px;
+      white-space: nowrap;
+    }
+
+    .instruction-line {
+      grid-template-columns: 18px 118px minmax(0, 1fr);
+    }
+
+    .stack-line {
+      grid-template-columns: 20px minmax(0, 1fr);
+    }
+
+    .cpu-line {
+      grid-template-columns: 20px 24px 42px 26px minmax(0, 1fr);
+    }
+
+    .blackbox-line {
+      grid-template-columns: 74px minmax(0, 1fr);
+    }
+
+    .instruction-line span,
+    .stack-line span,
+    .cpu-line span,
+    .blackbox-line span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .instruction-line--focus {
+      color: var(--screen-accent);
+    }
+
+    .instruction-line--focus span:first-child::before {
+      content: ">";
+    }
+
+    .data-unavailable {
+      color: #d5a75b;
+    }
+
+    .data-planned {
+      color: #6d7890;
+    }
+
+    .cpu-line--header {
+      color: var(--screen-muted);
+      border-bottom: 1px solid rgba(24, 45, 75, 0.7);
+      padding-bottom: 3px;
+      margin-bottom: 1px;
+    }
+
+    .cpu-line--active {
+      margin: 1px -4px 0;
+      padding: 3px 4px;
+      background: rgba(68, 126, 255, 0.15);
+      color: #88aaff;
+    }
+
+    .dump-progress {
+      margin-top: 8px;
+    }
+
+    .dump-progress__labels {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      color: var(--screen-muted);
+      font-size: 7px;
+    }
+
+    .dump-progress__track {
+      height: 8px;
+      overflow: hidden;
+      border: 1px solid var(--screen-border);
+      background: #030a17;
+    }
+
+    .dump-progress__track::before {
+      content: "";
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        110deg,
+        rgba(68, 126, 255, 0.28) 0,
+        rgba(68, 126, 255, 0.28) 7px,
+        rgba(68, 126, 255, 0.08) 7px,
+        rgba(68, 126, 255, 0.08) 14px
+      );
+    }
+
+    .detailed-footer {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: 13px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--screen-muted);
+      font-size: 8px;
+      letter-spacing: 0.035em;
+    }
+
+    .full-top-left {
+      left: 16px;
+      top: 110px;
+      width: 344px;
+      height: 184px;
+    }
+
+    .full-top-middle {
+      left: 364px;
+      top: 110px;
+      width: 312px;
+      height: 184px;
+    }
+
+    .full-top-right {
+      left: 680px;
+      top: 110px;
+      width: 328px;
+      height: 184px;
+    }
+
+    .full-middle-left {
+      left: 16px;
+      top: 298px;
+      width: 344px;
+      height: 174px;
+    }
+
+    .full-middle-middle {
+      left: 364px;
+      top: 298px;
+      width: 312px;
+      height: 174px;
+    }
+
+    .full-middle-right {
+      left: 680px;
+      top: 298px;
+      width: 328px;
+      height: 174px;
+    }
+
+    .full-bottom-left {
+      left: 16px;
+      top: 476px;
+      width: 484px;
+      height: 176px;
+    }
+
+    .full-bottom-right {
+      left: 508px;
+      top: 476px;
+      width: 500px;
+      height: 176px;
+    }
+
+    .crash-screen[data-mode="compact"] {
+      --screen-width: 640px;
+      --screen-height: 480px;
+      font-size: 10px;
+    }
+
+    .crash-screen[data-mode="compact"] .full-only {
+      display: none;
+    }
+
+    .crash-screen[data-mode="compact"] .compact-only {
+      display: block;
+    }
+
+    .crash-screen[data-mode="compact"] .crash-header {
+      width: 350px;
+    }
+
+    .crash-screen[data-mode="compact"] .crash-header__title {
+      margin-bottom: 6px;
+      font-size: 10px;
+      letter-spacing: 0.035em;
+    }
+
+    .crash-screen[data-mode="compact"] .crash-header__line {
+      font-size: 9px;
+      line-height: 1.65;
+    }
+
+    .crash-screen[data-mode="compact"] .panel__inner {
+      inset: 8px 10px;
+    }
+
+    .crash-screen[data-mode="compact"] .panel__title {
+      margin-bottom: 5px;
+      font-size: 8px;
+    }
+
+    .crash-screen[data-mode="compact"] .panel__hero {
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+
+    .crash-screen[data-mode="compact"] .kv {
+      column-gap: 9px;
+      row-gap: 1px;
+      font-size: 8px;
+      line-height: 1.36;
+    }
+
+    .compact-column-left {
+      left: 16px;
+      top: 110px;
+      width: 296px;
+      height: 112px;
+    }
+
+    .compact-column-right {
+      left: 328px;
+      top: 110px;
+      width: 296px;
+      height: 112px;
+    }
+
+    .compact-wide {
+      left: 16px;
+      top: 292px;
+      width: 608px;
+      height: 126px;
+    }
+
+    .compact-wide .panel__inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .compact-wide .panel__title {
+      grid-column: 1 / -1;
+      margin-bottom: -2px;
+    }
+
+    .compact-wide .kv {
+      align-content: start;
+    }
+
+    .compact-progress-band {
+      position: absolute;
+      left: 16px;
+      top: 228px;
+      width: 608px;
+      height: 57px;
+      border-top: 1px dashed rgba(148, 163, 190, 0.07);
+      border-bottom: 1px dashed rgba(148, 163, 190, 0.07);
+    }
+
+    .compact-progress-band span {
+      position: absolute;
+      right: 7px;
+      top: 7px;
+      color: rgba(148, 163, 190, 0.24);
+      font-size: 7px;
+      letter-spacing: 0.06em;
+    }
+
+    .crash-screen[data-mode="compact"] .footer-status {
+      bottom: 25px;
+      font-size: 8px;
+    }
+
+    @keyframes cursor-blink {
+      0%, 47% { opacity: 1; }
+      48%, 100% { opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .footer-status__cursor {
+        animation: none;
+      }
+
+      .resolution-switch button {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="preview-toolbar">
+    <div class="preview-heading">
+      <span class="preview-heading__mark" aria-hidden="true"></span>
+      <div>
+        <h1>#174 蓝屏诊断页 HTML 预览</h1>
+        <p>当前驱动布局 · 深色诊断面板 · 示例数据</p>
+      </div>
+      <span class="preview-badge">KSWORDDEV</span>
+    </div>
+
+    <div class="resolution-switch" role="group" aria-label="预览分辨率">
+      <button type="button" data-preview-mode="detailed" aria-pressed="true">详细 1280 × 720</button>
+      <button type="button" data-preview-mode="full" aria-pressed="false">完整 1024 × 768</button>
+      <button type="button" data-preview-mode="compact" aria-pressed="false">紧凑 640 × 480</button>
+    </div>
+
+    <div class="preview-note">
+      <strong id="mode-label">信息完整设计稿</strong><br>
+      <span class="capture-legend">
+        <span class="capture-legend__live"><i></i>崩溃回调已捕获</span>
+        <span class="capture-legend__dump"><i></i>需解析转储</span>
+        <span class="capture-legend__planned"><i></i>需新增采集</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="preview-stage" id="preview-stage">
+    <div class="screen-shadow" aria-hidden="true"></div>
+    <div class="screen-wrap" id="screen-wrap">
+      <section class="crash-screen" id="crash-screen" data-mode="detailed" aria-label="KSword ARK 蓝屏诊断页预览">
+        <div class="brand-logo" aria-label="KSwordDEV Logo">
+          <img src="../../Ksword5.1/Ksword5.1/Resource/Logo/KswordHome-En.png" alt="KSwordDEV">
+        </div>
+
+        <div class="crash-header">
+          <p class="crash-header__title">KSWORD ARK CRASH DIAGNOSTICS</p>
+          <div class="full-only">
+            <p class="crash-header__line">A FATAL KERNEL ERROR HAS OCCURRED.</p>
+            <p class="crash-header__line crash-header__line--muted">THE SYSTEM HAS STOPPED TO PROTECT DATA.</p>
+            <p class="crash-header__line crash-header__line--muted">THIS SCREEN PRESERVES THE CRASH CONTEXT.</p>
+          </div>
+          <div class="compact-only">
+            <p class="crash-header__line">A FATAL KERNEL ERROR OCCURRED.</p>
+            <p class="crash-header__line crash-header__line--muted">CRASH CONTEXT CAPTURED.</p>
+            <p class="crash-header__line crash-header__line--muted">PRESERVE THE NEWEST DUMP.</p>
+          </div>
+          <div class="detailed-only">
+            <p class="crash-header__line">A FATAL KERNEL ERROR HAS OCCURRED.</p>
+            <p class="crash-header__line crash-header__line--muted">THE SYSTEM HAS STOPPED TO PROTECT DATA AND PRESERVE THE CRASH CONTEXT.</p>
+            <p class="crash-header__line crash-header__line--muted">LIVE VALUES ARE CAPTURED NOW; AMBER SECTIONS REQUIRE DUMP ANALYSIS.</p>
+          </div>
+        </div>
+
+        <div class="crash-meta full-only">
+          CRASH CPU&nbsp; <b>12</b><br>
+          IRQL&nbsp; <b>2</b>
+        </div>
+
+        <div class="detailed-only detailed-meta">
+          <span>CRASH CPU</span><b>12</b>
+          <span>IRQL</span><b>2</b>
+          <span>CALLBACKS</span><b>0x0F</b>
+          <span>UPTIME</span><b class="data-unavailable">DUMP ONLY</b>
+        </div>
+
+        <article class="panel detailed-only detailed-top-left">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">BUGCHECK</h2>
+              <span class="source-chip source-chip--live">CAPTURED</span>
+            </div>
+            <p class="panel__hero">IRQL_NOT_LESS_OR_EQUAL</p>
+            <p class="panel__summary">0x0000000A</p>
+            <dl class="kv">
+              <dt>ARG1</dt><dd>FFFFF800`00000048 — MEMORY REFERENCED</dd>
+              <dt>ARG2</dt><dd>00000000`00000002 — DISPATCH_LEVEL</dd>
+              <dt>ARG3</dt><dd>00000000`00000001 — WRITE</dd>
+              <dt>ARG4</dt><dd>FFFFF806`A12C7E91 — INSTRUCTION ADDRESS</dd>
+              <dt>FAULT VALUE</dt><dd>ARG1 / FFFFF800`00000048</dd>
+              <dt>FAULT IP</dt><dd>ARG4 / FFFFF806`A12C7E91</dd>
+              <dt>VERDICT</dt><dd class="accent">THIRD-PARTY MODULE CANDIDATE</dd>
+              <dt>CONFIDENCE</dt><dd>HIGH</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-top-middle">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">FAULT CONTEXT</h2>
+              <span class="source-chip source-chip--live">MIXED</span>
+            </div>
+            <dl class="kv">
+              <dt>RIP</dt><dd class="accent">FFFFF806`A12C7E91</dd>
+              <dt>CPU</dt><dd>12 / GROUP 0</dd>
+              <dt>IRQL</dt><dd>2 / DISPATCH_LEVEL</dd>
+              <dt>SOURCE</dt><dd>BUGCHECK ARG4</dd>
+              <dt>MODULE</dt><dd>NVLDDMKM.SYS + 0x12C7E91</dd>
+              <dt>CLASS</dt><dd>THIRD PARTY</dd>
+              <dt>CONFIDENCE</dt><dd>HIGH</dd>
+              <dt>RSP</dt><dd class="data-unavailable">DUMP ONLY</dd>
+              <dt>RFLAGS</dt><dd class="data-unavailable">DUMP ONLY</dd>
+              <dt>CR2</dt><dd class="data-unavailable">DUMP ONLY</dd>
+              <dt>MODE</dt><dd class="data-planned">NOT CAPTURED IN CALLBACK</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-top-right">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">FAULTING INSTRUCTION</h2>
+              <span class="source-chip source-chip--dump">DUMP ONLY</span>
+            </div>
+            <div class="instruction-list">
+              <div class="instruction-line"><span></span><span>FFFFF806`A12C7E85</span><span>MOV RAX,QWORD PTR [RBX+18H]</span></div>
+              <div class="instruction-line"><span></span><span>FFFFF806`A12C7E89</span><span>TEST RAX,RAX</span></div>
+              <div class="instruction-line instruction-line--focus"><span></span><span>FFFFF806`A12C7E91</span><span>MOV QWORD PTR [RAX+48H],RDX</span></div>
+              <div class="instruction-line"><span></span><span>FFFFF806`A12C7E95</span><span>JNE FFFFF806`A12C7EB0</span></div>
+            </div>
+            <dl class="kv" style="margin-top: 12px">
+              <dt>ADDRESS</dt><dd>FFFFF800`00000048</dd>
+              <dt>ACCESS</dt><dd>WRITE / 8 BYTES</dd>
+              <dt>SYMBOL</dt><dd>NVLDDMKM!UNKNOWN+0x12C7E91</dd>
+              <dt>BYTES</dt><dd class="data-unavailable">REQUIRES DUMP MEMORY</dd>
+              <dt>NOTE</dt><dd class="data-unavailable">PREVIEW SAMPLE, NOT LIVE DATA</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-mid-thread">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">CURRENT THREAD / PROCESS</h2>
+              <span class="source-chip source-chip--dump">DUMP ONLY</span>
+            </div>
+            <dl class="kv">
+              <dt>THREAD</dt><dd>FFFFCB02`4A132080</dd>
+              <dt>PROCESS</dt><dd>SYSTEM / PID 4</dd>
+              <dt>START</dt><dd>NT!PSPSYSTEMTHREADSTARTUP</dd>
+              <dt>STATE</dt><dd>RUNNING</dd>
+              <dt>PRIORITY</dt><dd>13</dd>
+              <dt>PREVIOUS MODE</dt><dd>KERNELMODE</dd>
+              <dt>LIVE STATUS</dt><dd class="data-planned">NOT CAPTURED</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-mid-stack">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">STACK TRACE · TOP 6</h2>
+              <span class="source-chip source-chip--dump">DUMP ONLY</span>
+            </div>
+            <div class="stack-list">
+              <div class="stack-line"><span>#00</span><span>NT!KEBUGCHECKEX</span></div>
+              <div class="stack-line"><span>#01</span><span>NT!KIBUGCHECKDISPATCH</span></div>
+              <div class="stack-line"><span>#02</span><span>NT!KIPAGEFAULT</span></div>
+              <div class="stack-line"><span>#03</span><span class="data-unavailable">NVLDDMKM!UNKNOWN+0x12C7E91</span></div>
+              <div class="stack-line"><span>#04</span><span>NT!PSPCALLPROCESSNOTIFYROUTINES</span></div>
+              <div class="stack-line"><span>#05</span><span>NT!NTCREATEFILE</span></div>
+              <div class="stack-line"><span>STATUS</span><span class="data-unavailable">REQUIRES UNWIND + SYMBOLS</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-mid-module">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">FAULTING MODULE</h2>
+              <span class="source-chip source-chip--live">CAPTURED</span>
+            </div>
+            <p class="panel__hero panel__hero--small">NVLDDMKM.SYS</p>
+            <dl class="kv">
+              <dt>BASE</dt><dd>FFFFF806`A0000000</dd>
+              <dt>SIZE</dt><dd>0x0213A000</dd>
+              <dt>OFFSET</dt><dd>0x012C7E91</dd>
+              <dt>ADDRESS</dt><dd>FFFFF806`A12C7E91</dd>
+              <dt>CLASS</dt><dd>THIRD PARTY</dd>
+              <dt>SOURCE</dt><dd>MODULE CACHE</dd>
+              <dt>VERSION</dt><dd class="data-unavailable">DUMP ONLY</dd>
+              <dt>PDB</dt><dd class="data-unavailable">DUMP ONLY</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-mid-blackbox">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">BLACKBOX SNAPSHOT</h2>
+              <span class="source-chip source-chip--dump">DUMP ONLY</span>
+            </div>
+            <div class="blackbox-list">
+              <div class="blackbox-line"><span>BSD</span><span>PRESENT</span></div>
+              <div class="blackbox-line"><span>NTFS</span><span>PRESENT</span></div>
+              <div class="blackbox-line"><span>PNP</span><span>PRESENT</span></div>
+              <div class="blackbox-line"><span>WINLOGON</span><span>PRESENT</span></div>
+              <div class="blackbox-line"><span>LAST DRIVER</span><span>NVLDDMKM.SYS</span></div>
+              <div class="blackbox-line"><span>LAST PROCESS</span><span>SYSTEM / PID 4</span></div>
+              <div class="blackbox-line"><span>LIVE STATUS</span><span class="data-planned">NOT CAPTURED</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-bottom-cpu">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">CPU SUMMARY</h2>
+              <span class="source-chip source-chip--dump">DUMP ONLY EXCEPT CRASH CPU</span>
+            </div>
+            <div class="cpu-list">
+              <div class="cpu-line cpu-line--header"><span>CPU</span><span>ID</span><span>STATE</span><span>IRQL</span><span>CURRENT FUNCTION</span></div>
+              <div class="cpu-line"><span>00</span><span>0</span><span>IDLE</span><span>0</span><span>NT!KIIDLELOOP</span></div>
+              <div class="cpu-line"><span>01</span><span>1</span><span>THREAD</span><span>0</span><span>SYSTEM</span></div>
+              <div class="cpu-line"><span>02</span><span>2</span><span>DPC</span><span>2</span><span>STORPORT!RAIDUNITREMOVE</span></div>
+              <div class="cpu-line"><span>03</span><span>3</span><span>IDLE</span><span>0</span><span>NT!KIIDLELOOP</span></div>
+              <div class="cpu-line"><span>04</span><span>4</span><span>THREAD</span><span>0</span><span>CSRSS.EXE</span></div>
+              <div class="cpu-line"><span>05</span><span>5</span><span>DPC</span><span>2</span><span>NT!KIRETIREDPCLIST</span></div>
+              <div class="cpu-line"><span>…</span><span>…</span><span>…</span><span>…</span><span>OTHER PROCESSORS REQUIRE DUMP</span></div>
+              <div class="cpu-line cpu-line--active"><span>12</span><span>12</span><span>BUGCHECK</span><span>2</span><span>NVLDDMKM+0x12C7E91</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-bottom-dump">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">DUMP STATUS</h2>
+              <span class="source-chip source-chip--live">CAPTURED</span>
+            </div>
+            <dl class="kv">
+              <dt>TYPE</dt><dd>KBCALLBACKDUMP_IO</dd>
+              <dt>STAGE</dt><dd class="accent">WRITE COMPLETE</dd>
+              <dt>OFFSET</dt><dd>00000000`5E400000</dd>
+              <dt>CHUNK</dt><dd>0x00010000</dd>
+              <dt>CALLBACK MASK</dt><dd>0x0F</dd>
+              <dt>CACHED MODULES</dt><dd>284</dd>
+              <dt>DRIVER OBJ</dt><dd>FFFFAB01`19CC7000</dd>
+              <dt>DEVICE OBJ</dt><dd>FFFFAB01`19D0B060</dd>
+              <dt>PERCENTAGE</dt><dd class="data-unavailable">CONTROLLED BY WINDOWS</dd>
+            </dl>
+            <div class="dump-progress">
+              <div class="dump-progress__labels"><span>WINDOWS DUMP PIPELINE</span><span>PERCENT NOT EXPOSED</span></div>
+              <div class="dump-progress__track" aria-hidden="true"></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-bottom-event">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">EVENT INFO</h2>
+              <span class="source-chip source-chip--planned">NEEDS CAPTURE</span>
+            </div>
+            <dl class="kv">
+              <dt>PERF COUNTER</dt><dd>0x000001D4`2AE71C40</dd>
+              <dt>EVENT ID / TIME</dt><dd class="data-planned">NOT AVAILABLE AT BUGCHECK</dd>
+              <dt>REPORT ID</dt><dd class="data-planned">GENERATE AFTER RESTART</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel detailed-only detailed-bottom-help">
+          <div class="panel__inner">
+            <div class="panel__title-row">
+              <h2 class="panel__title">NEXT ACTION</h2>
+              <span class="source-chip source-chip--live">STATIC GUIDANCE</span>
+            </div>
+            <div class="help-lines" style="gap: 3px; font-size: 8px">
+              <p>PRESERVE THE NEWEST CRASH DUMP; DO NOT POWER OFF.</p>
+              <p>AFTER RESTART, ATTACH THIS SCREEN AND MEMORY.DMP.</p>
+              <p>USE WINDBG OR KSWORDARK TO RESOLVE DUMP-ONLY FIELDS.</p>
+            </div>
+          </div>
+        </article>
+
+        <div class="detailed-only detailed-footer">
+          <span>LIVE SCREEN: CAPTURED VALUES + SOURCE AVAILABILITY</span>
+          <span>WAITING FOR WINDOWS TO COMPLETE THE CRASH DUMP <span class="footer-status__cursor" aria-hidden="true"></span></span>
+        </div>
+
+        <article class="panel full-only full-top-left">
+          <div class="panel__inner">
+            <h2 class="panel__title">BUGCHECK</h2>
+            <p class="panel__hero">IRQL_NOT_LESS_OR_EQUAL</p>
+            <p class="panel__summary">0x0000000A</p>
+            <dl class="kv">
+              <dt>STATUS</dt><dd>SYSTEM STOPPED SAFELY</dd>
+              <dt>SUMMARY</dt><dd>THIRD-PARTY CODE CANDIDATE</dd>
+              <dt>CONFIDENCE</dt><dd>HIGH</dd>
+              <dt>CAPTURE</dt><dd>COMPLETE</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-top-middle">
+          <div class="panel__inner">
+            <h2 class="panel__title">FAULT CONTEXT</h2>
+            <dl class="kv">
+              <dt>IP</dt><dd class="accent">FFFFF806`A12C7E91</dd>
+              <dt>PARAM</dt><dd>1</dd>
+              <dt>MEANING</dt><dd>WRITE</dd>
+              <dt>CPU</dt><dd>12</dd>
+              <dt>IRQL</dt><dd>2</dd>
+              <dt>SOURCE</dt><dd>BUGCHECK ARG4</dd>
+              <dt>ADDRESS</dt><dd>FFFFF806`A12C7E91</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-top-right">
+          <div class="panel__inner">
+            <h2 class="panel__title">DUMP STATUS</h2>
+            <dl class="kv">
+              <dt>STAGE</dt><dd class="accent">DUMP I/O</dd>
+              <dt>REASON</dt><dd>WRITE COMPLETE</dd>
+              <dt>OFFSET</dt><dd>00000000`5E400000</dd>
+              <dt>CHUNK</dt><dd>0x00010000</dd>
+              <dt>CALLBACKS</dt><dd>0x0F</dd>
+              <dt>CAPTURE</dt><dd>COMPLETE</dd>
+              <dt>PROGRESS</dt><dd>MANAGED BY WINDOWS</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-middle-left">
+          <div class="panel__inner">
+            <h2 class="panel__title">CRASH PARAMETERS</h2>
+            <dl class="kv">
+              <dt>ARG1</dt><dd>FFFFF800`00000048</dd>
+              <dt>ARG2</dt><dd>00000000`00000002</dd>
+              <dt>ARG3</dt><dd>00000000`00000001</dd>
+              <dt>ARG4</dt><dd>FFFFF806`A12C7E91</dd>
+              <dt>FAULT VALUE</dt><dd>COMES FROM ARG4</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-middle-middle">
+          <div class="panel__inner">
+            <h2 class="panel__title">FAULTING MODULE</h2>
+            <p class="panel__hero panel__hero--small">NVLDDMKM.SYS</p>
+            <dl class="kv">
+              <dt>BASE</dt><dd>FFFFF806`A0000000</dd>
+              <dt>SIZE</dt><dd>0x0213A000</dd>
+              <dt>OFFSET</dt><dd>00000000`012C7E91</dd>
+              <dt>CLASS</dt><dd>THIRD PARTY</dd>
+              <dt>CONF</dt><dd>HIGH</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-middle-right">
+          <div class="panel__inner">
+            <h2 class="panel__title">SYSTEM SNAPSHOT</h2>
+            <dl class="kv">
+              <dt>CPU / IRQL</dt><dd>12 / 2</dd>
+              <dt>CACHED MODULES</dt><dd>284</dd>
+              <dt>DRIVER OBJ</dt><dd>FFFFAB01`19CC7000</dd>
+              <dt>DEVICE OBJ</dt><dd>FFFFAB01`19D0B060</dd>
+              <dt>CLASSIC / TRIAGE</dt><dd>1 / 1</dd>
+              <dt>DUMP / SECONDARY</dt><dd>1 / 1</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-bottom-left">
+          <div class="panel__inner">
+            <h2 class="panel__title">DIAGNOSTIC SUMMARY</h2>
+            <p class="panel__summary">PARAMETERS POINT TO THIRD-PARTY CODE.</p>
+            <dl class="kv">
+              <dt>CANDIDATE</dt><dd>NVLDDMKM.SYS</dd>
+              <dt>CONFIDENCE</dt><dd>HIGH</dd>
+              <dt>ACTION</dt><dd>PRESERVE AND ANALYZE NEWEST DUMP</dd>
+              <dt>REPORT</dt><dd>ATTACH SCREEN AND CRASH DUMP</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel full-only full-bottom-right">
+          <div class="panel__inner">
+            <h2 class="panel__title">HELP</h2>
+            <div class="help-lines">
+              <p>PRESERVE THE NEWEST CRASH DUMP.</p>
+              <p>REVIEW RECENT DRIVER OR HARDWARE CHANGES.</p>
+              <p>ANALYZE THE DUMP IN KSWORDARK.</p>
+              <p>DO NOT POWER OFF DURING DUMP WRITING.</p>
+              <p class="muted">WINDOWS CONTROLS THE FINAL RESTART.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel compact-only compact-column-left">
+          <div class="panel__inner">
+            <h2 class="panel__title">BUGCHECK</h2>
+            <p class="panel__hero">IRQL_NOT_LESS_OR_EQUAL</p>
+            <dl class="kv">
+              <dt>CODE</dt><dd>0x0000000A</dd>
+              <dt>ARG1</dt><dd>FFFFF800`00000048</dd>
+              <dt>ARG2</dt><dd>00000000`00000002</dd>
+              <dt>ARG3</dt><dd>00000000`00000001</dd>
+              <dt>ARG4</dt><dd>FFFFF806`A12C7E91</dd>
+            </dl>
+          </div>
+        </article>
+
+        <article class="panel compact-only compact-column-right">
+          <div class="panel__inner">
+            <h2 class="panel__title">FAULT CONTEXT</h2>
+            <dl class="kv">
+              <dt>IP</dt><dd class="accent">FFFFF806`A12C7E91</dd>
+              <dt>PARAM</dt><dd>1 / WRITE</dd>
+              <dt>CPU / IRQL</dt><dd>12 / 2</dd>
+              <dt>MODULE</dt><dd>NVLDDMKM.SYS</dd>
+              <dt>CLASS</dt><dd>THIRD PARTY</dd>
+              <dt>CONF</dt><dd>HIGH</dd>
+            </dl>
+          </div>
+        </article>
+
+        <div class="compact-only compact-progress-band">
+          <span>WINDOWS DUMP PROGRESS RESERVED</span>
+        </div>
+
+        <article class="panel compact-only compact-wide">
+          <div class="panel__inner">
+            <h2 class="panel__title">FAULTING MODULE / DUMP STATUS</h2>
+            <dl class="kv">
+              <dt>MODULE</dt><dd class="accent">NVLDDMKM.SYS</dd>
+              <dt>BASE</dt><dd>FFFFF806`A0000000</dd>
+              <dt>SIZE</dt><dd>0x0213A000</dd>
+              <dt>OFFSET</dt><dd>00000000`012C7E91</dd>
+              <dt>ADDRESS</dt><dd>FFFFF806`A12C7E91</dd>
+            </dl>
+            <dl class="kv">
+              <dt>STAGE</dt><dd class="accent">DUMP I/O</dd>
+              <dt>REASON</dt><dd>WRITE COMPLETE</dd>
+              <dt>CALLBACKS</dt><dd>0x0F</dd>
+              <dt>MODULES</dt><dd>284</dd>
+              <dt>ACTION</dt><dd>PRESERVE NEWEST DUMP</dd>
+            </dl>
+          </div>
+        </article>
+
+        <div class="full-only windows-reserved-band" aria-hidden="true">
+          <span>WINDOWS CRASH-DUMP PROGRESS RESERVED</span>
+        </div>
+
+        <div class="footer-status">
+          <span class="full-only">WAITING FOR WINDOWS TO COMPLETE THE CRASH DUMP. DO NOT POWER OFF.</span>
+          <span class="compact-only">WINDOWS IS WRITING THE CRASH DUMP. DO NOT POWER OFF.</span>
+          <span class="footer-status__cursor" aria-hidden="true"></span>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const dimensions = {
+        detailed: { width: 1280, height: 720, label: "信息完整设计稿" },
+        full: { width: 1024, height: 768, label: "完整诊断布局" },
+        compact: { width: 640, height: 480, label: "紧凑安全布局" }
+      };
+
+      const stage = document.getElementById("preview-stage");
+      const screen = document.getElementById("crash-screen");
+      const wrap = document.getElementById("screen-wrap");
+      const modeLabel = document.getElementById("mode-label");
+      const buttons = Array.from(document.querySelectorAll("[data-preview-mode]"));
+
+      function fitScreen() {
+        const mode = screen.dataset.mode;
+        const size = dimensions[mode];
+        const bounds = stage.getBoundingClientRect();
+        const scale = Math.min(
+          (bounds.width - 36) / size.width,
+          (bounds.height - 36) / size.height,
+          1.18
+        );
+
+        document.documentElement.style.setProperty("--screen-width", `${size.width}px`);
+        document.documentElement.style.setProperty("--screen-height", `${size.height}px`);
+        document.documentElement.style.setProperty("--scale", Math.max(scale, 0.1).toFixed(4));
+        wrap.style.width = `${size.width * scale}px`;
+        wrap.style.height = `${size.height * scale}px`;
+      }
+
+      function setMode(mode) {
+        if (!dimensions[mode]) {
+          return;
+        }
+
+        screen.dataset.mode = mode;
+        modeLabel.textContent = dimensions[mode].label;
+        buttons.forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.previewMode === mode));
+        });
+        fitScreen();
+      }
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => setMode(button.dataset.previewMode));
+      });
+
+      new ResizeObserver(fitScreen).observe(stage);
+      window.addEventListener("load", fitScreen, { once: true });
+      fitScreen();
+    })();
+  </script>
+</body>
+</html>

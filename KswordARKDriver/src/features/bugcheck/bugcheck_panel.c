@@ -14,51 +14,23 @@ Abstract:
 
 #include "bugcheck_internal.h"
 #include "bugcheck_bgp.h"
+#include "bugcheck_layout.h"
 #include "bugcheck_panel.h"
 #include "../../platform/pool_compat.h"
-
-#include <ntstrsafe.h>
-#include <stdarg.h>
 
 #include "Generated/AsciiFont8x12.h"
 #include "Generated/MainLogoBitmap.h"
 
 #define KSWORD_ARK_PANEL_POOL_TAG 'lPgK'
-#define KSWORD_ARK_PANEL_REQUIRED_WIDTH 640UL
-#define KSWORD_ARK_PANEL_REQUIRED_HEIGHT 480UL
-#define KSWORD_ARK_PANEL_FULL_WIDTH 1024UL
-#define KSWORD_ARK_PANEL_FULL_HEIGHT 768UL
-#define KSWORD_ARK_PANEL_WHITE_ARGB 0xFFFFFFFFUL
+#define KSWORD_ARK_PANEL_BACKGROUND_ARGB 0xFF050F21UL
 #define KSWORD_ARK_PANEL_GLYPH_ADVANCE 9L
-#define KSWORD_ARK_PANEL_LINE_ADVANCE 16L
 #define KSWORD_ARK_PANEL_GLYPH_BORDER 1UL
 #define KSWORD_ARK_PANEL_GLYPH_BITMAP_WIDTH \
     (DRIVERGUI_FONT_WIDTH + (KSWORD_ARK_PANEL_GLYPH_BORDER * 2UL))
 #define KSWORD_ARK_PANEL_GLYPH_BITMAP_HEIGHT \
     (DRIVERGUI_FONT_HEIGHT + (KSWORD_ARK_PANEL_GLYPH_BORDER * 2UL))
-#define KSWORD_ARK_PANEL_LOGO_X 24L
-#define KSWORD_ARK_PANEL_LOGO_Y 20L
-#define KSWORD_ARK_PANEL_TITLE_X 653L
-#define KSWORD_ARK_PANEL_TITLE_Y 40L
-#define KSWORD_ARK_PANEL_VERDICT_Y 68L
-#define KSWORD_ARK_PANEL_DIAGNOSTIC_X 28L
-#define KSWORD_ARK_PANEL_DIAGNOSTIC_Y 260L
-#define KSWORD_ARK_PANEL_WRAP_CHARACTERS 38UL
-#define KSWORD_ARK_PANEL_COMPACT_LINE_ADVANCE 14L
-#define KSWORD_ARK_PANEL_COMPACT_LOGO_WIDTH 240UL
-#define KSWORD_ARK_PANEL_COMPACT_LOGO_HEIGHT 84UL
-#define KSWORD_ARK_PANEL_COMPACT_LOGO_X 16L
-#define KSWORD_ARK_PANEL_COMPACT_LOGO_Y 12L
-#define KSWORD_ARK_PANEL_COMPACT_TITLE_X 280L
-#define KSWORD_ARK_PANEL_COMPACT_TITLE_Y 18L
-#define KSWORD_ARK_PANEL_COMPACT_SUMMARY_Y 42L
-#define KSWORD_ARK_PANEL_COMPACT_LEFT_X 16L
-#define KSWORD_ARK_PANEL_COMPACT_RIGHT_X 330L
-#define KSWORD_ARK_PANEL_COMPACT_DIAGNOSTIC_Y 126L
-#define KSWORD_ARK_PANEL_COMPACT_PROGRESS_GAP 56L
-#define KSWORD_ARK_PANEL_COLOR_BLACK 0UL
-#define KSWORD_ARK_PANEL_COLOR_BLUE 1UL
-#define KSWORD_ARK_PANEL_COLOR_COUNT 2UL
+#define KSWORD_ARK_PANEL_COLOR_COUNT \
+    ((ULONG)KswordArkBugcheckLayoutColorCount)
 #define KSWORD_ARK_PANEL_BPP24_INDEX 0UL
 #define KSWORD_ARK_PANEL_BPP32_INDEX 1UL
 #define KSWORD_ARK_PANEL_BPP_VARIANT_COUNT 2UL
@@ -93,13 +65,16 @@ typedef struct _KSWORD_ARK_PANEL_VARIANT
 {
     ULONG BitsPerPixel;
     PVOID LogoRectangle;
-    PVOID CompactLogoRectangle;
     PVOID GlyphRectangles[KSWORD_ARK_PANEL_COLOR_COUNT][DRIVERGUI_FONT_COUNT];
+    PVOID FrameHorizontalRectangles[KswordArkBugcheckLayoutFrameCount];
+    PVOID FrameVerticalRectangles[KswordArkBugcheckLayoutFrameCount];
     // Keep the source BMPs resident for the lifetime of the parsed glyphs.
     // BgpGxParseBitmap is private and its ownership contract is not documented.
     // A persistent nonpaged backing buffer prevents a small-rectangle parser
     // from retaining a reused preparation stack buffer.
     PUCHAR GlyphBitmaps[KSWORD_ARK_PANEL_COLOR_COUNT][DRIVERGUI_FONT_COUNT];
+    PUCHAR FrameHorizontalBitmaps[KswordArkBugcheckLayoutFrameCount];
+    PUCHAR FrameVerticalBitmaps[KswordArkBugcheckLayoutFrameCount];
 } KSWORD_ARK_PANEL_VARIANT, *PKSWORD_ARK_PANEL_VARIANT;
 
 typedef struct _KSWORD_ARK_PANEL_STATE
@@ -107,7 +82,6 @@ typedef struct _KSWORD_ARK_PANEL_STATE
     volatile LONG Ready;
     volatile LONG ActiveVariant;
     KSWORD_ARK_PANEL_VARIANT Variants[KSWORD_ARK_PANEL_BPP_VARIANT_COUNT];
-    CHAR LineBuffer[KSWORD_ARK_BUGCHECK_PANEL_LINE_CHARS];
 } KSWORD_ARK_PANEL_STATE, *PKSWORD_ARK_PANEL_STATE;
 
 static KSWORD_ARK_PANEL_STATE g_KswordArkPanel;
@@ -247,6 +221,10 @@ KswordARKBugcheckPanelPrepareLogoRectangle(
             for (destinationX = 0;
                  destinationX < Width;
                  ++destinationX) {
+                ULONG alpha;
+                ULONG sourceBlue;
+                ULONG sourceGreen;
+                ULONG sourceRed;
                 ULONG sourceX;
                 PUCHAR destinationPixel;
                 const UCHAR* sourcePixel;
@@ -255,11 +233,32 @@ KswordARKBugcheckPanelPrepareLogoRectangle(
                 destinationPixel =
                     destinationRow + ((SIZE_T)destinationX * bytesPerPixel);
                 sourcePixel = sourceRow + ((SIZE_T)sourceX * 4UL);
-                destinationPixel[0] = sourcePixel[0];
-                destinationPixel[1] = sourcePixel[1];
-                destinationPixel[2] = sourcePixel[2];
+                sourceBlue = sourcePixel[0];
+                sourceGreen = sourcePixel[1];
+                sourceRed = sourcePixel[2];
+                alpha = sourcePixel[3];
+
+                // Keep the KSwordDEV artwork legible on the dark crash canvas.
+                if (alpha != 0 && sourceRed < 72UL &&
+                    sourceGreen < 72UL && sourceBlue < 72UL) {
+                    sourceRed = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_RED;
+                    sourceGreen = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_GREEN;
+                    sourceBlue = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_BLUE;
+                }
+                destinationPixel[0] = (UCHAR)(
+                    (sourceBlue * alpha +
+                     KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_BLUE *
+                         (255UL - alpha)) / 255UL);
+                destinationPixel[1] = (UCHAR)(
+                    (sourceGreen * alpha +
+                     KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_GREEN *
+                         (255UL - alpha)) / 255UL);
+                destinationPixel[2] = (UCHAR)(
+                    (sourceRed * alpha +
+                     KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_RED *
+                         (255UL - alpha)) / 255UL);
                 if (bytesPerPixel == 4UL) {
-                    destinationPixel[3] = sourcePixel[3];
+                    destinationPixel[3] = 0xFFU;
                 }
             }
         }
@@ -288,24 +287,13 @@ KswordARKBugcheckPanelPrepareLogos(
 
     status = KswordARKBugcheckPanelPrepareLogoRectangle(
         BitsPerPixel,
-        DRIVERGUI_MAINLOGO_WIDTH,
-        DRIVERGUI_MAINLOGO_HEIGHT,
+        KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_WIDTH,
+        KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_HEIGHT,
         &g_KswordArkPanel.Variants[VariantIndex].LogoRectangle);
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelPrepareLogoRectangle(
-            BitsPerPixel,
-            KSWORD_ARK_PANEL_COMPACT_LOGO_WIDTH,
-            KSWORD_ARK_PANEL_COMPACT_LOGO_HEIGHT,
-            &g_KswordArkPanel.Variants[VariantIndex]
-                .CompactLogoRectangle);
-    }
     if (!NT_SUCCESS(status)) {
         KswordARKBugcheckBgpDestroyRectangle(
             g_KswordArkPanel.Variants[VariantIndex].LogoRectangle);
         g_KswordArkPanel.Variants[VariantIndex].LogoRectangle = NULL;
-        KswordARKBugcheckBgpDestroyRectangle(
-            g_KswordArkPanel.Variants[VariantIndex].CompactLogoRectangle);
-        g_KswordArkPanel.Variants[VariantIndex].CompactLogoRectangle = NULL;
     }
     return status;
 }
@@ -320,25 +308,33 @@ KswordARKBugcheckPanelWriteGlyphPixel(
 {
     if (!Foreground) {
         // BGP's parsed 32-bit rectangles are rendered as opaque pixels.
-        // Use an opaque white background so every glyph cell remains white.
-        Pixel[0] = 0xFFU;
-        Pixel[1] = 0xFFU;
-        Pixel[2] = 0xFFU;
+        // Match every padded glyph cell to the dark crash canvas.
+        Pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_BLUE;
+        Pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_GREEN;
+        Pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_BACKGROUND_RED;
         if (BytesPerPixel == 4UL) {
-            // Match the opaque ARGB colors used by the original BGP renderer.
+            // BGP requires opaque pixels for reliable 32-bit glyph rendering.
             Pixel[3] = 0xFFU;
         }
         return;
     }
 
-    if (ColorIndex == KSWORD_ARK_PANEL_COLOR_BLUE) {
-        Pixel[0] = 0xD4U;
-        Pixel[1] = 0x78U;
-        Pixel[2] = 0x00U;
+    if (ColorIndex == KswordArkBugcheckLayoutColorAccent) {
+        Pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_BLUE;
+        Pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_GREEN;
+        Pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_ACCENT_RED;
+    } else if (ColorIndex == KswordArkBugcheckLayoutColorWarning) {
+        Pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_BLUE;
+        Pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_GREEN;
+        Pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_WARNING_RED;
+    } else if (ColorIndex == KswordArkBugcheckLayoutColorMuted) {
+        Pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_BLUE;
+        Pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_GREEN;
+        Pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_MUTED_RED;
     } else {
-        Pixel[0] = 0x00U;
-        Pixel[1] = 0x00U;
-        Pixel[2] = 0x00U;
+        Pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_BLUE;
+        Pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_GREEN;
+        Pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_TEXT_RED;
     }
     if (BytesPerPixel == 4UL) {
         Pixel[3] = 0xFFU;
@@ -392,7 +388,7 @@ KswordARKBugcheckPanelPrepareGlyph(
     }
 
     bytesPerPixel = BitsPerPixel / 8UL;
-    // Paint the complete padded cell white before overlaying foreground bits.
+    // Paint the complete padded cell before overlaying foreground bits.
     for (bitmapRowIndex = 0;
          bitmapRowIndex < KSWORD_ARK_PANEL_GLYPH_BITMAP_HEIGHT;
          ++bitmapRowIndex) {
@@ -491,6 +487,149 @@ KswordARKBugcheckPanelPrepareGlyphs(
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+KswordARKBugcheckPanelPrepareSolidRectangle(
+    _In_ ULONG BitsPerPixel,
+    _In_ ULONG Width,
+    _In_ ULONG Height,
+    _Out_ PVOID* Rectangle,
+    _Out_ PUCHAR* BackingBitmap
+    )
+{
+    PUCHAR bitmap;
+    PUCHAR pixels;
+    ULONG64 bitmapCapacity64;
+    ULONG bitmapCapacity;
+    ULONG bitmapLength;
+    ULONG bitmapStride;
+    ULONG bytesPerPixel;
+    ULONG x;
+    ULONG y;
+    NTSTATUS status;
+
+    if (Rectangle == NULL || BackingBitmap == NULL ||
+        Width == 0 || Height == 0 ||
+        (BitsPerPixel != 24UL && BitsPerPixel != 32UL)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *Rectangle = NULL;
+    *BackingBitmap = NULL;
+
+    bitmapCapacity64 =
+        sizeof(KSWORD_ARK_PANEL_BITMAP_FILE_HEADER) +
+        sizeof(KSWORD_ARK_PANEL_BITMAP_INFO_HEADER) +
+        ((((ULONG64)Width * BitsPerPixel + 31ULL) / 32ULL) *
+         4ULL * Height);
+    if (bitmapCapacity64 > MAXULONG) {
+        return STATUS_INTEGER_OVERFLOW;
+    }
+    bitmapCapacity = (ULONG)bitmapCapacity64;
+    bitmap = (PUCHAR)KswordARKAllocateNonPagedPool(
+        bitmapCapacity,
+        KSWORD_ARK_PANEL_POOL_TAG);
+    if (bitmap == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    pixels = NULL;
+    status = KswordARKBugcheckPanelInitializeBitmap(
+        bitmap,
+        bitmapCapacity,
+        Width,
+        Height,
+        BitsPerPixel,
+        &bitmapLength,
+        &bitmapStride,
+        &pixels);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(bitmap, KSWORD_ARK_PANEL_POOL_TAG);
+        return status;
+    }
+
+    bytesPerPixel = BitsPerPixel / 8UL;
+    for (y = 0; y < Height; ++y) {
+        PUCHAR row;
+
+        row = pixels + ((SIZE_T)y * bitmapStride);
+        for (x = 0; x < Width; ++x) {
+            PUCHAR pixel;
+
+            pixel = row + ((SIZE_T)x * bytesPerPixel);
+            pixel[0] = KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_BLUE;
+            pixel[1] = KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_GREEN;
+            pixel[2] = KSWORD_ARK_BUGCHECK_LAYOUT_BORDER_RED;
+            if (bytesPerPixel == 4UL) {
+                pixel[3] = 0xFFU;
+            }
+        }
+    }
+
+    status = KswordARKBugcheckBgpParseBitmap(
+        bitmap,
+        bitmapLength,
+        Rectangle);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(bitmap, KSWORD_ARK_PANEL_POOL_TAG);
+        return status;
+    }
+
+    // Retain the source because the private parser's ownership is undocumented.
+    *BackingBitmap = bitmap;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswordARKBugcheckPanelPrepareFrames(
+    _In_ ULONG VariantIndex,
+    _In_ ULONG BitsPerPixel
+    )
+{
+    KSWORD_ARK_BUGCHECK_LAYOUT_FRAME frame;
+
+    if (VariantIndex >= KSWORD_ARK_PANEL_BPP_VARIANT_COUNT) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    for (frame = KswordArkBugcheckLayoutFrameCompactColumn;
+         frame < KswordArkBugcheckLayoutFrameCount;
+         frame = (KSWORD_ARK_BUGCHECK_LAYOUT_FRAME)(frame + 1)) {
+        ULONG width;
+        ULONG height;
+        NTSTATUS status;
+
+        if (!KswordARKBugcheckLayoutGetFrameMetrics(
+                frame,
+                &width,
+                &height)) {
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        status = KswordARKBugcheckPanelPrepareSolidRectangle(
+            BitsPerPixel,
+            width,
+            1UL,
+            &g_KswordArkPanel.Variants[VariantIndex]
+                .FrameHorizontalRectangles[frame],
+            &g_KswordArkPanel.Variants[VariantIndex]
+                .FrameHorizontalBitmaps[frame]);
+        if (NT_SUCCESS(status)) {
+            status = KswordARKBugcheckPanelPrepareSolidRectangle(
+                BitsPerPixel,
+                1UL,
+                height,
+                &g_KswordArkPanel.Variants[VariantIndex]
+                    .FrameVerticalRectangles[frame],
+                &g_KswordArkPanel.Variants[VariantIndex]
+                    .FrameVerticalBitmaps[frame]);
+        }
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 KswordARKBugcheckPanelInitialize(
     VOID
@@ -519,8 +658,8 @@ KswordARKBugcheckPanelInitialize(
     // Accept the fully hidden pre-ownership mode so both supported rectangle
     // variants can still be prepared at PASSIVE_LEVEL.
     if (screen.BitsPerPixel != KSWORD_ARK_BGP_UNOWNED_BPP &&
-        (screen.Width < KSWORD_ARK_PANEL_REQUIRED_WIDTH ||
-         screen.Height < KSWORD_ARK_PANEL_REQUIRED_HEIGHT ||
+        (screen.Width < KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_WIDTH ||
+         screen.Height < KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_HEIGHT ||
          (screen.BitsPerPixel != 24UL &&
           screen.BitsPerPixel != 32UL))) {
         KswordARKBugcheckBgpRecordPreparation(
@@ -560,6 +699,12 @@ KswordARKBugcheckPanelInitialize(
             status = KswordARKBugcheckPanelPrepareGlyphs(
                 variantIndex,
                 bitsPerPixel);
+            if (NT_SUCCESS(status)) {
+                // Frames are parsed with glyph resources before the crash.
+                status = KswordARKBugcheckPanelPrepareFrames(
+                    variantIndex,
+                    bitsPerPixel);
+            }
             KswordARKBugcheckBgpRecordPreparation(
                 KswordArkBgpPreparationPrepareGlyphs,
                 status);
@@ -570,8 +715,8 @@ KswordARKBugcheckPanelInitialize(
             KswordArkBgpPreparationArm,
             STATUS_PENDING);
         status = KswordARKBugcheckBgpArm(
-            KSWORD_ARK_PANEL_REQUIRED_WIDTH,
-            KSWORD_ARK_PANEL_REQUIRED_HEIGHT);
+            KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_WIDTH,
+            KSWORD_ARK_BUGCHECK_LAYOUT_REQUIRED_HEIGHT);
         KswordARKBugcheckBgpRecordPreparation(
             KswordArkBgpPreparationArm,
             status);
@@ -605,9 +750,6 @@ KswordARKBugcheckPanelShutdown(
         KswordARKBugcheckBgpDestroyRectangle(
             g_KswordArkPanel.Variants[variantIndex].LogoRectangle);
         g_KswordArkPanel.Variants[variantIndex].LogoRectangle = NULL;
-        KswordARKBugcheckBgpDestroyRectangle(
-            g_KswordArkPanel.Variants[variantIndex].CompactLogoRectangle);
-        g_KswordArkPanel.Variants[variantIndex].CompactLogoRectangle = NULL;
         for (colorIndex = 0;
              colorIndex < KSWORD_ARK_PANEL_COLOR_COUNT;
              ++colorIndex) {
@@ -632,11 +774,48 @@ KswordARKBugcheckPanelShutdown(
                 }
             }
         }
+        {
+            KSWORD_ARK_BUGCHECK_LAYOUT_FRAME frame;
+
+            for (frame = KswordArkBugcheckLayoutFrameCompactColumn;
+                 frame < KswordArkBugcheckLayoutFrameCount;
+                 frame = (KSWORD_ARK_BUGCHECK_LAYOUT_FRAME)(frame + 1)) {
+                KswordARKBugcheckBgpDestroyRectangle(
+                    g_KswordArkPanel.Variants[variantIndex]
+                        .FrameHorizontalRectangles[frame]);
+                g_KswordArkPanel.Variants[variantIndex]
+                    .FrameHorizontalRectangles[frame] = NULL;
+                KswordARKBugcheckBgpDestroyRectangle(
+                    g_KswordArkPanel.Variants[variantIndex]
+                        .FrameVerticalRectangles[frame]);
+                g_KswordArkPanel.Variants[variantIndex]
+                    .FrameVerticalRectangles[frame] = NULL;
+                if (g_KswordArkPanel.Variants[variantIndex]
+                        .FrameHorizontalBitmaps[frame] != NULL) {
+                    ExFreePoolWithTag(
+                        g_KswordArkPanel.Variants[variantIndex]
+                            .FrameHorizontalBitmaps[frame],
+                        KSWORD_ARK_PANEL_POOL_TAG);
+                    g_KswordArkPanel.Variants[variantIndex]
+                        .FrameHorizontalBitmaps[frame] = NULL;
+                }
+                if (g_KswordArkPanel.Variants[variantIndex]
+                        .FrameVerticalBitmaps[frame] != NULL) {
+                    ExFreePoolWithTag(
+                        g_KswordArkPanel.Variants[variantIndex]
+                            .FrameVerticalBitmaps[frame],
+                        KSWORD_ARK_PANEL_POOL_TAG);
+                    g_KswordArkPanel.Variants[variantIndex]
+                        .FrameVerticalBitmaps[frame] = NULL;
+                }
+            }
+        }
     }
 }
 
 static NTSTATUS
 KswordARKBugcheckPanelDrawText(
+    _In_opt_ PVOID Context,
     _In_ LONG X,
     _In_ LONG Y,
     _In_z_ PCSTR Text,
@@ -646,6 +825,7 @@ KswordARKBugcheckPanelDrawText(
     LONG activeVariant;
     LONG cursorX;
 
+    UNREFERENCED_PARAMETER(Context);
     if (Text == NULL || ColorIndex >= KSWORD_ARK_PANEL_COLOR_COUNT) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -689,400 +869,62 @@ KswordARKBugcheckPanelDrawText(
 }
 
 static NTSTATUS
-KswordARKBugcheckPanelDrawWrappedText(
+KswordARKBugcheckPanelDrawFrame(
+    _In_opt_ PVOID Context,
     _In_ LONG X,
-    _Inout_ PLONG Y,
-    _In_z_ PCSTR Text,
-    _In_ ULONG ColorIndex,
-    _In_ ULONG MaximumCharacters
+    _In_ LONG Y,
+    _In_ KSWORD_ARK_BUGCHECK_LAYOUT_FRAME Frame
     )
 {
-    PCSTR cursor;
+    LONG activeVariant;
+    ULONG width;
+    ULONG height;
+    NTSTATUS status;
 
-    if (Y == NULL || Text == NULL || MaximumCharacters == 0) {
+    UNREFERENCED_PARAMETER(Context);
+    if (!KswordARKBugcheckLayoutGetFrameMetrics(
+            Frame,
+            &width,
+            &height)) {
         return STATUS_INVALID_PARAMETER;
     }
 
-    cursor = Text;
-    while (*cursor != '\0') {
-        ULONG lineLength;
-        ULONG copyLength;
-        NTSTATUS status;
+    activeVariant = InterlockedCompareExchange(
+        &g_KswordArkPanel.ActiveVariant,
+        0,
+        0);
+    if (activeVariant < 0 ||
+        activeVariant >= (LONG)KSWORD_ARK_PANEL_BPP_VARIANT_COUNT) {
+        return STATUS_DEVICE_NOT_READY;
+    }
 
-        lineLength = 0;
-        while (cursor[lineLength] != '\0' &&
-               lineLength < MaximumCharacters) {
-            ++lineLength;
-        }
-        copyLength = lineLength;
-        if (cursor[lineLength] != '\0') {
-            while (copyLength > 0 && cursor[copyLength] != ' ') {
-                --copyLength;
-            }
-            if (copyLength == 0) {
-                copyLength = lineLength;
-            }
-        }
-
-        copyLength = min(
-            copyLength,
-            (ULONG)sizeof(g_KswordArkPanel.LineBuffer) - 1UL);
-        RtlCopyMemory(g_KswordArkPanel.LineBuffer, cursor, copyLength);
-        g_KswordArkPanel.LineBuffer[copyLength] = '\0';
-        status = KswordARKBugcheckPanelDrawText(
+    // Each frame uses four rectangles parsed before the bugcheck occurs.
+    status = KswordARKBugcheckBgpDrawRectangle(
+        g_KswordArkPanel.Variants[activeVariant]
+            .FrameHorizontalRectangles[Frame],
+        X,
+        Y);
+    if (NT_SUCCESS(status)) {
+        status = KswordARKBugcheckBgpDrawRectangle(
+            g_KswordArkPanel.Variants[activeVariant]
+                .FrameHorizontalRectangles[Frame],
             X,
-            *Y,
-            g_KswordArkPanel.LineBuffer,
-            ColorIndex);
-        if (!NT_SUCCESS(status)) {
-            return status;
-        }
-
-        *Y += KSWORD_ARK_PANEL_LINE_ADVANCE;
-        cursor += copyLength;
-        while (*cursor == ' ') {
-            ++cursor;
-        }
-    }
-
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-KswordARKBugcheckPanelDrawFormattedLine(
-    _In_ LONG X,
-    _Inout_ PLONG Y,
-    _In_ ULONG ColorIndex,
-    _In_z_ _Printf_format_string_ PCSTR Format,
-    ...
-    )
-{
-    va_list arguments;
-    NTSTATUS status;
-
-    if (Y == NULL || Format == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    va_start(arguments, Format);
-    status = RtlStringCbVPrintfA(
-        g_KswordArkPanel.LineBuffer,
-        sizeof(g_KswordArkPanel.LineBuffer),
-        Format,
-        arguments);
-    va_end(arguments);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
-    status = KswordARKBugcheckPanelDrawText(
-        X,
-        *Y,
-        g_KswordArkPanel.LineBuffer,
-        ColorIndex);
-    if (NT_SUCCESS(status)) {
-        *Y += KSWORD_ARK_PANEL_LINE_ADVANCE;
-    }
-    return status;
-}
-
-static NTSTATUS
-KswordARKBugcheckPanelDrawCompactLine(
-    _In_ LONG X,
-    _Inout_ PLONG Y,
-    _In_ ULONG ColorIndex,
-    _In_z_ _Printf_format_string_ PCSTR Format,
-    ...
-    )
-{
-    va_list arguments;
-    NTSTATUS status;
-
-    if (Y == NULL || Format == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    va_start(arguments, Format);
-    status = RtlStringCbVPrintfA(
-        g_KswordArkPanel.LineBuffer,
-        sizeof(g_KswordArkPanel.LineBuffer),
-        Format,
-        arguments);
-    va_end(arguments);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
-    status = KswordARKBugcheckPanelDrawText(
-        X,
-        *Y,
-        g_KswordArkPanel.LineBuffer,
-        ColorIndex);
-    if (NT_SUCCESS(status)) {
-        *Y += KSWORD_ARK_PANEL_COMPACT_LINE_ADVANCE;
-    }
-    return status;
-}
-
-static PCSTR
-KswordARKBugcheckPanelCompactSummaryLine1(
-    _In_ ULONG BugCheckCode
-    )
-{
-    switch (BugCheckCode) {
-    case 0x000000EF: return "CRITICAL PROCESS";
-    case 0x0000007E: return "SYSTEM THREAD EXCEPTION";
-    case 0x000000D1: return "DRIVER IRQL FAILURE";
-    case 0x00000133: return "DPC WATCHDOG FAILURE";
-    default: return "WINDOWS STOPPED SAFELY";
-    }
-}
-
-static PCSTR
-KswordARKBugcheckPanelCompactSummaryLine2(
-    _In_ ULONG BugCheckCode
-    )
-{
-    switch (BugCheckCode) {
-    case 0x000000EF: return "TERMINATED UNEXPECTEDLY";
-    case 0x0000007E: return "WAS NOT HANDLED";
-    case 0x000000D1: return "AT ELEVATED IRQL";
-    case 0x00000133: return "RESPONDED TOO SLOWLY";
-    default: return "TO PROTECT SYSTEM DATA";
-    }
-}
-
-static PCSTR
-KswordARKBugcheckPanelCompactObjectType(
-    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics
-    )
-{
-    if (Diagnostics != NULL && Diagnostics->BugCheckCode == 0x000000EF) {
-        if (Diagnostics->Parameter2 == 0) {
-            return "PROCESS";
-        }
-        if (Diagnostics->Parameter2 == 1) {
-            return "THREAD";
-        }
-    }
-    return "OBJECT";
-}
-
-static PCSTR
-KswordARKBugcheckPanelCompactModuleText(
-    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics
-    )
-{
-    if (Diagnostics == NULL ||
-        Diagnostics->CandidateModule[0] == '\0' ||
-        Diagnostics->CandidateModule[0] == '(') {
-        return "NOT IDENTIFIED";
-    }
-    return Diagnostics->CandidateModule;
-}
-
-static NTSTATUS
-KswordARKBugcheckPanelDrawCompactBody(
-    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics,
-    _In_ ULONG CallbackMask,
-    _In_ ULONG ModuleCount,
-    _Inout_ PLONG Y
-    )
-{
-    LONG leftY;
-    LONG rightY;
-    NTSTATUS status;
-
-    if (Diagnostics == NULL || Y == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-    UNREFERENCED_PARAMETER(CallbackMask);
-    UNREFERENCED_PARAMETER(ModuleCount);
-
-    leftY = *Y;
-    rightY = *Y;
-    status = KswordARKBugcheckPanelDrawCompactLine(
-        KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-        &leftY,
-        KSWORD_ARK_PANEL_COLOR_BLUE,
-        "STOP CODE: 0x%08lX",
-        Diagnostics->BugCheckCode);
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "SUMMARY:");
+            Y + (LONG)height - 1L);
     }
     if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "NAME: %s",
-            KswordARKBugcheckName(Diagnostics->BugCheckCode));
+        status = KswordARKBugcheckBgpDrawRectangle(
+            g_KswordArkPanel.Variants[activeVariant]
+                .FrameVerticalRectangles[Frame],
+            X,
+            Y);
     }
     if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "%s",
-            KswordARKBugcheckPanelCompactSummaryLine1(
-                Diagnostics->BugCheckCode));
+        status = KswordARKBugcheckBgpDrawRectangle(
+            g_KswordArkPanel.Variants[activeVariant]
+                .FrameVerticalRectangles[Frame],
+            X + (LONG)width - 1L,
+            Y);
     }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "OBJECT: %s",
-            KswordARKBugcheckPanelCompactObjectType(Diagnostics));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "%s",
-            KswordARKBugcheckPanelCompactSummaryLine2(
-                Diagnostics->BugCheckCode));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "OBJECT PTR: 0x%p",
-            (PVOID)Diagnostics->Parameter1);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "DUMP: %s",
-            KswordARKBugcheckDumpTypeText(Diagnostics->LastDumpType));
-    }
-    if (NT_SUCCESS(status)) {
-        if (Diagnostics->BugCheckCode == 0x000000EF) {
-            status = KswordARKBugcheckPanelDrawCompactLine(
-                KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-                &leftY,
-                KSWORD_ARK_PANEL_COLOR_BLACK,
-                "FAULT IP: NOT PROVIDED");
-        } else {
-            status = KswordARKBugcheckPanelDrawCompactLine(
-                KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-                &leftY,
-                KSWORD_ARK_PANEL_COLOR_BLACK,
-                "FAULT IP: 0x%p",
-                (PVOID)Diagnostics->FaultAddress);
-        }
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "ACTION: PRESERVE DUMP");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "MODULE: %s",
-            KswordARKBugcheckPanelCompactModuleText(Diagnostics));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CHECK: RECENT DRIVERS");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CLASS: %s",
-            KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CHECK: EVENT VIEWER");
-    }
-
-    // Leave the central progress-text band clear because Windows paints dump
-    // progress there after the callback returns.
-    leftY += KSWORD_ARK_PANEL_COMPACT_PROGRESS_GAP;
-    rightY += KSWORD_ARK_PANEL_COMPACT_PROGRESS_GAP;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CONFIDENCE: %s",
-            KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CHECK: SYSTEM INTEGRITY");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM2: 0x%p",
-            (PVOID)Diagnostics->Parameter2);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM3: 0x%p",
-            (PVOID)Diagnostics->Parameter3);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CAPTURE: COMPLETE");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_LEFT_X,
-            &leftY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM4: 0x%p",
-            (PVOID)Diagnostics->Parameter4);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "NEXT: REVIEW DUMP");
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawCompactLine(
-            KSWORD_ARK_PANEL_COMPACT_RIGHT_X,
-            &rightY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "KSWORD ARK: CAPTURED");
-    }
-    *Y = leftY > rightY ? leftY : rightY;
     return status;
 }
 
@@ -1094,16 +936,9 @@ KswordARKBugcheckPanelDraw(
     )
 {
     KSWORD_ARK_BGP_DUMP_STATE bgpState;
+    KSWORD_ARK_BUGCHECK_LAYOUT_CANVAS canvas;
     LONG activeVariant;
-    LONG verdictY;
-    LONG diagnosticY;
-    LONG logoX;
-    LONG logoY;
-    LONG titleX;
-    LONG titleY;
-    LONG summaryY;
-    PVOID logoRectangle;
-    BOOLEAN compactLayout;
+    LONG originX;
     NTSTATUS status;
 
     if (Diagnostics == NULL ||
@@ -1121,228 +956,32 @@ KswordARKBugcheckPanelDraw(
         : (LONG)KSWORD_ARK_PANEL_BPP32_INDEX;
     InterlockedExchange(&g_KswordArkPanel.ActiveVariant, activeVariant);
     KswordARKBugcheckBgpSnapshot(&bgpState);
-    compactLayout = bgpState.ScreenWidth < KSWORD_ARK_PANEL_FULL_WIDTH ||
-        bgpState.ScreenHeight < KSWORD_ARK_PANEL_FULL_HEIGHT;
-    logoX = compactLayout
-        ? KSWORD_ARK_PANEL_COMPACT_LOGO_X
-        : KSWORD_ARK_PANEL_LOGO_X;
-    logoY = compactLayout
-        ? KSWORD_ARK_PANEL_COMPACT_LOGO_Y
-        : KSWORD_ARK_PANEL_LOGO_Y;
-    titleX = compactLayout
-        ? KSWORD_ARK_PANEL_COMPACT_TITLE_X
-        : KSWORD_ARK_PANEL_TITLE_X;
-    titleY = compactLayout
-        ? KSWORD_ARK_PANEL_COMPACT_TITLE_Y
-        : KSWORD_ARK_PANEL_TITLE_Y;
-    verdictY = KSWORD_ARK_PANEL_VERDICT_Y;
-    logoRectangle = compactLayout
-        ? g_KswordArkPanel.Variants[activeVariant].CompactLogoRectangle
-        : g_KswordArkPanel.Variants[activeVariant].LogoRectangle;
+    originX = KswordARKBugcheckLayoutOriginX(
+        bgpState.ScreenWidth,
+        bgpState.ScreenHeight);
 
-    status = KswordARKBugcheckBgpClearScreen(KSWORD_ARK_PANEL_WHITE_ARGB);
+    // Clear only after BeginDraw has acquired ownership and validated geometry.
+    status = KswordARKBugcheckBgpClearScreen(
+        KSWORD_ARK_PANEL_BACKGROUND_ARGB);
     if (NT_SUCCESS(status)) {
         status = KswordARKBugcheckBgpDrawRectangle(
-            logoRectangle,
-            logoX,
-            logoY);
+            g_KswordArkPanel.Variants[activeVariant].LogoRectangle,
+            originX + KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_X,
+            KSWORD_ARK_BUGCHECK_LAYOUT_LOGO_Y);
     }
     if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawText(
-            titleX,
-            titleY,
-            "KSWORD ARK CRASH DIAGNOSTICS",
-            KSWORD_ARK_PANEL_COLOR_BLUE);
+        RtlZeroMemory(&canvas, sizeof(canvas));
+        canvas.Width = bgpState.ScreenWidth;
+        canvas.Height = bgpState.ScreenHeight;
+        canvas.DrawText = KswordARKBugcheckPanelDrawText;
+        canvas.DrawFrame = KswordARKBugcheckPanelDrawFrame;
+        status = KswordARKBugcheckLayoutDraw(
+            &canvas,
+            Diagnostics,
+            CallbackMask,
+            ModuleCount);
     }
 
-    if (compactLayout) {
-        summaryY = KSWORD_ARK_PANEL_COMPACT_SUMMARY_Y;
-        if (NT_SUCCESS(status)) {
-            status = KswordARKBugcheckPanelDrawCompactLine(
-                titleX,
-                &summaryY,
-                KSWORD_ARK_PANEL_COLOR_BLACK,
-                "CRASH DATA CAPTURED");
-        }
-        if (NT_SUCCESS(status)) {
-            status = KswordARKBugcheckPanelDrawCompactLine(
-                titleX,
-                &summaryY,
-                KSWORD_ARK_PANEL_COLOR_BLACK,
-                "PRESERVE THE NEWEST DUMP");
-        }
-        diagnosticY = KSWORD_ARK_PANEL_COMPACT_DIAGNOSTIC_Y;
-        if (NT_SUCCESS(status)) {
-            status = KswordARKBugcheckPanelDrawCompactBody(
-                Diagnostics,
-                CallbackMask,
-                ModuleCount,
-                &diagnosticY);
-        }
-        KswordARKBugcheckBgpFinishDraw(status);
-        return status;
-    }
-
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawWrappedText(
-            titleX,
-            &verdictY,
-            KswordARKBugcheckVerdictText(Diagnostics->CandidateClass),
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            KSWORD_ARK_PANEL_WRAP_CHARACTERS);
-    }
-
-    diagnosticY = KSWORD_ARK_PANEL_DIAGNOSTIC_Y;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "STOP CODE : 0x%08lX",
-            Diagnostics->BugCheckCode);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "STOP NAME : %s",
-            KswordARKBugcheckName(Diagnostics->BugCheckCode));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM1    : 0x%p",
-            (PVOID)Diagnostics->Parameter1);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM2    : 0x%p",
-            (PVOID)Diagnostics->Parameter2);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM3    : 0x%p",
-            (PVOID)Diagnostics->Parameter3);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "PARAM4    : 0x%p",
-            (PVOID)Diagnostics->Parameter4);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "FAULT IP  : param%lu 0x%p (%s)",
-            Diagnostics->FaultParameter,
-            (PVOID)Diagnostics->FaultAddress,
-            Diagnostics->FaultMeaning);
-    }
-
-    diagnosticY += 6L;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "REASON    : %s (%lu)",
-            KswordARKBugcheckReasonText(Diagnostics->LastReason),
-            Diagnostics->LastReason);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "DUMP TYPE : %s (%lu)",
-            KswordARKBugcheckDumpTypeText(Diagnostics->LastDumpType),
-            Diagnostics->LastDumpType);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "IRQL/CPU  : %lu / %lu",
-            Diagnostics->Irql,
-            Diagnostics->Cpu);
-    }
-    diagnosticY += 6L;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLUE,
-            "MODULE    : %s",
-            Diagnostics->CandidateModule);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "ADDRESS   : 0x%p",
-            (PVOID)Diagnostics->CandidateAddress);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "MOD RANGE : base=0x%p size=0x%lX off=0x%p",
-            (PVOID)Diagnostics->CandidateModuleBase,
-            Diagnostics->CandidateModuleSize,
-            (PVOID)Diagnostics->CandidateModuleOffset);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CAND SRC  : param%lu / %s",
-            Diagnostics->CandidateParameter,
-            Diagnostics->CandidateSource);
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CLASS     : %s",
-            KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass));
-    }
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "CONFIDENCE: %s",
-            KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
-    }
-
-    diagnosticY += 6L;
-    if (NT_SUCCESS(status)) {
-        status = KswordARKBugcheckPanelDrawFormattedLine(
-            KSWORD_ARK_PANEL_DIAGNOSTIC_X,
-            &diagnosticY,
-            KSWORD_ARK_PANEL_COLOR_BLACK,
-            "DRIVER    : DriverObject=0x%p DeviceObject=0x%p",
-            g_KswordArkBugcheckState.DriverObject,
-            g_KswordArkBugcheckState.DeviceObject);
-    }
     KswordARKBugcheckBgpFinishDraw(status);
     return status;
 }

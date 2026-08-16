@@ -198,6 +198,12 @@ namespace
         static_cast<int>(KSWORD_ARK_BUGCHECK_BITMAP_MAX_WIDTH);
     constexpr int kBugcheckBitmapMaxHeight =
         static_cast<int>(KSWORD_ARK_BUGCHECK_BITMAP_MAX_HEIGHT);
+    constexpr int kBugcheckLogoWidth = 240;
+    constexpr int kBugcheckLogoHeight = 84;
+    static_assert(kBugcheckLogoWidth <= kBugcheckBitmapMaxWidth);
+    static_assert(kBugcheckLogoHeight <= kBugcheckBitmapMaxHeight);
+    constexpr QRgb kBugcheckBitmapBackground = qRgba(5, 15, 33, 255);
+    constexpr QRgb kBugcheckBitmapLightText = qRgba(226, 232, 244, 255);
 
     std::uint32_t detectBugcheckBrandColor(const QImage& image)
     {
@@ -246,13 +252,13 @@ namespace
                 return;
             }
 
-            if (source.width() > kBugcheckBitmapMaxWidth ||
-                source.height() > kBugcheckBitmapMaxHeight)
+            if (source.width() != kBugcheckLogoWidth ||
+                source.height() != kBugcheckLogoHeight)
             {
                 source = source.scaled(
-                    kBugcheckBitmapMaxWidth,
-                    kBugcheckBitmapMaxHeight,
-                    Qt::KeepAspectRatio,
+                    kBugcheckLogoWidth,
+                    kBugcheckLogoHeight,
+                    Qt::IgnoreAspectRatio,
                     Qt::SmoothTransformation);
                 if (source.isNull())
                 {
@@ -261,16 +267,38 @@ namespace
             }
 
             const std::uint32_t brandColor = detectBugcheckBrandColor(source);
+            QImage darkCompatibleSource = source.convertToFormat(QImage::Format_ARGB32);
+            if (darkCompatibleSource.isNull())
+            {
+                return;
+            }
+            for (int y = 0; y < darkCompatibleSource.height(); ++y)
+            {
+                QRgb* const row = reinterpret_cast<QRgb*>(darkCompatibleSource.scanLine(y));
+                for (int x = 0; x < darkCompatibleSource.width(); ++x)
+                {
+                    const QColor color = QColor::fromRgba(row[x]);
+                    if (color.alpha() != 0 && color.red() < 72 &&
+                        color.green() < 72 && color.blue() < 72)
+                    {
+                        row[x] = qRgba(
+                            qRed(kBugcheckBitmapLightText),
+                            qGreen(kBugcheckBitmapLightText),
+                            qBlue(kBugcheckBitmapLightText),
+                            color.alpha());
+                    }
+                }
+            }
             QImage bitmap(source.size(), QImage::Format_ARGB32);
             if (bitmap.isNull())
             {
                 return;
             }
-            bitmap.fill(Qt::white);
+            bitmap.fill(kBugcheckBitmapBackground);
             {
                 QPainter painter(&bitmap);
                 painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-                painter.drawImage(0, 0, source);
+                painter.drawImage(0, 0, darkCompatibleSource);
             }
 
             const std::uint32_t width = static_cast<std::uint32_t>(bitmap.width());

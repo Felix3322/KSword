@@ -141,6 +141,8 @@
     <ClCompile Include="src\features\bugcheck\bugcheck_runtime.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_bgp.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_bgp_lifecycle.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_layout.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_layout_detailed.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_panel.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_preparation_log.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_svga.c" />
@@ -304,6 +306,8 @@
     <ClInclude Include="src\features\bugcheck\bugcheck_font.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_bgp.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_bgp_internal.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_layout.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_layout_detailed.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_panel.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_preparation_log.h" />
     <ClInclude Include="src\features\bugcheck\Generated\AsciiFont8x12.h" />
