@@ -465,7 +465,10 @@ void ProcessDetailWindow::executeR0TerminateProcessAction()
         << eol;
 
     ksword::ark::DriverClient driverClient;
-    const ksword::ark::IoResult result = driverClient.terminateProcess(m_baseRecord.pid, 1L);
+    const ksword::ark::IoResult result = driverClient.terminateProcess(
+        m_baseRecord.pid,
+        1L,
+        m_baseRecord.creationTime100ns);
     std::ostringstream detailStream;
     appendExtendedIoResultDetail(result, detailStream);
     showActionResultMessage(QStringLiteral("R0结束进程"), result.ok, detailStream.str(), actionEvent);
@@ -649,7 +652,11 @@ void ProcessDetailWindow::executeR0SetBreakOnTerminationAction(const bool enable
         : KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_BREAK_ON_TERMINATION;
     ksword::ark::DriverClient driverClient;
     const ksword::ark::ProcessSpecialFlagsResult result =
-        driverClient.setProcessSpecialFlags(m_baseRecord.pid, action);
+        driverClient.setProcessSpecialFlags(
+            m_baseRecord.pid,
+            action,
+            0UL,
+            m_baseRecord.creationTime100ns);
     const bool actionOk = result.io.ok &&
         result.status == KSWORD_ARK_PROCESS_SPECIAL_STATUS_APPLIED;
     std::ostringstream detailStream;
@@ -692,7 +699,9 @@ void ProcessDetailWindow::executeR0DisableApcInsertionAction()
     const ksword::ark::ProcessSpecialFlagsResult result =
         driverClient.setProcessSpecialFlags(
             m_baseRecord.pid,
-            KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_APC_INSERTION);
+            KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_APC_INSERTION,
+            0UL,
+            m_baseRecord.creationTime100ns);
     const bool actionOk = result.io.ok &&
         result.status == KSWORD_ARK_PROCESS_SPECIAL_STATUS_APPLIED;
     std::ostringstream detailStream;

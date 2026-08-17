@@ -419,6 +419,7 @@ private:
     {
         std::string identityKey;            // identityKey：PID+创建时间构成的稳定行标识。
         ks::process::ProcessRecord record;  // record：动作执行线程使用的进程记录副本。
+        bool isKernelOnly = false;           // isKernelOnly：仅 R0 可见目标不能依赖 Win32 句柄校验。
     };
 
     // NetworkTrafficCounters：

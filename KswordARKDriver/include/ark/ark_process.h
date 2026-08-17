@@ -10,7 +10,8 @@ NTSTATUS
 KswordARKDriverTerminateProcessByPid(
     _In_opt_ WDFDEVICE device,
     _In_ ULONG processId,
-    _In_ NTSTATUS exitStatus
+    _In_ NTSTATUS exitStatus,
+    _In_ ULONG64 expectedCreateTime100ns
     );
 
 NTSTATUS
@@ -183,6 +184,7 @@ KswordARKDriverSetProcessSpecialFlags(
     _In_ ULONG ProcessId,
     _In_ ULONG Action,
     _In_ ULONG Flags,
+    _In_ ULONG64 ExpectedCreateTime100ns,
     _Out_ ULONG* OperationStatusOut,
     _Out_ ULONG* AppliedFlagsOut,
     _Out_ ULONG* TouchedThreadCountOut

@@ -81,8 +81,15 @@ namespace ksword::ark
             unsigned long outputBytes,
             OVERLAPPED* overlapped) const;
 
-        IoResult terminateProcess(std::uint32_t processId, long exitStatus) const;
-        IoResult terminateProcess(DriverHandle& handle, std::uint32_t processId, long exitStatus) const;
+        IoResult terminateProcess(
+            std::uint32_t processId,
+            long exitStatus,
+            std::uint64_t expectedCreateTime100ns = 0) const;
+        IoResult terminateProcess(
+            DriverHandle& handle,
+            std::uint32_t processId,
+            long exitStatus,
+            std::uint64_t expectedCreateTime100ns = 0) const;
         IoResult terminateThread(std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
         IoResult terminateThread(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
         IoResult setThreadSuspended(std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
@@ -120,7 +127,11 @@ namespace ksword::ark
             std::int32_t luidHighPart,
             bool enabled,
             DriverHandle* existingHandle = nullptr) const;
-        ProcessSpecialFlagsResult setProcessSpecialFlags(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
+        ProcessSpecialFlagsResult setProcessSpecialFlags(
+            std::uint32_t processId,
+            unsigned long action,
+            unsigned long flags = 0UL,
+            std::uint64_t expectedCreateTime100ns = 0) const;
         ProcessDkomResult dkomProcess(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;
         ProcessInjectResult injectProcessDll(
             std::uint32_t processId,

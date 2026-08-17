@@ -28,6 +28,14 @@ Environment:
 #define KSWORD_ARK_ENUM_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_PROCESS_RESPONSE) - sizeof(KSWORD_ARK_PROCESS_ENTRY))
 
+/* 中文说明：旧终止请求只有 PID 与 exitStatus，新驱动继续接受该固定前缀。 */
+#define KSWORD_ARK_TERMINATE_REQUEST_V1_SIZE \
+    FIELD_OFFSET(KSWORD_ARK_TERMINATE_PROCESS_REQUEST, expectedCreateTime100ns)
+
+/* 中文说明：旧特殊标志请求到 flags 为止，新字段按实际输入长度选择性复制。 */
+#define KSWORD_ARK_PROCESS_SPECIAL_REQUEST_V1_SIZE \
+    FIELD_OFFSET(KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_REQUEST, expectedCreateTime100ns)
+
 #define KSWORD_ARK_INJECT_REQUEST_HEADER_SIZE \
     FIELD_OFFSET(KSWORD_ARK_INJECT_PROCESS_REQUEST, payload)
 
@@ -103,6 +111,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_TERMINATE_PROCESS_REQUEST* terminateRequest = NULL;
+    KSWORD_ARK_TERMINATE_PROCESS_REQUEST terminateRequestValue;
     PVOID inputBuffer = NULL;
     size_t actualInputLength = 0;
     NTSTATUS status = STATUS_SUCCESS;
@@ -117,7 +126,7 @@ Return Value:
 
     status = KswordARKRetrieveRequiredInputBuffer(
         Request,
-        sizeof(KSWORD_ARK_TERMINATE_PROCESS_REQUEST),
+        KSWORD_ARK_TERMINATE_REQUEST_V1_SIZE,
         &inputBuffer,
         &actualInputLength);
     if (!NT_SUCCESS(status)) {
@@ -126,35 +135,51 @@ Return Value:
     }
 
     terminateRequest = (KSWORD_ARK_TERMINATE_PROCESS_REQUEST*)inputBuffer;
-    status = KswordARKValidateUserPid((ULONG)terminateRequest->processId);
+    /* 中文说明：先清零再按实际长度复制，旧请求自然得到 expectedCreateTime100ns=0。 */
+    RtlZeroMemory(&terminateRequestValue, sizeof(terminateRequestValue));
+    RtlCopyMemory(
+        &terminateRequestValue,
+        terminateRequest,
+        min(actualInputLength, sizeof(terminateRequestValue)));
+    status = KswordARKValidateUserPid((ULONG)terminateRequestValue.processId);
     if (!NT_SUCCESS(status)) {
-        KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate ioctl: pid=%lu rejected.", (unsigned long)terminateRequest->processId);
+        KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate ioctl: pid=%lu rejected.", (unsigned long)terminateRequestValue.processId);
         return status;
     }
     {
         KSWORD_ARK_SAFETY_CONTEXT safetyContext;
         RtlZeroMemory(&safetyContext, sizeof(safetyContext));
         safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_PROCESS_TERMINATE;
-        safetyContext.TargetProcessId = (ULONG)terminateRequest->processId;
+        safetyContext.TargetProcessId = (ULONG)terminateRequestValue.processId;
         safetyContext.ContextFlags = KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
-            KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate denied by safety policy: pid=%lu, status=0x%08X.", (unsigned long)terminateRequest->processId, (unsigned int)status);
+            KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate denied by safety policy: pid=%lu, status=0x%08X.", (unsigned long)terminateRequestValue.processId, (unsigned int)status);
             return status;
         }
     }
 
-    KswordARKProcessIoctlLog(Device, "Info", "R0 terminate ioctl: pid=%lu, exit=0x%08X.", (unsigned long)terminateRequest->processId, (unsigned int)terminateRequest->exitStatus);
-    status = KswordARKDriverTerminateProcessByPid(Device, (ULONG)terminateRequest->processId, (NTSTATUS)terminateRequest->exitStatus);
+    KswordARKProcessIoctlLog(
+        Device,
+        "Info",
+        "R0 terminate ioctl: pid=%lu, exit=0x%08X, expectedCreate=%I64u.",
+        (unsigned long)terminateRequestValue.processId,
+        (unsigned int)terminateRequestValue.exitStatus,
+        terminateRequestValue.expectedCreateTime100ns);
+    status = KswordARKDriverTerminateProcessByPid(
+        Device,
+        (ULONG)terminateRequestValue.processId,
+        (NTSTATUS)terminateRequestValue.exitStatus,
+        terminateRequestValue.expectedCreateTime100ns);
     if (NT_SUCCESS(status)) {
-        KswordARKProcessIoctlLog(Device, "Info", "R0 terminate success: pid=%lu.", (unsigned long)terminateRequest->processId);
-        *BytesReturned = sizeof(KSWORD_ARK_TERMINATE_PROCESS_REQUEST);
+        KswordARKProcessIoctlLog(Device, "Info", "R0 terminate success: pid=%lu.", (unsigned long)terminateRequestValue.processId);
+        *BytesReturned = actualInputLength;
     }
     else if (status == STATUS_PROCESS_IS_TERMINATING) {
-        KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate pending: pid=%lu, status=0x%08X (still terminating).", (unsigned long)terminateRequest->processId, (unsigned int)status);
+        KswordARKProcessIoctlLog(Device, "Warn", "R0 terminate pending: pid=%lu, status=0x%08X (still terminating).", (unsigned long)terminateRequestValue.processId, (unsigned int)status);
     }
     else {
-        KswordARKProcessIoctlLog(Device, "Error", "R0 terminate failed: pid=%lu, status=0x%08X.", (unsigned long)terminateRequest->processId, (unsigned int)status);
+        KswordARKProcessIoctlLog(Device, "Error", "R0 terminate failed: pid=%lu, status=0x%08X.", (unsigned long)terminateRequestValue.processId, (unsigned int)status);
     }
 
     return status;
@@ -1009,7 +1034,7 @@ Return Value:
 
     status = KswordARKRetrieveRequiredInputBuffer(
         Request,
-        sizeof(KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_REQUEST),
+        KSWORD_ARK_PROCESS_SPECIAL_REQUEST_V1_SIZE,
         &inputBuffer,
         &actualInputLength);
     if (!NT_SUCCESS(status)) {
@@ -1029,7 +1054,10 @@ Return Value:
 
     specialRequest = (KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_REQUEST*)inputBuffer;
     RtlZeroMemory(&specialRequestValue, sizeof(specialRequestValue));
-    RtlCopyMemory(&specialRequestValue, specialRequest, sizeof(specialRequestValue));
+    RtlCopyMemory(
+        &specialRequestValue,
+        specialRequest,
+        min(actualInputLength, sizeof(specialRequestValue)));
     specialResponse = (KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_RESPONSE*)outputBuffer;
     RtlZeroMemory(specialResponse, sizeof(*specialResponse));
     specialResponse->version = KSWORD_ARK_ENUM_PROCESS_PROTOCOL_VERSION;
@@ -1051,6 +1079,7 @@ Return Value:
             (ULONG)specialRequestValue.processId,
             (ULONG)specialRequestValue.action,
             (ULONG)specialRequestValue.flags,
+            specialRequestValue.expectedCreateTime100ns,
             &operationStatus,
             &appliedFlags,
             &touchedThreadCount);

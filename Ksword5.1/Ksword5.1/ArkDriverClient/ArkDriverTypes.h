@@ -137,6 +137,7 @@ namespace ksword::ark
         std::uint64_t objectTableAddress = 0;
         std::uint64_t sectionObjectAddress = 0;
         std::uint64_t dynDataCapabilityMask = 0;
+        std::uint64_t creationTime100ns = 0;
         std::string imageName;
         std::string imagePath;
     };

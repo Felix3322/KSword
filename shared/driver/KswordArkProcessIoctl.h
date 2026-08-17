@@ -65,6 +65,9 @@ typedef struct _KSWORD_ARK_TERMINATE_PROCESS_REQUEST
 {
     unsigned long processId;
     long exitStatus;
+    // Bind the PID/CID-like value to the EPROCESS instance selected by R3.
+    // Zero keeps compatibility for callers that do not have stable identity data.
+    unsigned long long expectedCreateTime100ns;
 } KSWORD_ARK_TERMINATE_PROCESS_REQUEST;
 
 #define IOCTL_KSWORD_ARK_SUSPEND_PROCESS \
@@ -299,7 +302,7 @@ typedef struct _KSWORD_ARK_PROCESS_TOKEN_PRIVILEGE_RESPONSE
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
 
-#define KSWORD_ARK_ENUM_PROCESS_PROTOCOL_VERSION 2UL
+#define KSWORD_ARK_ENUM_PROCESS_PROTOCOL_VERSION 3UL
 #define KSWORD_ARK_ENUM_PROCESS_FLAG_SCAN_CID_TABLE 0x00000001UL
 
 // Phase-2 EPROCESS offset sentinel shared by R0 protocol and R3 UI models.
@@ -807,6 +810,10 @@ typedef struct _KSWORD_ARK_PROCESS_ENTRY
     // v2 full image path. UTF-16 code units are used without requiring WCHAR in
     // this shared header, so R3 can copy them into std::wstring directly.
     unsigned short imagePath[KSWORD_ARK_PROCESS_IMAGE_PATH_CHARS];
+
+    // v3 stable process identity sampled from the referenced EPROCESS object.
+    // Zero means the CID evidence row could not be referenced safely.
+    unsigned long long creationTime100ns;
 } KSWORD_ARK_PROCESS_ENTRY;
 
 typedef struct _KSWORD_ARK_ENUM_PROCESS_RESPONSE
@@ -870,6 +877,9 @@ typedef struct _KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_REQUEST
     unsigned long processId;
     unsigned long action;
     unsigned long flags;
+    // The driver validates this timestamp after resolving the target EPROCESS.
+    // Zero preserves compatibility for callers without a stable snapshot.
+    unsigned long long expectedCreateTime100ns;
 } KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_REQUEST;
 
 typedef struct _KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS_RESPONSE

@@ -72,6 +72,14 @@ ObOpenObjectByPointer(
     _Out_ PHANDLE Handle
     );
 
+/* 中文说明：公开内核例程返回可与 FILETIME 比较的进程创建时间。 */
+NTKERNELAPI
+LONGLONG
+NTAPI
+PsGetProcessCreateTimeQuadPart(
+    _In_ PEPROCESS Process
+    );
+
 static BOOLEAN
 KswordARKProcessIsOffsetPresent(
     _In_ ULONG Offset
@@ -660,6 +668,8 @@ Return Value:
     RtlZeroMemory(&dynState, sizeof(dynState));
     KswordARKDynDataSnapshot(&dynState);
 
+    /* 中文说明：创建时间来自已引用 EPROCESS，用于 R3/R0 危险动作绑定同一进程实例。 */
+    Entry->creationTime100ns = (ULONG64)PsGetProcessCreateTimeQuadPart(ProcessObject);
     Entry->r0Status = KSWORD_ARK_PROCESS_R0_STATUS_DYNDATA_MISSING;
     Entry->sessionSource = KSWORD_ARK_PROCESS_FIELD_SOURCE_UNAVAILABLE;
     Entry->dynDataCapabilityMask = dynState.CapabilityMask;

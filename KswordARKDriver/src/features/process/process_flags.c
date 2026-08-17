@@ -27,6 +27,14 @@ PsLookupProcessByProcessId(
     _Outptr_ PEPROCESS* Process
     );
 
+/* 中文说明：公开内核例程返回目标 EPROCESS 的稳定创建时间。 */
+NTKERNELAPI
+LONGLONG
+NTAPI
+PsGetProcessCreateTimeQuadPart(
+    _In_ PEPROCESS Process
+    );
+
 NTKERNELAPI
 NTSTATUS
 ObOpenObjectByPointer(
@@ -194,8 +202,57 @@ KswordARKProcessFlagsReferenceProcessByCidTable(
 }
 
 static NTSTATUS
+KswordARKProcessFlagsValidateReferencedIdentity(
+    _Inout_ PEPROCESS* ProcessObjectInOut,
+    _In_ ULONG64 ExpectedCreateTime100ns
+    )
+/*++
+
+Routine Description:
+
+    Validate a referenced EPROCESS against the optional R3 snapshot creation
+    time. 中文说明：失败时本函数释放引用并清空输出，调用方不会接触错对象。
+
+Arguments:
+
+    ProcessObjectInOut - Referenced target object owned by the caller.
+    ExpectedCreateTime100ns - Optional stable identity timestamp.
+
+Return Value:
+
+    STATUS_SUCCESS when identity matches, otherwise STATUS_INVALID_CID.
+
+--*/
+{
+    ULONG64 observedCreateTime100ns = 0ULL;
+
+    /* 中文说明：空输出表示 resolver 未按约定返回有效对象。 */
+    if (ProcessObjectInOut == NULL || *ProcessObjectInOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* 中文说明：零值用于兼容没有稳定快照的旧调用方。 */
+    if (ExpectedCreateTime100ns == 0ULL) {
+        return STATUS_SUCCESS;
+    }
+
+    /* 中文说明：在驱动已解析的对象上读取时间，避免 R3 OpenProcess 被隐藏链路误导。 */
+    observedCreateTime100ns =
+        (ULONG64)PsGetProcessCreateTimeQuadPart(*ProcessObjectInOut);
+    if (observedCreateTime100ns == ExpectedCreateTime100ns) {
+        return STATUS_SUCCESS;
+    }
+
+    /* 中文说明：身份不符时立即释放引用，阻止后续 BreakOnTermination/APC 写入。 */
+    ObDereferenceObject(*ProcessObjectInOut);
+    *ProcessObjectInOut = NULL;
+    return STATUS_INVALID_CID;
+}
+
+static NTSTATUS
 KswordARKProcessFlagsReferenceProcessObject(
     _In_ ULONG ProcessId,
+    _In_ ULONG64 ExpectedCreateTime100ns,
     _Outptr_ PEPROCESS* ProcessObjectOut
     )
 {
@@ -218,7 +275,9 @@ KswordARKProcessFlagsReferenceProcessObject(
         ProcessId,
         ProcessObjectOut);
     if (NT_SUCCESS(cidStatus)) {
-        return STATUS_SUCCESS;
+        return KswordARKProcessFlagsValidateReferencedIdentity(
+            ProcessObjectOut,
+            ExpectedCreateTime100ns);
     }
 
     activeStatus = KswordARKCrossViewReferenceProcessByActiveList(
@@ -231,12 +290,16 @@ KswordARKProcessFlagsReferenceProcessObject(
     UNREFERENCED_PARAMETER(uniqueProcessId);
     UNREFERENCED_PARAMETER(visitedEntries);
     if (NT_SUCCESS(activeStatus)) {
-        return STATUS_SUCCESS;
+        return KswordARKProcessFlagsValidateReferencedIdentity(
+            ProcessObjectOut,
+            ExpectedCreateTime100ns);
     }
 
     lookupStatus = PsLookupProcessByProcessId(ULongToHandle(ProcessId), ProcessObjectOut);
     if (NT_SUCCESS(lookupStatus)) {
-        return STATUS_SUCCESS;
+        return KswordARKProcessFlagsValidateReferencedIdentity(
+            ProcessObjectOut,
+            ExpectedCreateTime100ns);
     }
     if (cidStatus != STATUS_PROCEDURE_NOT_FOUND &&
         cidStatus != STATUS_NOT_FOUND &&
@@ -411,6 +474,7 @@ KswordARKProcessFlagsSetBreakOnTerminationByEprocess(
 static NTSTATUS
 KswordARKProcessFlagsSetBreakOnTermination(
     _In_ ULONG ProcessId,
+    _In_ ULONG64 ExpectedCreateTime100ns,
     _In_ BOOLEAN EnableBreakOnTermination
     )
 {
@@ -418,7 +482,10 @@ KswordARKProcessFlagsSetBreakOnTermination(
     NTSTATUS zwStatus = STATUS_SUCCESS;
     NTSTATUS directStatus = STATUS_SUCCESS;
 
-    zwStatus = KswordARKProcessFlagsReferenceProcessObject(ProcessId, &processObject);
+    zwStatus = KswordARKProcessFlagsReferenceProcessObject(
+        ProcessId,
+        ExpectedCreateTime100ns,
+        &processObject);
     if (!NT_SUCCESS(zwStatus)) {
         return zwStatus;
     }
@@ -510,6 +577,7 @@ KswordARKProcessFlagsClearThreadApcQueueable(
 static NTSTATUS
 KswordARKProcessFlagsDisableApcInsertion(
     _In_ ULONG ProcessId,
+    _In_ ULONG64 ExpectedCreateTime100ns,
     _Out_ ULONG* TouchedThreadCountOut
     )
 {
@@ -540,7 +608,10 @@ KswordARKProcessFlagsDisableApcInsertion(
     }
 
     /* 中文说明：引用目标 EPROCESS，确保线程枚举期间进程对象有效。 */
-    status = KswordARKProcessFlagsReferenceProcessObject(ProcessId, &processObject);
+    status = KswordARKProcessFlagsReferenceProcessObject(
+        ProcessId,
+        ExpectedCreateTime100ns,
+        &processObject);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -587,6 +658,7 @@ KswordARKDriverSetProcessSpecialFlags(
     _In_ ULONG ProcessId,
     _In_ ULONG Action,
     _In_ ULONG Flags,
+    _In_ ULONG64 ExpectedCreateTime100ns,
     _Out_ ULONG* OperationStatusOut,
     _Out_ ULONG* AppliedFlagsOut,
     _Out_ ULONG* TouchedThreadCountOut
@@ -603,6 +675,7 @@ Arguments:
     ProcessId - 目标 PID。
     Action - KSWORD_ARK_PROCESS_SPECIAL_ACTION_*。
     Flags - 预留策略位，当前只记录不改变语义。
+    ExpectedCreateTime100ns - 可选进程创建时间，非零时必须精确匹配。
     OperationStatusOut - 返回协议状态。
     AppliedFlagsOut - 返回已经应用的语义 flag。
     TouchedThreadCountOut - 返回禁 APC 时实际改变的线程数。
@@ -640,7 +713,10 @@ Return Value:
             (Action == KSWORD_ARK_PROCESS_SPECIAL_ACTION_ENABLE_BREAK_ON_TERMINATION) ? TRUE : FALSE;
 
         /* 中文说明：优先使用 ZwSetInformationProcess；失败时用 EPROCESS.Flags 兜底。 */
-        status = KswordARKProcessFlagsSetBreakOnTermination(ProcessId, enableBreak);
+        status = KswordARKProcessFlagsSetBreakOnTermination(
+            ProcessId,
+            ExpectedCreateTime100ns,
+            enableBreak);
         if (NT_SUCCESS(status)) {
             *OperationStatusOut = KSWORD_ARK_PROCESS_SPECIAL_STATUS_APPLIED;
             if (enableBreak) {
@@ -658,7 +734,10 @@ Return Value:
 
     if (Action == KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_APC_INSERTION) {
         /* 中文说明：禁 APC 插入是线程级批量写，返回改变线程数量供 R3 审计。 */
-        status = KswordARKProcessFlagsDisableApcInsertion(ProcessId, &touchedThreadCount);
+        status = KswordARKProcessFlagsDisableApcInsertion(
+            ProcessId,
+            ExpectedCreateTime100ns,
+            &touchedThreadCount);
         *TouchedThreadCountOut = touchedThreadCount;
         if (NT_SUCCESS(status)) {
             *OperationStatusOut = KSWORD_ARK_PROCESS_SPECIAL_STATUS_APPLIED;

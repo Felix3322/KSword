@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cwchar>
 #include <cstring>
 #include <functional>
@@ -455,17 +456,25 @@ namespace ksword::ark
         return result;
     }
 
-    IoResult DriverClient::terminateProcess(const std::uint32_t processId, const long exitStatus) const
+    IoResult DriverClient::terminateProcess(
+        const std::uint32_t processId,
+        const long exitStatus,
+        const std::uint64_t expectedCreateTime100ns) const
     {
         DriverHandle handle = open();
-        return terminateProcess(handle, processId, exitStatus);
+        return terminateProcess(handle, processId, exitStatus, expectedCreateTime100ns);
     }
 
-    IoResult DriverClient::terminateProcess(DriverHandle& handle, const std::uint32_t processId, const long exitStatus) const
+    IoResult DriverClient::terminateProcess(
+        DriverHandle& handle,
+        const std::uint32_t processId,
+        const long exitStatus,
+        const std::uint64_t expectedCreateTime100ns) const
     {
         KSWORD_ARK_TERMINATE_PROCESS_REQUEST request{};
         request.processId = processId;
         request.exitStatus = exitStatus;
+        request.expectedCreateTime100ns = expectedCreateTime100ns;
         IoResult result = deviceIoControl(
             IOCTL_KSWORD_ARK_TERMINATE_PROCESS,
             &request,
@@ -475,7 +484,9 @@ namespace ksword::ark
             &handle);
 
         std::ostringstream stream;
-        stream << "pid=" << processId << ", bytesReturned=" << result.bytesReturned;
+        stream << "pid=" << processId
+            << ", createTime100ns=" << expectedCreateTime100ns
+            << ", bytesReturned=" << result.bytesReturned;
         if (result.ok)
         {
             stream << ", ioctl=ok";
@@ -1287,7 +1298,10 @@ namespace ksword::ark
             parsedEntry.parentProcessId = static_cast<std::uint32_t>(entry->parentProcessId);
             parsedEntry.flags = static_cast<std::uint32_t>(entry->flags);
             parsedEntry.imageName = fixedAnsiToString(entry->imageName, sizeof(entry->imageName));
-            if (responseHeader->entrySize >= sizeof(KSWORD_ARK_PROCESS_ENTRY))
+            constexpr std::size_t v2EntrySize = offsetof(
+                KSWORD_ARK_PROCESS_ENTRY,
+                creationTime100ns);
+            if (responseHeader->entrySize >= v2EntrySize)
             {
                 parsedEntry.sessionId = static_cast<std::uint32_t>(entry->sessionId);
                 parsedEntry.fieldFlags = static_cast<std::uint32_t>(entry->fieldFlags);
@@ -1314,6 +1328,11 @@ namespace ksword::ark
                     entry->imagePath,
                     KSWORD_ARK_PROCESS_IMAGE_PATH_CHARS);
             }
+            if (responseHeader->entrySize >= sizeof(KSWORD_ARK_PROCESS_ENTRY))
+            {
+                parsedEntry.creationTime100ns =
+                    static_cast<std::uint64_t>(entry->creationTime100ns);
+            }
             enumResult.entries.push_back(std::move(parsedEntry));
         }
 
@@ -1330,7 +1349,8 @@ namespace ksword::ark
     ProcessSpecialFlagsResult DriverClient::setProcessSpecialFlags(
         const std::uint32_t processId,
         const unsigned long action,
-        const unsigned long flags) const
+        const unsigned long flags,
+        const std::uint64_t expectedCreateTime100ns) const
     {
         // 作用：请求 R0 设置 BreakOnTermination 或禁用目标进程线程 APC 插入。
         // 返回：解析后的固定响应；IOCTL 失败时 io.ok=false。
@@ -1341,6 +1361,7 @@ namespace ksword::ark
         request.processId = processId;
         request.action = action;
         request.flags = flags;
+        request.expectedCreateTime100ns = expectedCreateTime100ns;
 
         specialResult.io = deviceIoControl(
             IOCTL_KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS,
@@ -1376,6 +1397,7 @@ namespace ksword::ark
         std::ostringstream stream;
         stream << "pid=" << specialResult.processId
             << ", action=" << specialResult.action
+            << ", createTime100ns=" << expectedCreateTime100ns
             << ", status=" << specialResult.status
             << ", applied=0x" << std::hex << specialResult.appliedFlags
             << ", touchedThreads=" << std::dec << specialResult.touchedThreadCount

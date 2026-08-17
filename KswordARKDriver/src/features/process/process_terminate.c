@@ -22,7 +22,7 @@ Environment:
 #include <stdarg.h>
 
 // 中文说明：本文件承载进程终止的多阶段后端，避免 process_actions.c 继续膨胀。
-// 中文说明：公开入口保持 KswordARKDriverTerminateProcessByPid 不变，R3 协议不变。
+// 中文说明：公开入口接收可选创建时间，在解析 EPROCESS 后阻止 PID/CID 复用误杀。
 
 NTSYSAPI
 NTSTATUS
@@ -53,6 +53,14 @@ PEPROCESS
 NTAPI
 PsGetThreadProcess(
     _In_ PETHREAD Thread
+    );
+
+// 中文说明：公开内核例程返回目标 EPROCESS 的稳定创建时间。
+NTKERNELAPI
+LONGLONG
+NTAPI
+PsGetProcessCreateTimeQuadPart(
+    _In_ PEPROCESS Process
     );
 
 extern NTKERNELAPI PEPROCESS PsInitialSystemProcess;
@@ -1421,21 +1429,23 @@ NTSTATUS
 KswordARKDriverTerminateProcessByPid(
     _In_opt_ WDFDEVICE device,
     _In_ ULONG processId,
-    _In_ NTSTATUS exitStatus
+    _In_ NTSTATUS exitStatus,
+    _In_ ULONG64 expectedCreateTime100ns
     )
 /*++
 
 Routine Description:
 
     Resolve the target process by PID/CID evidence once, then run the full R0
-    termination pipeline against that EPROCESS object. 中文说明：R3/IOCTL 仍只传
-    PID，但 R0 会在 PID 字段被改写时通过 CID 表反查真实对象，三种结束
-    方案都复用同一个对象。
+    termination pipeline against that EPROCESS object. 中文说明：R3/IOCTL 传
+    PID 与可选创建时间，R0 会在 PID 字段被改写时通过 CID 表反查真实对象，
+    校验对象创建时间后三种结束方案都复用同一个对象。
 
 Arguments:
 
     processId - PID-like target identity supplied by user mode.
     exitStatus - Exit status to report.
+    expectedCreateTime100ns - Optional creation time from the R0/R3 snapshot.
 
 Return Value:
 
@@ -1451,6 +1461,7 @@ Return Value:
     NTSTATUS memoryZeroStatus = STATUS_UNSUCCESSFUL;
     NTSTATUS aggregateFailureStatus = STATUS_UNSUCCESSFUL;
     NTSTATUS finalStatus = STATUS_UNSUCCESSFUL;
+    ULONG64 observedCreateTime100ns = 0ULL;
     BOOLEAN processStillPresent = FALSE;
 
     RtlZeroMemory(&target, sizeof(target));
@@ -1473,6 +1484,23 @@ Return Value:
             (unsigned long)processId,
             (unsigned int)status);
         return status;
+    }
+
+    // 中文说明：必须在已解析且持有引用的对象上校验，不能再依赖可能被 Rootkit 影响的 R3 OpenProcess。
+    observedCreateTime100ns = (ULONG64)PsGetProcessCreateTimeQuadPart(target.ProcessObject);
+    if (expectedCreateTime100ns != 0ULL &&
+        observedCreateTime100ns != expectedCreateTime100ns) {
+        // 中文说明：STATUS_INVALID_CID 与现有令牌特权身份校验保持一致。
+        KswordARKDriverLogTerminateMessage(
+            device,
+            "Warn",
+            "R0 terminate identity rejected: requestPid=%lu, expectedCreate=%I64u, observedCreate=%I64u, process=%p.",
+            (unsigned long)processId,
+            expectedCreateTime100ns,
+            observedCreateTime100ns,
+            target.ProcessObject);
+        finalStatus = STATUS_INVALID_CID;
+        goto Exit;
     }
 
     if (target.CidProcessId <= 4UL || target.ProcessObject == PsInitialSystemProcess) {

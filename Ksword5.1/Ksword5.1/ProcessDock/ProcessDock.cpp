@@ -2469,7 +2469,10 @@ namespace
     // terminateProcessByR0Driver 作用：
     // - 通过 ArkDriverClient 发送“结束进程”IOCTL；
     // - Dock 不再直接打开 KswordARK 设备或调用 DeviceIoControl。
-    bool terminateProcessByR0Driver(const std::uint32_t targetPid, std::string* const detailTextOut)
+    bool terminateProcessByR0Driver(
+        const std::uint32_t targetPid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const detailTextOut)
     {
         if (detailTextOut != nullptr)
         {
@@ -2488,7 +2491,8 @@ namespace
         const ksword::ark::DriverClient driverClient;
         const ksword::ark::IoResult result = driverClient.terminateProcess(
             targetPid,
-            static_cast<long>(0xC0000005u));
+            static_cast<long>(0xC0000005u),
+            expectedCreationTime100ns);
         if (detailTextOut != nullptr)
         {
             *detailTextOut = processDockIoMessageStdString(result.message);
@@ -2691,6 +2695,7 @@ namespace
     bool setProcessSpecialFlagsByR0Driver(
         const std::uint32_t targetPid,
         const unsigned long action,
+        const std::uint64_t expectedCreationTime100ns,
         std::string* const detailTextOut)
     {
         // 作用：封装 BreakOnTermination/APC 插入控制 IOCTL。
@@ -2710,7 +2715,11 @@ namespace
 
         const ksword::ark::DriverClient driverClient;
         const ksword::ark::ProcessSpecialFlagsResult result =
-            driverClient.setProcessSpecialFlags(targetPid, action);
+            driverClient.setProcessSpecialFlags(
+                targetPid,
+                action,
+                0UL,
+                expectedCreationTime100ns);
         if (detailTextOut != nullptr)
         {
             *detailTextOut = processDockIoMessageStdString(result.io.message);
@@ -2782,12 +2791,21 @@ namespace
         std::uint64_t objectTableAddress = 0;
         std::uint64_t sectionObjectAddress = 0;
         std::uint64_t dynDataCapabilityMask = 0;
+        std::uint64_t creationTime100ns = 0;
         std::string imageName;
         std::string imagePath;
     };
 
     // 内核专属记录使用固定创建时间种子，避免与 R3 常规 identity 发生冲突。
     constexpr std::uint64_t KernelOnlyCreationTimeSeed = 0xFFFFFFFF00000000ULL;
+
+    // r0ActionExpectedCreationTime：真实创建时间交给驱动校验，旧驱动的合成占位值不参与对象身份判断。
+    std::uint64_t r0ActionExpectedCreationTime(const ks::process::ProcessRecord& processRecord)
+    {
+        return processRecord.creationTime100ns >= KernelOnlyCreationTimeSeed
+            ? 0ULL
+            : processRecord.creationTime100ns;
+    }
 
     QString processFieldSourceText(const std::uint32_t sourceValue)
     {
@@ -3144,6 +3162,7 @@ namespace
             processEntry.objectTableAddress = entry.objectTableAddress;
             processEntry.sectionObjectAddress = entry.sectionObjectAddress;
             processEntry.dynDataCapabilityMask = entry.dynDataCapabilityMask;
+            processEntry.creationTime100ns = entry.creationTime100ns;
             processEntry.imageName = entry.imageName;
             processEntry.imagePath = entry.imagePath;
             processListOut->push_back(std::move(processEntry));
@@ -6798,8 +6817,9 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
                     (kernelProcess.flags &
                         (KSWORD_ARK_PROCESS_FLAG_CID_TABLE_REFERENCE_FAILED |
                             KSWORD_ARK_PROCESS_FLAG_TERMINATING_OR_EXITED)) != 0U;
-                kernelOnlyRecord.creationTime100ns =
-                    KernelOnlyCreationTimeSeed + static_cast<std::uint64_t>(kernelProcess.processId);
+                kernelOnlyRecord.creationTime100ns = kernelProcess.creationTime100ns != 0ULL
+                    ? kernelProcess.creationTime100ns
+                    : KernelOnlyCreationTimeSeed + static_cast<std::uint64_t>(kernelProcess.processId);
                 kernelOnlyRecord.processName = kernelProcess.imageName.empty()
                     ? std::string("[R0] Unknown")
                     : std::string("[R0] ") + kernelProcess.imageName;
@@ -9158,6 +9178,7 @@ ProcessDock::ProcessActionTarget ProcessDock::processActionTargetFromTableRow(co
         return actionTarget;
     }
     actionTarget.identityKey = tableRow.identityKey;
+    actionTarget.isKernelOnly = tableRow.isKernelOnly;
     if (actionTarget.identityKey.empty())
     {
         return actionTarget;
@@ -9167,6 +9188,7 @@ ProcessDock::ProcessActionTarget ProcessDock::processActionTargetFromTableRow(co
     if (cacheIt != m_cacheByIdentity.end())
     {
         actionTarget.record = cacheIt->second.record;
+        actionTarget.isKernelOnly = cacheIt->second.isKernelOnlyInLatestRound;
         return actionTarget;
     }
     actionTarget.record = tableRow.record;
@@ -9192,10 +9214,12 @@ void ProcessDock::appendProcessActionTargetsFromTableRow(
         if (cacheIt != m_cacheByIdentity.end())
         {
             actionTarget.record = cacheIt->second.record;
+            actionTarget.isKernelOnly = cacheIt->second.isKernelOnlyInLatestRound;
         }
         else if (tableRow.rowKind == ProcessTableRowKind::Process && identityKey == tableRow.identityKey)
         {
             actionTarget.record = tableRow.record;
+            actionTarget.isKernelOnly = tableRow.isKernelOnly;
         }
         else
         {
@@ -11863,7 +11887,7 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
         const ProcessActionTarget& actionTarget,
         std::string* const detailTextOut) -> bool
     {
-        if (!requireVerifiedProcessIdentity)
+        if (!requireVerifiedProcessIdentity || actionTarget.isKernelOnly)
         {
             return actionInvoker(actionTarget, detailTextOut);
         }
@@ -13676,7 +13700,10 @@ void ProcessDock::executeR0TerminateProcessActions(
         [](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
         {
             // 每个动作目标都会单独调用 ArkDriverClient，形成独立的结束进程 IOCTL。
-            return terminateProcessByR0Driver(actionTarget.record.pid, detailTextOut);
+            return terminateProcessByR0Driver(
+                actionTarget.record.pid,
+                r0ActionExpectedCreationTime(actionTarget.record),
+                detailTextOut);
         },
         true,
         false,
@@ -13901,7 +13928,11 @@ void ProcessDock::executeR0SetBreakOnTerminationAction(const bool enabled)
         actionTargets,
         [action](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
         {
-            return setProcessSpecialFlagsByR0Driver(actionTarget.record.pid, action, detailTextOut);
+            return setProcessSpecialFlagsByR0Driver(
+                actionTarget.record.pid,
+                action,
+                r0ActionExpectedCreationTime(actionTarget.record),
+                detailTextOut);
         },
         false,
         false,
@@ -13943,6 +13974,7 @@ void ProcessDock::executeR0DisableApcInsertionAction()
             return setProcessSpecialFlagsByR0Driver(
                 actionTarget.record.pid,
                 KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_APC_INSERTION,
+                r0ActionExpectedCreationTime(actionTarget.record),
                 detailTextOut);
         },
         false,
