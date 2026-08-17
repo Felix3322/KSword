@@ -7120,7 +7120,6 @@ QString MainWindow::buildTopActionButtonStyle() const
         "  border-radius:4px;"
         "  margin:0;"
         "  padding:2px 8px 2px 6px;"
-        "  font-size:12px;"
         "  font-weight:600;"
         "  text-align:left;"
         "}"

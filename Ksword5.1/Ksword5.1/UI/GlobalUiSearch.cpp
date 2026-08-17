@@ -1408,8 +1408,8 @@ namespace ks::ui
         {
             auto* listItem = new QListWidgetItem(m_resultListWidget);
             const QString itemHtml = QStringLiteral(
-                "<div style=\"font-size:12px;color:%1;\">%2</div>"
-                "<div style=\"font-size:11px;color:%3;margin-top:3px;\">%4</div>")
+                "<div style=\"color:%1;\">%2</div>"
+                "<div style=\"color:%3;margin-top:3px;\">%4</div>")
                 .arg(
                     textPrimaryHex,
                     buildSnippetHtml(hitEntry.matchedText, queryText, accentTextHex),
@@ -1455,12 +1455,10 @@ namespace ks::ui
             "}"
             "#ksGlobalUiSearchPopup QLabel#ksGlobalUiSearchEmptyHint{"
             "  color:%3;"
-            "  font-size:12px;"
             "  padding:14px 0;"
             "}"
             "#ksGlobalUiSearchPopup QLabel#ksGlobalUiSearchProgressLabel{"
             "  color:%3;"
-            "  font-size:11px;"
             "}"
             "#ksGlobalUiSearchPopup QProgressBar#ksGlobalUiSearchProgressBar{"
             "  background:%4;"

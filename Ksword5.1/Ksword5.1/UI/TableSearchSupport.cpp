@@ -681,7 +681,7 @@ namespace
                 "QFrame#KSWORD_TABLE_SEARCH_SUPPORT{background:transparent;}"
                 "QLineEdit{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:0 6px;}"
                 "QLineEdit:focus{border-color:%4;}"
-                "QCheckBox{background:transparent;color:%2;border:none;spacing:4px;font-size:11px;}"
+                "QCheckBox{background:transparent;color:%2;border:none;spacing:4px;}"
                 "QToolButton{background:transparent;color:%2;border:1px solid transparent;border-radius:3px;}"
                 "QToolButton:hover{background:%5;border-color:%4;}" )
                 .arg(
