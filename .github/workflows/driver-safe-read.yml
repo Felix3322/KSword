@@ -1,0 +1,27 @@
+name: Driver Safe Read Audit
+
+on:
+  push:
+    paths:
+      - 'KswordARKDriver/**'
+      - '.github/workflows/driver-safe-read.yml'
+  pull_request:
+    paths:
+      - 'KswordARKDriver/**'
+      - '.github/workflows/driver-safe-read.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit crash-safe kernel reads
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Verify fault-contained readers
+        shell: pwsh
+        run: ./KswordARKDriver/tests/SafeReadRegression.ps1
