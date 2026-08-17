@@ -24,13 +24,13 @@
 #include <functional>
 
 class QCheckBox;
-class QComboBox;
 class QEvent;
 class QFrame;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QProgressBar;
+class QTabBar;
 class QTableView;
 class QTimer;
 class QWidget;
@@ -259,8 +259,8 @@ namespace ks::ui
 
         QFrame* m_popupPanel = nullptr;           // m_popupPanel：结果弹层容器（宿主窗口子控件）。
         QWidget* m_searchOptionsRow = nullptr;    // m_searchOptionsRow：范围与结果专显选项行。
-        QLabel* m_searchScopeLabel = nullptr;     // m_searchScopeLabel：范围下拉标签。
-        QComboBox* m_searchScopeCombo = nullptr;  // m_searchScopeCombo：全局/当前页面/当前表格切换。
+        QLabel* m_searchScopeLabel = nullptr;     // m_searchScopeLabel：搜索范围标签。
+        QTabBar* m_searchScopeTabs = nullptr;     // m_searchScopeTabs：全局/当前页面/当前表格横向切换。
         QCheckBox* m_searchResultsOnlyCheck = nullptr; // m_searchResultsOnlyCheck：仅显示命中行。
         QListWidget* m_resultListWidget = nullptr;// m_resultListWidget：结果列表。
         QLabel* m_emptyHintLabel = nullptr;       // m_emptyHintLabel：无结果时的空态提示。

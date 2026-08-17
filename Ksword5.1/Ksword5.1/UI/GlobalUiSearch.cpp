@@ -31,6 +31,7 @@
 #include <QStackedWidget>
 #include <QStyleOption>
 #include <QStyledItemDelegate>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTextDocument>
@@ -1163,34 +1164,33 @@ namespace ks::ui
         optionsLayout->setSpacing(8);
 
         m_searchScopeLabel = new QLabel(m_searchOptionsRow);
-        m_searchScopeCombo = new QComboBox(m_searchOptionsRow);
-        m_searchScopeCombo->setMinimumWidth(200);
-        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::Global));
-        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::CurrentPage));
-        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::CurrentTable));
+        m_searchScopeTabs = new QTabBar(m_searchOptionsRow);
+        m_searchScopeTabs->setMinimumWidth(360);
+        m_searchScopeTabs->setDrawBase(false);
+        m_searchScopeTabs->setExpanding(true);
+        m_searchScopeTabs->setUsesScrollButtons(false);
+        m_searchScopeTabs->setElideMode(Qt::ElideRight);
+        m_searchScopeTabs->addTab(QString());
+        m_searchScopeTabs->addTab(QString());
+        m_searchScopeTabs->addTab(QString());
         m_searchResultsOnlyCheck = new QCheckBox(m_searchOptionsRow);
 
         optionsLayout->addWidget(m_searchScopeLabel, 0);
-        optionsLayout->addWidget(m_searchScopeCombo, 1);
+        optionsLayout->addWidget(m_searchScopeTabs, 1);
         optionsLayout->addStretch(1);
         optionsLayout->addWidget(m_searchResultsOnlyCheck, 0);
 
         connect(
-            m_searchScopeCombo,
-            qOverload<int>(&QComboBox::currentIndexChanged),
+            m_searchScopeTabs,
+            &QTabBar::currentChanged,
             this,
-            [this](const int comboIndex) {
-                if (comboIndex < 0 || m_searchScopeCombo == nullptr)
+            [this](const int tabIndex) {
+                if (tabIndex < static_cast<int>(UiSearchScope::Global)
+                    || tabIndex > static_cast<int>(UiSearchScope::CurrentTable))
                 {
                     return;
                 }
-                const int scopeValue = m_searchScopeCombo->itemData(comboIndex).toInt();
-                if (scopeValue < static_cast<int>(UiSearchScope::Global)
-                    || scopeValue > static_cast<int>(UiSearchScope::CurrentTable))
-                {
-                    return;
-                }
-                setSearchScope(static_cast<UiSearchScope>(scopeValue));
+                setSearchScope(static_cast<UiSearchScope>(tabIndex));
             });
         connect(
             m_searchResultsOnlyCheck,
@@ -1256,20 +1256,20 @@ namespace ks::ui
         {
             m_searchScopeLabel->setText(ks::i18n::sourceText(QStringLiteral("范围")));
         }
-        if (m_searchScopeCombo != nullptr)
+        if (m_searchScopeTabs != nullptr)
         {
-            const QSignalBlocker scopeSignalBlocker(m_searchScopeCombo);
-            m_searchScopeCombo->setItemText(
+            const QSignalBlocker scopeSignalBlocker(m_searchScopeTabs);
+            m_searchScopeTabs->setTabText(
                 static_cast<int>(UiSearchScope::Global),
                 ks::i18n::sourceText(QStringLiteral("全局")));
-            m_searchScopeCombo->setItemText(
+            m_searchScopeTabs->setTabText(
                 static_cast<int>(UiSearchScope::CurrentPage),
                 ks::i18n::sourceText(QStringLiteral("当前页面")));
-            m_searchScopeCombo->setItemText(
+            m_searchScopeTabs->setTabText(
                 static_cast<int>(UiSearchScope::CurrentTable),
                 ks::i18n::sourceText(QStringLiteral("当前表格（%1）")).arg(
                     ks::ui::ResolveTableSearchDisplayName(resolveCurrentTable())));
-            m_searchScopeCombo->setCurrentIndex(static_cast<int>(m_searchScope));
+            m_searchScopeTabs->setCurrentIndex(static_cast<int>(m_searchScope));
         }
         if (m_searchResultsOnlyCheck != nullptr)
         {
@@ -1610,15 +1610,23 @@ namespace ks::ui
             m_searchResultsOnlyCheck->setStyleSheet(
                 QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
         }
-        if (m_searchScopeCombo != nullptr)
+        if (m_searchScopeTabs != nullptr)
         {
-            m_searchScopeCombo->setStyleSheet(QStringLiteral(
-                "QComboBox{background:%1;color:%2;border:1px solid %3;"
-                "border-radius:3px;padding:2px 6px;}")
+            m_searchScopeTabs->setStyleSheet(QStringLiteral(
+                "QTabBar::tab{background:%1;color:%2;border:1px solid %3;"
+                "border-right:none;padding:4px 12px;min-width:92px;}"
+                "QTabBar::tab:first{border-top-left-radius:3px;border-bottom-left-radius:3px;}"
+                "QTabBar::tab:last{border-right:1px solid %3;"
+                "border-top-right-radius:3px;border-bottom-right-radius:3px;}"
+                "QTabBar::tab:selected{background:%4;color:%5;border-color:%4;}"
+                "QTabBar::tab:hover:!selected{background:%6;color:%2;}")
                 .arg(
                     KswordTheme::SurfaceColorHex(),
                     KswordTheme::TextSecondaryHex(),
-                    KswordTheme::BorderStrongColorHex()));
+                    KswordTheme::BorderStrongColorHex(),
+                    KswordTheme::ThemeColorName(KswordTheme::PrimaryAccentColor()),
+                    KswordTheme::OnAccentHex(),
+                    KswordTheme::SurfaceMutedColorHex()));
         }
 
         const int anchorWidth = m_popupAnchorWidget != nullptr ? m_popupAnchorWidget->width() : 460;
