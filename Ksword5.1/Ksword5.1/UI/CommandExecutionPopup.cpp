@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -74,6 +75,10 @@ namespace ks::ui
         if (m_popupHostWindow != nullptr)
         {
             m_popupHostWindow->installEventFilter(this);
+        }
+        if (m_popupAnchorWidget != nullptr)
+        {
+            m_popupAnchorWidget->installEventFilter(this);
         }
         if (qApp != nullptr)
         {
@@ -393,13 +398,20 @@ namespace ks::ui
         setFixedSize(panelWidth, panelHeight);
 
         repositionPopupPanel();
-        raise();
         show();
+        raise();
+        QTimer::singleShot(0, this, [this]()
+        {
+            if (isVisible())
+            {
+                repositionPopupPanel();
+            }
+        });
     }
 
     void CommandExecutionPopup::repositionPopupPanel()
     {
-        if (!isVisible() || m_popupHostWindow == nullptr || m_popupAnchorWidget == nullptr)
+        if (m_popupHostWindow == nullptr || m_popupAnchorWidget == nullptr)
         {
             return;
         }
@@ -580,13 +592,25 @@ namespace ks::ui
             return false;
         }
 
-        if (watchedObject == m_popupHostWindow)
+        if (watchedObject == m_popupHostWindow || watchedObject == m_popupAnchorWidget)
         {
-            if (isVisible() && (eventType == QEvent::Move || eventType == QEvent::Resize))
+            if (isVisible()
+                && (eventType == QEvent::Move
+                    || eventType == QEvent::Resize
+                    || eventType == QEvent::LayoutRequest
+                    || eventType == QEvent::Show))
             {
-                repositionPopupPanel();
+                QTimer::singleShot(0, this, [this]()
+                {
+                    if (isVisible())
+                    {
+                        repositionPopupPanel();
+                    }
+                });
             }
-            else if (isVisible() && eventType == QEvent::WindowDeactivate)
+            else if (watchedObject == m_popupHostWindow
+                && isVisible()
+                && eventType == QEvent::WindowDeactivate)
             {
                 dismissPopup();
             }
