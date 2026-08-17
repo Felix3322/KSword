@@ -6,6 +6,7 @@
 
 #include <QAbstractItemModel>
 #include <QApplication>
+
 #include <QEvent>
 #include <QFrame>
 #include <QGroupBox>
@@ -17,6 +18,7 @@
 #include <QMargins>
 #include <QPoint>
 #include <QScrollBar>
+
 #include <QSize>
 #include <QSizePolicy>
 #include <QStackedWidget>
@@ -194,6 +196,7 @@ namespace
             m_searchEdit->setFixedHeight(kSearchControlHeight);
             rootLayout->addWidget(m_searchEdit, 1);
 
+
             m_searchButton = new QToolButton(this);
             m_searchButton->setProperty(kGenericSearchControlPropertyName, true);
             m_searchButton->setAutoRaise(true);
@@ -231,8 +234,66 @@ namespace
 
         ~TableSearchAccessWidget() override
         {
+            clearResultFilter();
             restoreHostMargins();
         }
+
+        bool isGenericSearchEligible() const
+        {
+            return !m_tableView.isNull()
+                && m_tableView->model() != nullptr
+                && !hasDedicatedSearchControl(m_tableView.data());
+        }
+
+        bool applyResultFilter(const QString& queryText)
+        {
+            const QString normalizedQuery = queryText.trimmed();
+            if (!isGenericSearchEligible() || normalizedQuery.isEmpty())
+            {
+                clearResultFilter();
+                return false;
+            }
+
+            QAbstractItemModel* currentModel = m_tableView->model();
+            observeFilterModel(currentModel);
+            if (!m_resultFilterActive)
+            {
+                m_keepSearchAccessVisible = tableNeedsSearchAccess(
+                    m_tableView.data());
+                captureBaselineHiddenRows();
+            }
+            else
+            {
+                restoreBaselineHiddenRows();
+            }
+
+            m_resultFilterActive = true;
+            m_resultFilterQuery = normalizedQuery;
+            applyResultFilterRows();
+
+            scheduleRefresh();
+            return true;
+        }
+
+        void clearResultFilter()
+        {
+            const bool stateChanged = m_resultFilterActive;
+            if (m_resultFilterActive)
+            {
+                restoreBaselineHiddenRows();
+            }
+            m_resultFilterActive = false;
+            m_modelMutationPrepared = false;
+            m_keepSearchAccessVisible = false;
+            m_resultFilterQuery.clear();
+            m_baselineHiddenRowList.clear();
+
+            if (stateChanged)
+            {
+                scheduleRefresh();
+            }
+        }
+
 
         void refreshPresentation()
         {
@@ -251,10 +312,12 @@ namespace
 
             if (hasDedicatedSearchControl(tableView))
             {
+                clearResultFilter();
                 applyPresentation(0);
                 return;
             }
-            if (!tableNeedsSearchAccess(tableView))
+            if (!tableNeedsSearchAccess(tableView)
+                && !(m_resultFilterActive && m_keepSearchAccessVisible))
             {
                 applyPresentation(0);
                 return;
@@ -305,6 +368,184 @@ namespace
         }
 
     private:
+        void observeFilterModel(QAbstractItemModel* model)
+        {
+            if (m_filterModel == model)
+            {
+                return;
+            }
+            m_resultFilterActive = false;
+            m_modelMutationPrepared = false;
+            m_baselineHiddenRowList.clear();
+            if (!m_filterModel.isNull())
+            {
+                QObject::disconnect(m_filterModel.data(), nullptr, this, nullptr);
+            }
+
+            m_filterModel = model;
+            if (model == nullptr)
+            {
+                return;
+            }
+
+            // 结构变化前先撤销附加隐藏，变化后重新采集业务原有隐藏状态。
+            const auto prepareMutation = [this]() {
+                prepareForModelMutation();
+            };
+            const auto finishMutation = [this]() {
+                scheduleFilterReapply(true);
+            };
+            connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, prepareMutation);
+            connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, prepareMutation);
+            connect(model, &QAbstractItemModel::rowsAboutToBeMoved, this, prepareMutation);
+            connect(model, &QAbstractItemModel::columnsAboutToBeInserted, this, prepareMutation);
+            connect(model, &QAbstractItemModel::columnsAboutToBeRemoved, this, prepareMutation);
+            connect(model, &QAbstractItemModel::columnsAboutToBeMoved, this, prepareMutation);
+            connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, prepareMutation);
+            connect(model, &QAbstractItemModel::modelAboutToBeReset, this, prepareMutation);
+
+            connect(model, &QAbstractItemModel::rowsInserted, this, finishMutation);
+            connect(model, &QAbstractItemModel::rowsRemoved, this, finishMutation);
+            connect(model, &QAbstractItemModel::rowsMoved, this, finishMutation);
+            connect(model, &QAbstractItemModel::columnsInserted, this, finishMutation);
+            connect(model, &QAbstractItemModel::columnsRemoved, this, finishMutation);
+            connect(model, &QAbstractItemModel::columnsMoved, this, finishMutation);
+            connect(model, &QAbstractItemModel::layoutChanged, this, finishMutation);
+            connect(model, &QAbstractItemModel::modelReset, this, finishMutation);
+            connect(
+                model,
+                &QAbstractItemModel::dataChanged,
+                this,
+                [this]() { scheduleFilterReapply(false); });
+        }
+
+        void prepareForModelMutation()
+        {
+            if (!m_resultFilterActive || m_modelMutationPrepared)
+            {
+                return;
+            }
+            restoreBaselineHiddenRows();
+            m_baselineHiddenRowList.clear();
+            m_modelMutationPrepared = true;
+        }
+
+        void scheduleFilterReapply(const bool recaptureBaseline)
+        {
+            if (!m_resultFilterActive || m_filterRefreshPending)
+            {
+                return;
+            }
+            m_filterRefreshPending = true;
+            QTimer::singleShot(0, this, [this, recaptureBaseline]() {
+                m_filterRefreshPending = false;
+                if (!m_resultFilterActive || m_tableView.isNull())
+                {
+                    return;
+                }
+
+                if (recaptureBaseline || m_modelMutationPrepared)
+                {
+                    captureBaselineHiddenRows();
+                    m_modelMutationPrepared = false;
+                }
+                else
+                {
+                    restoreBaselineHiddenRows();
+                }
+                applyResultFilterRows();
+                scheduleRefresh();
+            });
+        }
+
+        void captureBaselineHiddenRows()
+        {
+            m_baselineHiddenRowList.clear();
+            if (m_tableView.isNull() || m_tableView->model() == nullptr)
+            {
+                return;
+            }
+
+            const int rowCount = m_tableView->model()->rowCount();
+            m_baselineHiddenRowList.reserve(rowCount);
+            for (int rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+            {
+                m_baselineHiddenRowList.push_back(
+                    m_tableView->isRowHidden(rowIndex));
+            }
+        }
+
+        void restoreBaselineHiddenRows()
+        {
+            if (m_tableView.isNull()
+                || m_tableView->model() == nullptr
+                || m_filterModel != m_tableView->model())
+            {
+                return;
+            }
+
+            const int restorableRowCount = std::min(
+                m_tableView->model()->rowCount(),
+                static_cast<int>(m_baselineHiddenRowList.size()));
+            for (int rowIndex = 0; rowIndex < restorableRowCount; ++rowIndex)
+            {
+                m_tableView->setRowHidden(
+                    rowIndex,
+                    m_baselineHiddenRowList.at(rowIndex));
+            }
+        }
+
+        bool rowMatchesQuery(const int rowIndex) const
+        {
+            if (m_tableView.isNull() || m_tableView->model() == nullptr)
+            {
+                return false;
+            }
+
+            QAbstractItemModel* model = m_tableView->model();
+            for (int columnIndex = 0;
+                 columnIndex < model->columnCount();
+                 ++columnIndex)
+            {
+                if (m_tableView->isColumnHidden(columnIndex))
+                {
+                    continue;
+                }
+                const QString cellText = model
+                    ->index(rowIndex, columnIndex)
+                    .data(Qt::DisplayRole)
+                    .toString();
+                if (cellText.contains(m_resultFilterQuery, Qt::CaseInsensitive))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void applyResultFilterRows()
+        {
+            if (!m_resultFilterActive
+                || m_tableView.isNull()
+                || m_tableView->model() == nullptr)
+            {
+                return;
+            }
+
+            const int rowCount = m_tableView->model()->rowCount();
+            if (m_baselineHiddenRowList.size() != rowCount)
+            {
+                captureBaselineHiddenRows();
+            }
+            for (int rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+            {
+                const bool baselineHidden = m_baselineHiddenRowList.at(rowIndex);
+                m_tableView->setRowHidden(
+                    rowIndex,
+                    baselineHidden || !rowMatchesQuery(rowIndex));
+            }
+        }
+
         void installObservers()
         {
             if (!m_tableView.isNull())
@@ -372,6 +613,7 @@ namespace
             QWidget* hostWidget = m_hostWidget.data();
             const bool fullSearchVisible = requestedWidth == kFullSearchWidth;
             m_searchEdit->setVisible(fullSearchVisible);
+
             m_searchButton->setVisible(!fullSearchVisible);
 
             if (hostWidget->layout() != nullptr
@@ -401,6 +643,7 @@ namespace
                 "QFrame#KSWORD_TABLE_SEARCH_SUPPORT{background:transparent;}"
                 "QLineEdit{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:0 6px;}"
                 "QLineEdit:focus{border-color:%4;}"
+
                 "QToolButton{background:transparent;color:%2;border:1px solid transparent;border-radius:3px;}"
                 "QToolButton:hover{background:%5;border-color:%4;}" )
                 .arg(
@@ -416,9 +659,17 @@ namespace
         QPointer<QTableView> m_tableView;    // m_tableView：搜索入口对应的原始表格。
         QPointer<QWidget> m_hostWidget;      // m_hostWidget：操作条或水平表头宿主。
         QLineEdit* m_searchEdit = nullptr;   // m_searchEdit：空间充足时显示的输入框。
+
         QToolButton* m_searchButton = nullptr; // m_searchButton：空间不足时显示的图标按钮。
         QMargins m_originalHostMargins;      // m_originalHostMargins：操作条原始布局边距。
+        QPointer<QAbstractItemModel> m_filterModel; // m_filterModel：过滤启用时观察的当前模型。
+        QVector<bool> m_baselineHiddenRowList; // m_baselineHiddenRowList：启用过滤前逐行隐藏快照。
+        QString m_resultFilterQuery;         // m_resultFilterQuery：当前结果专显关键词。
         int m_reservedHostWidth = 0;         // m_reservedHostWidth：当前为搜索入口预留的右侧宽度。
+        bool m_resultFilterActive = false;   // m_resultFilterActive：是否已附加通用行过滤。
+        bool m_keepSearchAccessVisible = false; // m_keepSearchAccessVisible：过滤前入口是否满足超页显示条件。
+        bool m_modelMutationPrepared = false; // m_modelMutationPrepared：结构变更前是否已恢复基线。
+        bool m_filterRefreshPending = false; // m_filterRefreshPending：合并模型变化触发的过滤刷新。
         bool m_refreshPending = false;       // m_refreshPending：合并同一事件循环内的刷新请求。
     };
 
@@ -465,6 +716,35 @@ namespace ks::ui
             searchSupport->refreshPresentation();
         }
     }
+
+    bool IsGenericTableSearchEligible(QTableView* tableView)
+    {
+        if (TableSearchAccessWidget* searchSupport = searchSupportForTable(tableView))
+        {
+            return searchSupport->isGenericSearchEligible();
+        }
+        return false;
+    }
+
+    bool ApplyTableSearchResultFilter(
+        QTableView* tableView,
+        const QString& queryText)
+    {
+        if (TableSearchAccessWidget* searchSupport = searchSupportForTable(tableView))
+        {
+            return searchSupport->applyResultFilter(queryText);
+        }
+        return false;
+    }
+
+    void ClearTableSearchResultFilter(QTableView* tableView)
+    {
+        if (TableSearchAccessWidget* searchSupport = searchSupportForTable(tableView))
+        {
+            searchSupport->clearResultFilter();
+        }
+    }
+
 
     QString ResolveTableSearchDisplayName(const QTableView* tableView)
     {

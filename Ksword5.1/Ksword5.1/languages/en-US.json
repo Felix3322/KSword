@@ -30487,6 +30487,7 @@
     "在%1中搜索；按 Tab 切换全局、当前页面和当前表格": "Search in %1; press Tab to switch between global, current page, and current table",
     "当前表格（%1）": "Current table (%1)",
     "当前页面": "Current page",
+    "仅显示搜索结果": "Show search results only",
     "搜索%1": "Search %1",
     "搜索当前表格：%1": "Search current table: %1",
     "搜索范围：%1。聚焦输入框后按 Tab 切换范围。": "Search scope: %1. Focus the input and press Tab to switch scope.",

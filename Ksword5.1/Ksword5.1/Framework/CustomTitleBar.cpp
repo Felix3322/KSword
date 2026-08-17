@@ -1027,14 +1027,13 @@ namespace ks::ui
         m_commandModeAction->setChecked(!m_searchInputModeActive);
         if (m_searchInputModeActive)
         {
-            m_inputModeButton->setText(m_searchScopeDisplayText + QStringLiteral(" ▾"));
+            m_inputModeButton->setText(
+                ks::i18n::sourceText(QStringLiteral("搜索")) + QStringLiteral(" ▾"));
             m_inputModeButton->setToolTip(
                 ks::i18n::sourceText(QStringLiteral("搜索范围：%1。聚焦输入框后按 Tab 切换范围。"))
                     .arg(m_searchScopeDisplayText));
             m_commandLineEdit->setPlaceholderText(
-                ks::i18n::sourceText(
-                    QStringLiteral("在%1中搜索；按 Tab 切换全局、当前页面和当前表格"))
-                    .arg(m_searchScopeDisplayText));
+                ks::i18n::sourceText(QStringLiteral("搜索")));
         }
         else
         {

@@ -10,10 +10,12 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QEvent>
 #include <QFrame>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -25,6 +27,7 @@
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyleOption>
 #include <QStyledItemDelegate>
@@ -70,6 +73,7 @@ namespace
     constexpr int kHeaderColumnScanLimit = 80;
     constexpr int kFlashDelayMs = 140;
     constexpr int kProgressContentHeight = 44;
+    constexpr int kSearchOptionsRowHeight = 36;
     constexpr int kResultHtmlRole = Qt::UserRole + 41;
 
     // normalizeUiText：
@@ -816,6 +820,7 @@ namespace ks::ui
 
     GlobalUiSearchController::~GlobalUiSearchController()
     {
+        clearSearchResultFilters();
         if (g_activeSearchController == this)
         {
             g_activeSearchController.clear();
@@ -851,6 +856,7 @@ namespace ks::ui
         m_recentTableView = tableView;
         m_recentPageDockWidget = dockWidgetForWidget(tableView);
         setSearchScope(UiSearchScope::CurrentTable);
+
         emit requestSearchInputActivation(focusTopInput);
 
         if (m_searchInputEdit != nullptr && !queryText.isNull())
@@ -894,6 +900,12 @@ namespace ks::ui
         if (!isCurrentQueryLongEnough(queryText.trimmed()))
         {
             dismissPopup();
+            clearSearchResultFilters();
+            m_currentHitList.clear();
+            if (m_searchInputEdit != nullptr && m_searchInputEdit->hasFocus())
+            {
+                showOptionsOnlyPopup();
+            }
             return;
         }
         m_searchDebounceTimer->start();
@@ -905,10 +917,51 @@ namespace ks::ui
         if (!searchModeActive)
         {
             dismissPopup();
+            clearSearchResultFilters();
         }
         else if (isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
         {
             m_searchDebounceTimer->start();
+        }
+        else if (m_searchInputEdit != nullptr && m_searchInputEdit->hasFocus())
+        {
+            showOptionsOnlyPopup();
+        }
+    }
+
+    void GlobalUiSearchController::setSearchResultsOnly(const bool checked)
+    {
+        if (m_searchResultsOnly == checked)
+        {
+            refreshSearchOptionControls();
+            if (m_searchScope == UiSearchScope::CurrentTable)
+            {
+            }
+            return;
+        }
+
+        const bool popupWasVisible = m_popupPanel != nullptr && m_popupPanel->isVisible();
+        dismissPopup();
+        clearSearchResultFilters();
+        m_searchResultsOnly = checked;
+        refreshSearchOptionControls();
+        if (m_searchScope == UiSearchScope::CurrentTable)
+        {
+        }
+        if (m_searchModeActive && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
+        {
+            if (popupWasVisible)
+            {
+                runSearchNow();
+            }
+            else
+            {
+                m_searchDebounceTimer->start();
+            }
+        }
+        else if (popupWasVisible)
+        {
+            showOptionsOnlyPopup();
         }
     }
 
@@ -989,11 +1042,22 @@ namespace ks::ui
                     break;
                 }
             }
-            else if (eventType == QEvent::FocusIn
-                && m_searchModeActive
-                && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
+            else if ((eventType == QEvent::FocusIn || eventType == QEvent::MouseButtonPress)
+                && m_searchModeActive)
             {
-                m_searchDebounceTimer->start();
+                if (isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
+                {
+                    m_searchDebounceTimer->start();
+                }
+                else
+                {
+                    QTimer::singleShot(0, this, [this]() {
+                        if (m_searchModeActive)
+                        {
+                            showOptionsOnlyPopup();
+                        }
+                        });
+                }
             }
             return false;
         }
@@ -1016,6 +1080,7 @@ namespace ks::ui
                         && m_targetTableView != tableView)
                     {
                         dismissPopup();
+                        clearSearchResultFilters();
                         m_targetTableView = tableView;
                         refreshSearchScopeDisplayText();
                         if (m_searchModeActive
@@ -1032,6 +1097,7 @@ namespace ks::ui
                     if (currentPageChanged)
                     {
                         dismissPopup();
+                        clearSearchResultFilters();
                     }
                     m_recentPageDockWidget = dockWidget;
                     if (currentPageChanged
@@ -1090,6 +1156,48 @@ namespace ks::ui
         panelLayout->setContentsMargins(4, 4, 4, 4);
         panelLayout->setSpacing(0);
 
+        m_searchOptionsRow = new QWidget(m_popupPanel);
+        m_searchOptionsRow->setFixedHeight(kSearchOptionsRowHeight);
+        auto* optionsLayout = new QHBoxLayout(m_searchOptionsRow);
+        optionsLayout->setContentsMargins(8, 4, 8, 4);
+        optionsLayout->setSpacing(8);
+
+        m_searchScopeLabel = new QLabel(m_searchOptionsRow);
+        m_searchScopeCombo = new QComboBox(m_searchOptionsRow);
+        m_searchScopeCombo->setMinimumWidth(200);
+        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::Global));
+        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::CurrentPage));
+        m_searchScopeCombo->addItem(QString(), static_cast<int>(UiSearchScope::CurrentTable));
+        m_searchResultsOnlyCheck = new QCheckBox(m_searchOptionsRow);
+
+        optionsLayout->addWidget(m_searchScopeLabel, 0);
+        optionsLayout->addWidget(m_searchScopeCombo, 1);
+        optionsLayout->addStretch(1);
+        optionsLayout->addWidget(m_searchResultsOnlyCheck, 0);
+
+        connect(
+            m_searchScopeCombo,
+            qOverload<int>(&QComboBox::currentIndexChanged),
+            this,
+            [this](const int comboIndex) {
+                if (comboIndex < 0 || m_searchScopeCombo == nullptr)
+                {
+                    return;
+                }
+                const int scopeValue = m_searchScopeCombo->itemData(comboIndex).toInt();
+                if (scopeValue < static_cast<int>(UiSearchScope::Global)
+                    || scopeValue > static_cast<int>(UiSearchScope::CurrentTable))
+                {
+                    return;
+                }
+                setSearchScope(static_cast<UiSearchScope>(scopeValue));
+            });
+        connect(
+            m_searchResultsOnlyCheck,
+            &QCheckBox::toggled,
+            this,
+            &GlobalUiSearchController::setSearchResultsOnly);
+
         m_resultListWidget = new QListWidget(m_popupPanel);
         m_resultListWidget->setObjectName(QStringLiteral("ksGlobalUiSearchResultList"));
         m_resultListWidget->setFrameShape(QFrame::NoFrame);
@@ -1135,9 +1243,64 @@ namespace ks::ui
         progressLayout->addWidget(m_searchProgressBar, 0);
         m_searchProgressRow->hide();
 
+        panelLayout->addWidget(m_searchOptionsRow, 0);
         panelLayout->addWidget(m_searchProgressRow, 0);
         panelLayout->addWidget(m_resultListWidget, 1);
         panelLayout->addWidget(m_emptyHintLabel, 0);
+        refreshSearchOptionControls();
+    }
+
+    void GlobalUiSearchController::refreshSearchOptionControls()
+    {
+        if (m_searchScopeLabel != nullptr)
+        {
+            m_searchScopeLabel->setText(ks::i18n::sourceText(QStringLiteral("范围")));
+        }
+        if (m_searchScopeCombo != nullptr)
+        {
+            const QSignalBlocker scopeSignalBlocker(m_searchScopeCombo);
+            m_searchScopeCombo->setItemText(
+                static_cast<int>(UiSearchScope::Global),
+                ks::i18n::sourceText(QStringLiteral("全局")));
+            m_searchScopeCombo->setItemText(
+                static_cast<int>(UiSearchScope::CurrentPage),
+                ks::i18n::sourceText(QStringLiteral("当前页面")));
+            m_searchScopeCombo->setItemText(
+                static_cast<int>(UiSearchScope::CurrentTable),
+                ks::i18n::sourceText(QStringLiteral("当前表格（%1）")).arg(
+                    ks::ui::ResolveTableSearchDisplayName(resolveCurrentTable())));
+            m_searchScopeCombo->setCurrentIndex(static_cast<int>(m_searchScope));
+        }
+        if (m_searchResultsOnlyCheck != nullptr)
+        {
+            const QSignalBlocker resultsOnlySignalBlocker(m_searchResultsOnlyCheck);
+            m_searchResultsOnlyCheck->setText(
+                ks::i18n::sourceText(QStringLiteral("仅显示搜索结果")));
+            m_searchResultsOnlyCheck->setChecked(m_searchResultsOnly);
+        }
+    }
+
+    void GlobalUiSearchController::showOptionsOnlyPopup()
+    {
+        ensurePopupCreated();
+        m_currentHitList.clear();
+        if (m_searchProgressRow != nullptr)
+        {
+            m_searchProgressRow->hide();
+        }
+        if (m_resultListWidget != nullptr)
+        {
+            m_resultListWidget->clear();
+            m_resultListWidget->hide();
+        }
+        if (m_emptyHintLabel != nullptr)
+        {
+            m_emptyHintLabel->setText(
+                ks::i18n::sourceText(QStringLiteral("搜索")));
+            m_emptyHintLabel->show();
+        }
+        refreshSearchOptionControls();
+        showPopupPanel();
     }
 
     void GlobalUiSearchController::runSearchNow()
@@ -1146,6 +1309,7 @@ namespace ks::ui
         if (!m_searchModeActive || !isCurrentQueryLongEnough(queryText))
         {
             dismissPopup();
+            clearSearchResultFilters();
             return;
         }
         if (m_searchScope != UiSearchScope::CurrentTable && !m_dockListProvider)
@@ -1160,7 +1324,8 @@ namespace ks::ui
             return;
         }
 
-        // 新代数使仍在事件队列中的旧扫描分片全部作废。
+        // 新代数使仍在事件队列中的旧扫描分片全部作废；先撤销上一轮附加行过滤。
+        clearSearchResultFilters();
         ++m_searchGeneration;
         m_activeQueryText = queryText;
         m_activeSearchScope = m_searchScope;
@@ -1246,7 +1411,8 @@ namespace ks::ui
             ? 1
             : static_cast<int>(m_pendingSearchDockList.size());
         if (m_nextSearchDockIndex >= workItemCount
-            || m_currentHitList.size() >= kMaxTotalHits)
+            || (!m_searchResultsOnly
+                && m_currentHitList.size() >= kMaxTotalHits))
         {
             finishAsyncSearch();
             return;
@@ -1258,6 +1424,8 @@ namespace ks::ui
                 m_pendingDirectTableView.data(),
                 m_activeQueryText,
                 m_currentHitList);
+            applySearchResultFilterToTable(
+                m_pendingDirectTableView.data());
         }
         else
         {
@@ -1276,6 +1444,9 @@ namespace ks::ui
                     dockWidget,
                     m_activeQueryText,
                     m_currentHitList,
+                    m_activeSearchScope == UiSearchScope::CurrentPage);
+                applySearchResultFiltersToDock(
+                    dockWidget,
                     m_activeSearchScope == UiSearchScope::CurrentPage);
             }
         }
@@ -1401,10 +1572,12 @@ namespace ks::ui
             "}"
             "#ksGlobalUiSearchPopup QLabel#ksGlobalUiSearchEmptyHint{"
             "  color:%3;"
+
             "  padding:14px 0;"
             "}"
             "#ksGlobalUiSearchPopup QLabel#ksGlobalUiSearchProgressLabel{"
             "  color:%3;"
+
             "}"
             "#ksGlobalUiSearchPopup QProgressBar#ksGlobalUiSearchProgressBar{"
             "  background:%4;"
@@ -1421,6 +1594,32 @@ namespace ks::ui
                 KswordTheme::TextSecondaryHex(),
                 KswordTheme::SurfaceAltColorHex(),
                 KswordTheme::ThemeColorName(KswordTheme::PrimaryAccentColor())));
+        if (m_searchOptionsRow != nullptr)
+        {
+            m_searchOptionsRow->setStyleSheet(QStringLiteral(
+                "background:%1;border-bottom:1px solid %2;")
+                .arg(KswordTheme::SurfaceAltColorHex(), KswordTheme::BorderStrongColorHex()));
+        }
+        if (m_searchScopeLabel != nullptr)
+        {
+            m_searchScopeLabel->setStyleSheet(
+                QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+        }
+        if (m_searchResultsOnlyCheck != nullptr)
+        {
+            m_searchResultsOnlyCheck->setStyleSheet(
+                QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+        }
+        if (m_searchScopeCombo != nullptr)
+        {
+            m_searchScopeCombo->setStyleSheet(QStringLiteral(
+                "QComboBox{background:%1;color:%2;border:1px solid %3;"
+                "border-radius:3px;padding:2px 6px;}")
+                .arg(
+                    KswordTheme::SurfaceColorHex(),
+                    KswordTheme::TextSecondaryHex(),
+                    KswordTheme::BorderStrongColorHex()));
+        }
 
         const int anchorWidth = m_popupAnchorWidget != nullptr ? m_popupAnchorWidget->width() : 460;
         const int panelWidth = std::clamp(
@@ -1439,7 +1638,7 @@ namespace ks::ui
         {
             contentHeight = visibleRowCount * kResultItemHeight + 2;
         }
-        m_popupPanel->setFixedSize(panelWidth, contentHeight + 8);
+        m_popupPanel->setFixedSize(panelWidth, contentHeight + kSearchOptionsRowHeight + 8);
 
         repositionPopupPanel();
         m_popupPanel->raise();
@@ -1561,7 +1760,9 @@ namespace ks::ui
             return;
         }
 
+        const bool popupWasVisible = m_popupPanel != nullptr && m_popupPanel->isVisible();
         dismissPopup();
+        clearSearchResultFilters();
         m_searchScope = searchScope;
         if (m_searchScope == UiSearchScope::CurrentTable)
         {
@@ -1570,7 +1771,18 @@ namespace ks::ui
         refreshSearchScopeDisplayText();
         if (m_searchModeActive && isCurrentQueryLongEnough(m_pendingQueryText.trimmed()))
         {
-            m_searchDebounceTimer->start();
+            if (popupWasVisible)
+            {
+                runSearchNow();
+            }
+            else
+            {
+                m_searchDebounceTimer->start();
+            }
+        }
+        else if (popupWasVisible)
+        {
+            showOptionsOnlyPopup();
         }
     }
 
@@ -1588,6 +1800,71 @@ namespace ks::ui
             m_targetTableView = resolveCurrentTable();
         }
         setSearchScope(static_cast<UiSearchScope>(nextScopeIndex));
+    }
+
+    void GlobalUiSearchController::clearSearchResultFilters()
+    {
+        for (const QPointer<QTableView>& tableView : m_filteredTableViewList)
+        {
+            if (!tableView.isNull())
+            {
+                ks::ui::ClearTableSearchResultFilter(tableView.data());
+            }
+        }
+        m_filteredTableViewList.clear();
+    }
+
+    void GlobalUiSearchController::applySearchResultFilterToTable(
+        QTableView* tableView)
+    {
+        if (!m_searchResultsOnly
+            || tableView == nullptr
+            || m_activeQueryText.trimmed().isEmpty()
+            || !ks::ui::IsGenericTableSearchEligible(tableView))
+        {
+            return;
+        }
+
+        if (!ks::ui::ApplyTableSearchResultFilter(
+                tableView,
+                m_activeQueryText))
+        {
+            return;
+        }
+
+        const QPointer<QTableView> guardedTable(tableView);
+        if (!m_filteredTableViewList.contains(guardedTable))
+        {
+            m_filteredTableViewList.push_back(guardedTable);
+        }
+    }
+
+    void GlobalUiSearchController::applySearchResultFiltersToDock(
+        ads::CDockWidget* dockWidget,
+        const bool visiblePageOnly)
+    {
+        if (!m_searchResultsOnly
+            || dockWidget == nullptr
+            || dockWidget->widget() == nullptr)
+        {
+            return;
+        }
+
+        QWidget* contentWidget = dockWidget->widget();
+        QList<QTableView*> tableViewList = contentWidget->findChildren<QTableView*>();
+        if (QTableView* rootTableView = qobject_cast<QTableView*>(contentWidget))
+        {
+            tableViewList.prepend(rootTableView);
+        }
+        for (QTableView* tableView : tableViewList)
+        {
+            if (tableView == nullptr
+                || (visiblePageOnly && !tableView->isVisibleTo(contentWidget)))
+            {
+                continue;
+            }
+            applySearchResultFilterToTable(tableView);
+        }
     }
 
     ads::CDockWidget* GlobalUiSearchController::resolveCurrentPageDock() const
@@ -1661,6 +1938,7 @@ namespace ks::ui
 
     void GlobalUiSearchController::refreshSearchScopeDisplayText()
     {
+        refreshSearchOptionControls();
         emit searchScopeDisplayTextChanged(searchScopeDisplayText());
     }
 

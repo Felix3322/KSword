@@ -23,6 +23,8 @@
 
 #include <functional>
 
+class QCheckBox;
+class QComboBox;
 class QEvent;
 class QFrame;
 class QLabel;
@@ -134,6 +136,7 @@ namespace ks::ui
         // searchScopeDisplayTextChanged：范围变化后刷新标题栏模式标签和提示。
         void searchScopeDisplayTextChanged(const QString& displayText);
 
+
     public slots:
         // handleQueryEdited：
         // - 作用：接收标题栏搜索文本变化并触发防抖搜索；
@@ -146,6 +149,9 @@ namespace ks::ui
         // - 触发：CustomTitleBar::inputModeChanged；
         // - 传入 searchModeActive：false 时立即收起结果弹层。
         void setSearchInputActive(bool searchModeActive);
+
+        // setSearchResultsOnly：切换通用表格的结果专显过滤。
+        void setSearchResultsOnly(bool checked);
 
         // dismissPopup：
         // - 作用：收起结果弹层并停止未决的防抖搜索。
@@ -162,8 +168,14 @@ namespace ks::ui
 
     private:
         // ensurePopupCreated：
-        // - 作用：首次需要时构建结果弹层控件树（列表+空态提示）。
+        // - 作用：首次需要时构建搜索选项、结果列表与空态提示。
         void ensurePopupCreated();
+
+        // refreshSearchOptionControls：同步弹层中的范围下拉与结果专显状态。
+        void refreshSearchOptionControls();
+
+        // showOptionsOnlyPopup：空查询时仍显示可操作的搜索范围与结果专显控件。
+        void showOptionsOnlyPopup();
 
         // runSearchNow：
         // - 作用：启动一次异步分片搜索（防抖定时器到期或显式触发）；
@@ -229,6 +241,13 @@ namespace ks::ui
         // refreshSearchScopeDisplayText：生成“全局/当前页面/当前表格（名称）”并通知标题栏。
         void refreshSearchScopeDisplayText();
 
+        // clear/applySearchResultFilters：按当前范围撤销或应用通用表格行过滤。
+        void clearSearchResultFilters();
+        void applySearchResultFilterToTable(QTableView* tableView);
+        void applySearchResultFiltersToDock(
+            ads::CDockWidget* dockWidget,
+            bool visiblePageOnly);
+
     private:
         QPointer<QWidget> m_popupHostWindow;      // m_popupHostWindow：弹层父窗口（主窗口）。
         QPointer<QLineEdit> m_searchInputEdit;    // m_searchInputEdit：标题栏中间输入框。
@@ -239,6 +258,10 @@ namespace ks::ui
         DockActivator m_dockActivator;            // m_dockActivator：Dock 置前激活回调。
 
         QFrame* m_popupPanel = nullptr;           // m_popupPanel：结果弹层容器（宿主窗口子控件）。
+        QWidget* m_searchOptionsRow = nullptr;    // m_searchOptionsRow：范围与结果专显选项行。
+        QLabel* m_searchScopeLabel = nullptr;     // m_searchScopeLabel：范围下拉标签。
+        QComboBox* m_searchScopeCombo = nullptr;  // m_searchScopeCombo：全局/当前页面/当前表格切换。
+        QCheckBox* m_searchResultsOnlyCheck = nullptr; // m_searchResultsOnlyCheck：仅显示命中行。
         QListWidget* m_resultListWidget = nullptr;// m_resultListWidget：结果列表。
         QLabel* m_emptyHintLabel = nullptr;       // m_emptyHintLabel：无结果时的空态提示。
         QWidget* m_searchProgressRow = nullptr;   // m_searchProgressRow：扫描进行中的进度行容器。
@@ -254,12 +277,14 @@ namespace ks::ui
         quint64 m_searchGeneration = 0;           // m_searchGeneration：搜索代数；新搜索/取消时自增使在途分片作废。
         bool m_searchInProgress = false;          // m_searchInProgress：当前是否有异步扫描在进行。
         bool m_searchModeActive = true;           // m_searchModeActive：标题栏是否处于搜索输入模式。
+        bool m_searchResultsOnly = false;         // m_searchResultsOnly：是否隐藏通用表格中的非命中行。
         UiSearchScope m_searchScope = UiSearchScope::Global; // m_searchScope：用户当前选择的搜索范围。
         UiSearchScope m_activeSearchScope = UiSearchScope::Global; // m_activeSearchScope：在途搜索采用的范围快照。
         QPointer<QTableView> m_targetTableView;     // m_targetTableView：表格入口显式指定的目标表格。
         QPointer<QTableView> m_recentTableView;     // m_recentTableView：最近鼠标/键盘交互过的表格。
         QPointer<ads::CDockWidget> m_recentPageDockWidget; // m_recentPageDockWidget：最近交互控件所属 Dock。
         QPointer<QTableView> m_pendingDirectTableView; // m_pendingDirectTableView：当前表格范围待扫描对象。
+        QList<QPointer<QTableView>> m_filteredTableViewList; // m_filteredTableViewList：当前由通用搜索附加过滤的表格。
     };
 
     // ActivateGlobalUiSearchForTable：表格通用入口调用当前主窗口搜索控制器。

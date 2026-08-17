@@ -164,6 +164,7 @@ namespace ks::ui
         // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
         void inputModeChanged(bool searchModeActive);
 
+
     protected:
         // resizeEvent：
         // - 作用：窗口尺寸变化时保持中间输入框宽度=标题栏宽度的 1/3。
