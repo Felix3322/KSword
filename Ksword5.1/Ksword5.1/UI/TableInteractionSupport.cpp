@@ -2499,7 +2499,6 @@ namespace
             return;
         }
 
-        tableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
         ks::ui::InstallTableHeaderClickSorting(
             qobject_cast<QTableWidget*>(tableView));
         installActionBar(tableView);
