@@ -19,6 +19,7 @@
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../theme.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/UI_All.h"
 #include "../../../shared/driver/KswordArkDynDataIoctl.h"
 
 #include <QAbstractScrollArea>
@@ -231,15 +232,9 @@ namespace process_detail_window_internal
     // - 返回 ArkDriverClient 可直接提交的 runtime field sample item 列表。
     std::vector<ksword::ark::RuntimeFieldSampleRequestItem> buildPdbRuntimeSampleItems(const QString& domainName, int maxItems);
 
-    // calculateStandaloneWindowMaxWidth 作用：
+    // calculateStandaloneWindowInitialWidth 作用：
     // - 输入 candidateParent 为优先参考的客户区控件，fallbackWindow 为当前独立窗口；
     // - 处理时先定位目标屏幕，再取父控件/活动窗口/屏幕可用宽度中的可用值；
-    // - 返回不会超过目标屏幕可用宽度 ratio 比例的最大窗口宽度，无法判断时返回 fallbackWidth。
-    int calculateStandaloneWindowMaxWidth(QWidget* candidateParent, QWidget* fallbackWindow, double ratio, int fallbackWidth);
-
-    // applyStandaloneWindowWidthLimit 作用：
-    // - 输入目标窗口、参考父控件、期望初始尺寸和比例；
-    // - 处理时设置窗口 maximumWidth，并把初始 resize 宽度裁剪到屏幕比例上限以内；
-    // - 返回值：无，直接修改 window 的几何约束。
-    void applyStandaloneWindowWidthLimit(QWidget* window, QWidget* candidateParent, const QSize& preferredSize, double ratio);
+    // - 返回按 ratio 计算的初始窗口宽度，无法判断时返回 fallbackWidth；不设置最大尺寸。
+    int calculateStandaloneWindowInitialWidth(QWidget* candidateParent, QWidget* fallbackWindow, double ratio, int fallbackWidth);
 }
