@@ -7,3 +7,4 @@
 - [蓝屏 BGP 准备与 BPP 哨兵](ksword-bugcheck-bgp.md) — 未取得显示所有权时的 `BPP=1`、24/32 BPP 双资源预生成、崩溃阶段诊断日志与 fail-closed 边界
 - [CI 合并回归恢复](ksword-ci-merge-recovery.md) — Actions 日志收敛顺序、共享 IOCTL 编号兼容、WDK 令牌声明与 `/WX` 协议头约束
 - [FileDock 文件元数据编辑](ksword-file-metadata-editor.md) — FILE_BASIC_INFO 零值写入、重解析点句柄、文件身份复核、结构性属性保留与异步回读
+- [Win32k 消息 Hook 筛选](ksword-message-hook-filtering.md) — 所有者/目标筛选位、进程右键目标语义、Hook 独立默认预算与 METHOD_BUFFERED 请求复制

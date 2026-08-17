@@ -92,7 +92,8 @@ Return Value:
 
 static VOID
 KswordARKWin32kFillDefaultRequest(
-    _Out_ KSWORD_ARK_WIN32K_QUERY_REQUEST* QueryRequest
+    _Out_ KSWORD_ARK_WIN32K_QUERY_REQUEST* QueryRequest,
+    _In_ ULONG DefaultMaxEntries
     )
 /*++
 
@@ -105,6 +106,7 @@ Arguments:
 
     QueryRequest - Receives the default version, diagnostic flag, and traversal
     budget.
+    DefaultMaxEntries - Operation-specific default traversal budget.
 
 Return Value:
 
@@ -115,7 +117,9 @@ Return Value:
     RtlZeroMemory(QueryRequest, sizeof(*QueryRequest));
     QueryRequest->version = KSWORD_ARK_WIN32K_PROTOCOL_VERSION;
     QueryRequest->flags = KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_DIAGNOSTICS;
-    QueryRequest->maxEntries = KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES;
+    QueryRequest->maxEntries = DefaultMaxEntries != 0UL
+        ? DefaultMaxEntries
+        : KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES;
 }
 
 static NTSTATUS
@@ -123,7 +127,8 @@ KswordARKWin32kRetrieveRequest(
     _In_ WDFREQUEST Request,
     _In_ size_t InputBufferLength,
     _Outptr_ KSWORD_ARK_WIN32K_QUERY_REQUEST** QueryRequestOut,
-    _Out_ KSWORD_ARK_WIN32K_QUERY_REQUEST* DefaultRequest
+    _Out_ KSWORD_ARK_WIN32K_QUERY_REQUEST* DefaultRequest,
+    _In_ ULONG DefaultMaxEntries
     )
 /*++
 
@@ -138,6 +143,7 @@ Arguments:
     InputBufferLength - Input length reported by the central dispatch callback.
     QueryRequestOut - Receives the caller packet or DefaultRequest.
     DefaultRequest - Stack storage for a synthesized request.
+    DefaultMaxEntries - Operation-specific default traversal budget.
 
 Return Value:
 
@@ -176,7 +182,7 @@ Return Value:
         return STATUS_SUCCESS;
     }
 
-    KswordARKWin32kFillDefaultRequest(DefaultRequest);
+    KswordARKWin32kFillDefaultRequest(DefaultRequest, DefaultMaxEntries);
     *QueryRequestOut = DefaultRequest;
     UNREFERENCED_PARAMETER(actualInputLength);
     return STATUS_SUCCESS;
@@ -188,6 +194,7 @@ KswordARKWin32kIoctlQueryCommon(
     _In_ WDFREQUEST Request,
     _In_ size_t InputBufferLength,
     _In_ size_t RequiredOutputLength,
+    _In_ ULONG DefaultMaxEntries,
     _In_z_ PCSTR OperationName,
     _In_ KSWORD_ARK_WIN32K_QUERY_COLLECTOR Collector,
     _Out_ size_t* BytesReturned
@@ -206,6 +213,7 @@ Arguments:
     Request - Current framework request.
     InputBufferLength - Input length reported by dispatch.
     RequiredOutputLength - Fixed response header size required by the collector.
+    DefaultMaxEntries - Operation-specific budget used by output-only callers.
     OperationName - Short ASCII operation name for logs.
     Collector - Feature collector routine that fills the response packet.
     BytesReturned - Receives bytes written by the collector.
@@ -233,7 +241,8 @@ Return Value:
         Request,
         InputBufferLength,
         &queryRequest,
-        &defaultRequest);
+        &defaultRequest,
+        DefaultMaxEntries);
     if (!NT_SUCCESS(status)) {
         KswordARKWin32kIoctlLog(Device, "Error", "R0 win32k-%s ioctl: input invalid, status=0x%08X.", OperationName, (unsigned int)status);
         return status;
@@ -300,6 +309,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_PROFILE_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "profile-status",
         KswordARKWin32kQueryProfileStatus,
         BytesReturned);
@@ -340,6 +350,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_WINDOW_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "windows",
         KswordARKWin32kQueryWindowSnapshot,
         BytesReturned);
@@ -380,6 +391,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_GUI_THREAD_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "gui-threads",
         KswordARKWin32kQueryGuiThreadSnapshot,
         BytesReturned);
@@ -420,6 +432,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_HOTKEY_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "hotkeys-pdb",
         KswordARKWin32kQueryHotkeySnapshot,
         BytesReturned);
@@ -460,6 +473,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_HOOK_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES,
         "hooks-pdb",
         KswordARKWin32kQueryHookSnapshot,
         BytesReturned);
@@ -500,6 +514,7 @@ Return Value:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_TIMER_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "timers",
         KswordARKWin32kQueryTimerSnapshot,
         BytesReturned);
@@ -527,6 +542,7 @@ Routine Description:
         Request,
         InputBufferLength,
         KSWORD_ARK_WIN32K_EVENT_HOOK_RESPONSE_HEADER_SIZE,
+        KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES,
         "event-hooks",
         KswordARKWin32kQueryEventHookSnapshot,
         BytesReturned);

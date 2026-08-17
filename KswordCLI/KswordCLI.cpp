@@ -1292,7 +1292,7 @@ namespace
         { L"window", L"gui", L"KswordCLI.exe window gui [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query GUI window snapshot rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"" },
         { L"window", L"gui-threads", L"KswordCLI.exe window gui-threads [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query GUI thread snapshot rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"" },
         { L"window", L"hotkeys-pdb", L"KswordCLI.exe window hotkeys-pdb [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hotkey chain rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOTKEYS_PDB." },
-        { L"window", L"hooks-pdb", L"KswordCLI.exe window hooks-pdb [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hook chain rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB." },
+        { L"window", L"hooks-pdb", L"KswordCLI.exe window hooks-pdb [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hook chain rows.", L"Optional: --flags (default 0x3; add 0x4 for owner or 0x8 for target, for example 0x7/0xB; no selector keeps legacy either), --session-id, --pid, --tid, --max-entries (default 4096), --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB." },
         { L"window", L"detail", L"KswordCLI.exe window detail --hwnd HWND [--pid PID] [--tid TID] [--flags 0xN]", L"Query one HWND/tagWND runtime detail packet.", L"Required: --hwnd. Optional: --pid, --tid, --flags.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOW_DETAIL." },
         { L"window", L"gpu", L"KswordCLI.exe window gpu [--profile-flags 0xN] [--max-rows N] [--max-attached N] [--target NAME] [--limit N]", L"Query GPU/display/watchdog audit rows.", L"Optional: --profile-flags, --max-rows, --max-attached, --target, --limit.", L"Aliases: window display, window watchdog." },
         { L"window", L"display", L"KswordCLI.exe window display [--profile-flags 0xN] [--max-rows N] [--max-attached N] [--target NAME] [--limit N]", L"Alias for window gpu audit rows.", L"Optional: --profile-flags, --max-rows, --max-attached, --target, --limit.", L"Alias: window gpu." },
@@ -4175,6 +4175,10 @@ namespace
     int queryWin32kHooksPdb(const NamedArgs& args)
     {
         KSWORD_ARK_WIN32K_QUERY_REQUEST request = buildWin32kRequest(args);
+        request.maxEntries = getOptionU32(
+            args,
+            L"--max-entries",
+            KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES);
         IoctlResult io{};
         std::vector<std::uint8_t> buffer(kLargeResponseBytes, 0U);
         const int rc = sendRawIoctl(L"IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB", IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB, &request, sizeof(request), buffer, io);
@@ -4207,6 +4211,8 @@ namespace
                        << std::dec << L" session=" << row->sessionId
                        << L" pid=" << row->processId
                        << L" tid=" << row->threadId
+                       << L" targetPid=" << row->targetProcessId
+                       << L" targetTid=" << row->targetThreadId
                        << L" type=" << row->hookType
                        << L" scope=" << row->hookScope
                        << L" last=0x" << std::hex << static_cast<unsigned long>(row->lastStatus)

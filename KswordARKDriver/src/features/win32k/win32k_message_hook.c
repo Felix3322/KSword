@@ -347,19 +347,34 @@ KswordARKWin32kMessageMatchesRequest(
     _In_ ULONG TargetSessionId
     )
 {
+    ULONG matchFlags = 0UL;
+    BOOLEAN matchOwner = TRUE;
+    BOOLEAN matchTarget = TRUE;
+
+    if (Request != NULL) {
+        matchFlags = Request->flags &
+            KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_MASK;
+    }
+    if (matchFlags != 0UL) {
+        matchOwner = (matchFlags &
+            KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_OWNER) != 0UL;
+        matchTarget = (matchFlags &
+            KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET) != 0UL;
+    }
+
     if (RequestedSessionId != 0UL &&
-        OwnerSessionId != RequestedSessionId &&
-        TargetSessionId != RequestedSessionId) {
+        (!matchOwner || OwnerSessionId != RequestedSessionId) &&
+        (!matchTarget || TargetSessionId != RequestedSessionId)) {
         return FALSE;
     }
     if (Request != NULL && Request->processId != 0UL &&
-        OwnerProcessId != Request->processId &&
-        TargetProcessId != Request->processId) {
+        (!matchOwner || OwnerProcessId != Request->processId) &&
+        (!matchTarget || TargetProcessId != Request->processId)) {
         return FALSE;
     }
     if (Request != NULL && Request->threadId != 0UL &&
-        OwnerThreadId != Request->threadId &&
-        TargetThreadId != Request->threadId) {
+        (!matchOwner || OwnerThreadId != Request->threadId) &&
+        (!matchTarget || TargetThreadId != Request->threadId)) {
         return FALSE;
     }
     return TRUE;
@@ -657,7 +672,7 @@ KswordARKWin32kQueryHookSnapshot(
     ULONG moduleInfoBytes = 0UL;
     ULONG threadMapCount = 0UL;
     ULONG seenCount = 0UL;
-    ULONG maxEntries = KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES;
+    ULONG maxEntries = KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES;
     ULONG requestedSessionId = 0UL;
     ULONG processWalkCount = 0UL;
     size_t headerSize = 0U;
@@ -686,9 +701,9 @@ KswordARKWin32kQueryHookSnapshot(
 
     entryCapacity = (OutputBufferLength - headerSize) /
         sizeof(KSWORD_ARK_WIN32K_HOOK_ENTRY);
-    maxEntries = Request != NULL
+    maxEntries = Request != NULL && Request->maxEntries != 0UL
         ? KswordARKWin32kNormalizeMaxEntries(Request->maxEntries)
-        : KSWORD_ARK_WIN32K_DEFAULT_MAX_ENTRIES;
+        : KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES;
     if (entryCapacity < (size_t)maxEntries) {
         maxEntries = (ULONG)entryCapacity;
     }

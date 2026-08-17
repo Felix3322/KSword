@@ -430,11 +430,12 @@ void ProcessMessageHookWindow::requestRefresh()
             {
             const ksword::ark::Win32kHooksPdbResult driverResult =
                 ksword::ark::DriverClient().queryWin32kHooksPdb(
-                    KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_ALL,
+                    KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_ALL |
+                        KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET,
                     target.sessionId,
                     target.processId,
                     0UL,
-                    4096UL);
+                    KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES);
 
             queryResult.ioOk = driverResult.io.ok;
             queryResult.unsupported = driverResult.unsupported;
@@ -452,7 +453,7 @@ void ProcessMessageHookWindow::requestRefresh()
             queryResult.rows.reserve(driverResult.entries.size());
             for (const KSWORD_ARK_WIN32K_HOOK_ENTRY& entry : driverResult.entries)
             {
-                // B 项只接受“作用于目标进程线程”的线程 Hook，明确排除全局 Hook。
+                // R0 已按目标侧筛选；此处复核线程范围与 PID，兼容忽略新 Flag 的旧驱动。
                 if (entry.hookScope != KSWORD_ARK_WIN32K_MESSAGE_HOOK_SCOPE_THREAD ||
                     entry.targetProcessId != target.processId)
                 {
