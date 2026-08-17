@@ -116,7 +116,7 @@ int ShowCrashDialog(const LauncherOptions& options, const bool chinese) {
     const std::wstring ignoreButton = chinese ? L"忽略错误" : L"Ignore Error";
     const std::wstring openDumpFolderButton = chinese ? L"打开转储文件夹" : L"Open Dump Folder";
     const std::wstring openGitHubIssueButton = chinese ? L"打开 GitHub Issue" : L"Open GitHub Issue";
-    const std::wstring restartButton = chinese ? L"重启" : L"Restart";
+    const std::wstring restartButton = chinese ? L"重启 KSword" : L"Restart KSword";
     const std::wstring closeButton = chinese ? L"关闭" : L"Close";
     TASKDIALOG_BUTTON restartButtons[] = {
         { kCrashIgnoreButton, ignoreButton.c_str() },
