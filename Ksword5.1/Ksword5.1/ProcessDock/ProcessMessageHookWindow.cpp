@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColor>
+#include <QComboBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -170,6 +171,68 @@ namespace
         }
     }
 
+    // queryScopeFlags：把窗口范围映射为共享协议的 owner/target 选择位。
+    std::uint32_t queryScopeFlags(const ProcessMessageHookWindow::QueryScope scope)
+    {
+        switch (scope)
+        {
+        case ProcessMessageHookWindow::QueryScope::InstalledByProcess:
+            return KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_OWNER;
+        case ProcessMessageHookWindow::QueryScope::RelatedToProcess:
+            return KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_OWNER |
+                KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET;
+        case ProcessMessageHookWindow::QueryScope::TargetThreads:
+        default:
+            return KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET;
+        }
+    }
+
+    // queryScopeText：为状态栏和查询范围下拉框提供一致的用户可见文本。
+    QString queryScopeText(const ProcessMessageHookWindow::QueryScope scope)
+    {
+        switch (scope)
+        {
+        case ProcessMessageHookWindow::QueryScope::InstalledByProcess:
+            return hookWindowText(QStringLiteral("由该进程安装"));
+        case ProcessMessageHookWindow::QueryScope::RelatedToProcess:
+            return hookWindowText(QStringLiteral("与该进程相关（目标或所有者）"));
+        case ProcessMessageHookWindow::QueryScope::TargetThreads:
+        default:
+            return hookWindowText(QStringLiteral("作用于该进程线程"));
+        }
+    }
+
+    // entryMatchesProcessScope：防御性复核 R0 返回，并兼容忽略新 Flag 的旧驱动。
+    bool entryMatchesProcessScope(
+        const KSWORD_ARK_WIN32K_HOOK_ENTRY& entry,
+        const ProcessMessageHookTarget& target,
+        const ProcessMessageHookWindow::QueryScope scope)
+    {
+        const bool targetSessionMatches = target.sessionId == 0U ||
+            entry.targetSessionId == 0U ||
+            entry.targetSessionId == target.sessionId;
+        const bool ownerSessionMatches = target.sessionId == 0U ||
+            entry.sessionId == 0U ||
+            entry.sessionId == target.sessionId;
+        const bool targetMatches =
+            entry.hookScope == KSWORD_ARK_WIN32K_MESSAGE_HOOK_SCOPE_THREAD &&
+            entry.targetProcessId == target.processId &&
+            targetSessionMatches;
+        const bool ownerMatches = entry.processId == target.processId &&
+            ownerSessionMatches;
+
+        switch (scope)
+        {
+        case ProcessMessageHookWindow::QueryScope::InstalledByProcess:
+            return ownerMatches;
+        case ProcessMessageHookWindow::QueryScope::RelatedToProcess:
+            return targetMatches || ownerMatches;
+        case ProcessMessageHookWindow::QueryScope::TargetThreads:
+        default:
+            return targetMatches;
+        }
+    }
+
     // moduleText：优先解析模块 atom 名称，失败时仍保留 moduleId/atom 证据。
     QString moduleText(const KSWORD_ARK_WIN32K_HOOK_ENTRY& entry)
     {
@@ -262,6 +325,23 @@ void ProcessMessageHookWindow::initializeUi()
         this);
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
+    auto* scopeLabel = new QLabel(hookWindowText(QStringLiteral("范围：")), this);
+    m_scopeCombo = new QComboBox(this);
+    m_scopeCombo->addItem(
+        queryScopeText(QueryScope::TargetThreads),
+        static_cast<int>(QueryScope::TargetThreads));
+    m_scopeCombo->addItem(
+        queryScopeText(QueryScope::InstalledByProcess),
+        static_cast<int>(QueryScope::InstalledByProcess));
+    m_scopeCombo->addItem(
+        queryScopeText(QueryScope::RelatedToProcess),
+        static_cast<int>(QueryScope::RelatedToProcess));
+    m_scopeCombo->setToolTip(hookWindowText(QStringLiteral(
+        "选择按目标线程、Hook 安装者或两者查询；筛选同时在 R0 和 R3 生效。")));
+    m_scopeCombo->setStyleSheet(KswordTheme::ThemedComboBoxStyle());
+    m_scopeCombo->setMinimumContentsLength(18);
+    scopeLabel->setBuddy(m_scopeCombo);
+
     m_columnAButton = new QPushButton(QStringLiteral("A"), this);
     m_columnAButton->setToolTip(hookWindowText(
         QStringLiteral("显示 A 组精简列：目标线程、Hook 类型、所有者、回调、模块和状态。")));
@@ -286,6 +366,8 @@ void ProcessMessageHookWindow::initializeUi()
         QStringLiteral("font-weight:600;color:%1;").arg(KswordTheme::TextPrimaryColorHex()));
 
     toolbarLayout->addWidget(m_refreshButton, 0);
+    toolbarLayout->addWidget(scopeLabel, 0);
+    toolbarLayout->addWidget(m_scopeCombo, 0);
     toolbarLayout->addSpacing(4);
     toolbarLayout->addWidget(m_columnAButton, 0);
     toolbarLayout->addWidget(m_columnBButton, 0);
@@ -342,6 +424,11 @@ void ProcessMessageHookWindow::initializeConnections()
         {
             requestRefresh();
         });
+    connect(m_scopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](const int)
+        {
+            requestRefresh();
+        });
     connect(m_columnAButton, &QPushButton::clicked, this, [this]()
         {
             applyColumnPreset(QStringLiteral("A"));
@@ -362,6 +449,24 @@ void ProcessMessageHookWindow::initializeConnections()
         });
 }
 
+ProcessMessageHookWindow::QueryScope ProcessMessageHookWindow::currentQueryScope() const
+{
+    if (m_scopeCombo == nullptr)
+    {
+        return QueryScope::TargetThreads;
+    }
+
+    bool conversionOk = false;
+    const int scopeValue = m_scopeCombo->currentData().toInt(&conversionOk);
+    if (!conversionOk ||
+        scopeValue < static_cast<int>(QueryScope::TargetThreads) ||
+        scopeValue > static_cast<int>(QueryScope::RelatedToProcess))
+    {
+        return QueryScope::TargetThreads;
+    }
+    return static_cast<QueryScope>(scopeValue);
+}
+
 void ProcessMessageHookWindow::requestRefresh()
 {
     if (m_refreshInProgress)
@@ -372,16 +477,22 @@ void ProcessMessageHookWindow::requestRefresh()
 
     m_refreshInProgress = true;
     const std::uint64_t ticket = ++m_refreshTicket;
+    const QueryScope queryScope = currentQueryScope();
     m_refreshButton->setEnabled(false);
-    m_statusLabel->setText(hookWindowText(QStringLiteral("正在查询作用于该进程线程的消息 Hook…")));
+    // 查询进行中保留上次表格作为视觉参考，但禁用交互，避免将旧范围误当当前结果。
+    m_table->setEnabled(false);
+    m_statusLabel->setText(
+        hookWindowText(QStringLiteral("正在查询：%1…"))
+            .arg(queryScopeText(queryScope)));
     m_statusLabel->setStyleSheet(
         QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::PrimaryBlueHex));
 
     const ProcessMessageHookTarget target = m_target;
     QPointer<ProcessMessageHookWindow> guardThis(this);
-    auto* task = QRunnable::create([guardThis, ticket, target]()
+    auto* task = QRunnable::create([guardThis, ticket, target, queryScope]()
         {
             QueryResult queryResult;
+            queryResult.queryScope = queryScope;
             HANDLE rawIdentityHandle = nullptr;
             DWORD identityError = ERROR_INVALID_PARAMETER;
             if (target.processId != 0U && target.creationTime100ns != 0U)
@@ -428,75 +539,73 @@ void ProcessMessageHookWindow::requestRefresh()
             }
             else
             {
-            const ksword::ark::Win32kHooksPdbResult driverResult =
-                ksword::ark::DriverClient().queryWin32kHooksPdb(
-                    KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_ALL |
-                        KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET,
-                    target.sessionId,
-                    target.processId,
-                    0UL,
-                    KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES);
+                const ksword::ark::Win32kHooksPdbResult driverResult =
+                    ksword::ark::DriverClient().queryWin32kHooksPdb(
+                        KSWORD_ARK_WIN32K_QUERY_FLAG_INCLUDE_ALL |
+                            queryScopeFlags(queryScope),
+                        target.sessionId,
+                        target.processId,
+                        0UL,
+                        KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES);
 
-            queryResult.ioOk = driverResult.io.ok;
-            queryResult.unsupported = driverResult.unsupported;
-            queryResult.status = driverResult.status;
-            queryResult.totalCount = driverResult.totalCount;
-            queryResult.returnedCount = driverResult.returnedCount;
-            queryResult.lastStatus = driverResult.lastStatus;
-            queryResult.ioMessage = QString::fromStdString(driverResult.io.message);
-            queryResult.detail = driverResult.detail.empty()
-                ? QString()
-                : QString::fromWCharArray(
-                    driverResult.detail.c_str(),
-                    static_cast<qsizetype>(driverResult.detail.size()));
+                queryResult.ioOk = driverResult.io.ok;
+                queryResult.unsupported = driverResult.unsupported;
+                queryResult.status = driverResult.status;
+                queryResult.totalCount = driverResult.totalCount;
+                queryResult.returnedCount = driverResult.returnedCount;
+                queryResult.discoveredChainCount = driverResult.discoveredChainCount;
+                queryResult.visitedNodeCount = driverResult.visitedNodeCount;
+                queryResult.readFailureCount = driverResult.readFailureCount;
+                queryResult.corruptLinkCount = driverResult.corruptLinkCount;
+                queryResult.duplicateCount = driverResult.duplicateCount;
+                queryResult.lastStatus = driverResult.lastStatus;
+                queryResult.ioMessage = QString::fromStdString(driverResult.io.message);
+                queryResult.detail = driverResult.detail.empty()
+                    ? QString()
+                    : QString::fromWCharArray(
+                        driverResult.detail.c_str(),
+                        static_cast<qsizetype>(driverResult.detail.size()));
 
-            queryResult.rows.reserve(driverResult.entries.size());
-            for (const KSWORD_ARK_WIN32K_HOOK_ENTRY& entry : driverResult.entries)
-            {
-                // R0 已按目标侧筛选；此处复核线程范围与 PID，兼容忽略新 Flag 的旧驱动。
-                if (entry.hookScope != KSWORD_ARK_WIN32K_MESSAGE_HOOK_SCOPE_THREAD ||
-                    entry.targetProcessId != target.processId)
+                queryResult.rows.reserve(driverResult.entries.size());
+                for (const KSWORD_ARK_WIN32K_HOOK_ENTRY& entry : driverResult.entries)
                 {
-                    continue;
-                }
-                if (target.sessionId != 0U &&
-                    entry.targetSessionId != 0U &&
-                    entry.targetSessionId != target.sessionId)
-                {
-                    continue;
-                }
+                    if (!entryMatchesProcessScope(entry, target, queryScope))
+                    {
+                        continue;
+                    }
 
-                QStringList diagnosticParts;
-                diagnosticParts << QStringLiteral("fieldFlags=%1").arg(formatHex(entry.fieldFlags));
-                diagnosticParts << QStringLiteral("targetSession=%1").arg(entry.targetSessionId);
-                diagnosticParts << QStringLiteral("threadInfo=%1").arg(formatHex(entry.threadInfo));
-                diagnosticParts << QStringLiteral("targetThreadInfo=%1").arg(formatHex(entry.targetThreadInfo));
-                diagnosticParts << QStringLiteral("desktop=%1").arg(formatHex(entry.desktopObject));
-                const QString entryDetail = fixedWideText(
-                    entry.detail,
-                    KSWORD_ARK_WIN32K_DETAIL_CHARS).trimmed();
-                if (!entryDetail.isEmpty()) diagnosticParts << entryDetail;
+                    QStringList diagnosticParts;
+                    diagnosticParts << QStringLiteral("fieldFlags=%1").arg(formatHex(entry.fieldFlags));
+                    diagnosticParts << QStringLiteral("ownerSession=%1").arg(entry.sessionId);
+                    diagnosticParts << QStringLiteral("targetSession=%1").arg(entry.targetSessionId);
+                    diagnosticParts << QStringLiteral("threadInfo=%1").arg(formatHex(entry.threadInfo));
+                    diagnosticParts << QStringLiteral("targetThreadInfo=%1").arg(formatHex(entry.targetThreadInfo));
+                    diagnosticParts << QStringLiteral("desktop=%1").arg(formatHex(entry.desktopObject));
+                    const QString entryDetail = fixedWideText(
+                        entry.detail,
+                        KSWORD_ARK_WIN32K_DETAIL_CHARS).trimmed();
+                    if (!entryDetail.isEmpty()) diagnosticParts << entryDetail;
 
-                queryResult.rows.push_back(QStringList{
-                    QString::number(entry.targetProcessId),
-                    QString::number(entry.targetThreadId),
-                    hookTypeText(entry.hookType),
-                    QString::number(entry.processId),
-                    QString::number(entry.threadId),
-                    formatHex(entry.procedureAddress),
-                    moduleText(entry),
-                    hookFlagsText(entry.flags),
-                    hookStatusText(entry.status),
-                    QString::number(entry.targetSessionId != 0U ? entry.targetSessionId : entry.sessionId),
-                    formatHex(entry.hookHandle),
-                    formatHex(entry.hookObject),
-                    formatHex(entry.moduleBase),
-                    formatHex(entry.procedureOffset),
-                    hookSourceText(entry.source),
-                    formatNtStatus(entry.lastStatus),
-                    diagnosticParts.join(QStringLiteral("; ")) });
-            }
-            queryResult.matchedCount = static_cast<std::uint32_t>(queryResult.rows.size());
+                    queryResult.rows.push_back(QStringList{
+                        QString::number(entry.targetProcessId),
+                        QString::number(entry.targetThreadId),
+                        hookTypeText(entry.hookType),
+                        QString::number(entry.processId),
+                        QString::number(entry.threadId),
+                        formatHex(entry.procedureAddress),
+                        moduleText(entry),
+                        hookFlagsText(entry.flags),
+                        hookStatusText(entry.status),
+                        QString::number(entry.targetSessionId != 0U ? entry.targetSessionId : entry.sessionId),
+                        formatHex(entry.hookHandle),
+                        formatHex(entry.hookObject),
+                        formatHex(entry.moduleBase),
+                        formatHex(entry.procedureOffset),
+                        hookSourceText(entry.source),
+                        formatNtStatus(entry.lastStatus),
+                        diagnosticParts.join(QStringLiteral("; ")) });
+                }
+                queryResult.matchedCount = static_cast<std::uint32_t>(queryResult.rows.size());
             }
 
             if (guardThis == nullptr)
@@ -528,12 +637,30 @@ void ProcessMessageHookWindow::applyQueryResult(
     }
 
     m_refreshInProgress = false;
+
+    // 范围切换发生在异步查询期间时，不让旧范围结果短暂覆盖新选择。
+    if (result.queryScope != currentQueryScope())
+    {
+        m_refreshPending = false;
+        QMetaObject::invokeMethod(this, [this]()
+            {
+                requestRefresh();
+            }, Qt::QueuedConnection);
+        return;
+    }
+
     m_refreshButton->setEnabled(true);
     rebuildTable(result);
+    m_table->setEnabled(true);
 
     const QString overallStatus = hookStatusText(result.status);
     QString statusText;
-    bool statusOk = result.ioOk;
+    const QString scopeText = queryScopeText(result.queryScope);
+    const bool statusOk = result.ioOk &&
+        result.status == KSWORD_ARK_WIN32K_STATUS_OK &&
+        result.readFailureCount == 0U &&
+        result.corruptLinkCount == 0U &&
+        result.returnedCount >= result.totalCount;
     if (!result.ioOk)
     {
         statusText = hookWindowText(QStringLiteral("查询失败：%1"))
@@ -544,19 +671,30 @@ void ProcessMessageHookWindow::applyQueryResult(
     else if (result.rows.empty())
     {
         statusText = hookWindowText(
-            QStringLiteral("查询完成：驱动返回 %1 行，筛选后没有可显示的目标线程 Hook。总体状态：%2。"))
+            QStringLiteral("查询完成：驱动返回 %1 行，按“%2”复核后没有可显示的 Hook。总体状态：%3。"))
             .arg(result.returnedCount)
+            .arg(scopeText)
             .arg(overallStatus);
-        statusOk = result.status == KSWORD_ARK_WIN32K_STATUS_OK;
     }
     else
     {
         statusText = hookWindowText(
-            QStringLiteral("查询完成：显示 %1 条目标线程 Hook，驱动返回 %2/%3 行。总体状态：%4。"))
+            QStringLiteral("查询完成：按“%1”显示 %2 条 Hook，驱动返回 %3/%4 行。总体状态：%5。"))
+            .arg(scopeText)
             .arg(result.matchedCount)
             .arg(result.returnedCount)
             .arg(result.totalCount)
             .arg(overallStatus);
+    }
+    if (result.ioOk)
+    {
+        statusText += QLatin1Char(' ') + hookWindowText(QStringLiteral(
+            "遍历：链 %1，节点 %2，读取失败 %3，损坏链接 %4，重复 %5。"))
+            .arg(result.discoveredChainCount)
+            .arg(result.visitedNodeCount)
+            .arg(result.readFailureCount)
+            .arg(result.corruptLinkCount)
+            .arg(result.duplicateCount);
     }
     m_statusLabel->setText(statusText);
     m_statusLabel->setStyleSheet(
@@ -600,6 +738,12 @@ void ProcessMessageHookWindow::rebuildTable(const QueryResult& result)
         detailParts << QStringLiteral("io=%1").arg(result.ioOk ? QStringLiteral("ok") : QStringLiteral("failed"));
         detailParts << QStringLiteral("status=%1").arg(hookStatusText(result.status));
         detailParts << QStringLiteral("returned=%1/%2").arg(result.returnedCount).arg(result.totalCount);
+        detailParts << QStringLiteral("scope=%1").arg(queryScopeText(result.queryScope));
+        detailParts << QStringLiteral("chains=%1").arg(result.discoveredChainCount);
+        detailParts << QStringLiteral("visited=%1").arg(result.visitedNodeCount);
+        detailParts << QStringLiteral("readFailures=%1").arg(result.readFailureCount);
+        detailParts << QStringLiteral("corruptLinks=%1").arg(result.corruptLinkCount);
+        detailParts << QStringLiteral("duplicates=%1").arg(result.duplicateCount);
         detailParts << QStringLiteral("lastStatus=%1").arg(formatNtStatus(result.lastStatus));
         if (!result.ioMessage.trimmed().isEmpty()) detailParts << result.ioMessage.trimmed();
         if (!result.detail.trimmed().isEmpty()) detailParts << result.detail.trimmed();

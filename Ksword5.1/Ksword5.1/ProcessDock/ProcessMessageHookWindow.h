@@ -3,9 +3,9 @@
 // ============================================================
 // ProcessMessageHookWindow.h
 // 作用：
-// - 在独立非模态窗口中展示作用于指定进程线程的消息 Hook；
+// - 在独立非模态窗口中展示目标侧、安装者侧或两侧关联的消息 Hook；
 // - 查询复用 ArkDriverClient 的 Win32k PDB 只读快照接口；
-// - R0 按目标线程筛选，R3 再复核范围与目标 PID；不修改 Hook 或驱动状态。
+// - R0 按所选 owner/target 范围筛选，R3 再按同一语义复核；不修改 Hook 或驱动状态。
 // ============================================================
 
 #include <QDialog>
@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <vector>
 
+class QComboBox;
 class QLabel;
 class QPoint;
 class QPushButton;
@@ -36,6 +37,13 @@ public:
         QWidget* parent = nullptr);
 
 public:
+    enum class QueryScope
+    {
+        TargetThreads = 0,
+        InstalledByProcess,
+        RelatedToProcess
+    };
+
     enum class Column
     {
         TargetProcessId = 0,
@@ -63,10 +71,16 @@ private:
     {
         bool ioOk = false;
         bool unsupported = false;
+        QueryScope queryScope = QueryScope::TargetThreads;
         std::uint32_t status = 0;
         std::uint32_t totalCount = 0;
         std::uint32_t returnedCount = 0;
         std::uint32_t matchedCount = 0;
+        std::uint32_t discoveredChainCount = 0;
+        std::uint32_t visitedNodeCount = 0;
+        std::uint32_t readFailureCount = 0;
+        std::uint32_t corruptLinkCount = 0;
+        std::uint32_t duplicateCount = 0;
         long lastStatus = 0;
         QString ioMessage;
         QString detail;
@@ -79,6 +93,8 @@ private:
     void initializeConnections();
     // requestRefresh：在线程池调用 ArkDriverClient，避免阻塞主窗口。
     void requestRefresh();
+    // currentQueryScope：返回当前 owner/target 查询范围，非法值回退到目标线程。
+    QueryScope currentQueryScope() const;
     // applyQueryResult：在 UI 线程应用一次查询结果。
     void applyQueryResult(std::uint64_t ticket, const QueryResult& result);
     // rebuildTable：使用已过滤行重建表格，并为空结果保留可复制诊断行。
@@ -109,6 +125,7 @@ private:
     QLabel* m_targetLabel = nullptr;   // m_targetLabel：PID/Session/进程名摘要。
     QLabel* m_statusLabel = nullptr;   // m_statusLabel：异步查询状态与诊断摘要。
     QPushButton* m_refreshButton = nullptr; // m_refreshButton：手动重新查询。
+    QComboBox* m_scopeCombo = nullptr; // m_scopeCombo：目标侧、所有者侧或两侧查询范围。
     QPushButton* m_columnAButton = nullptr; // m_columnAButton：常用定位列组。
     QPushButton* m_columnBButton = nullptr; // m_columnBButton：底层证据列组。
     QTableWidget* m_table = nullptr;   // m_table：消息 Hook 结果表格。

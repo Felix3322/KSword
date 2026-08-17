@@ -10282,7 +10282,7 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         processContextText("process.menu.message_hooks", QStringLiteral("消息 Hook")));
     openMessageHooksAction->setToolTip(processContextText(
         "process.menu.message_hooks.tooltip",
-        QStringLiteral("显示作用于该进程线程的消息 Hook，排除全局 Hook。")));
+        QStringLiteral("默认显示作用于该进程线程的非全局 Hook；窗口内可切换为安装者或双侧相关范围。")));
     openMemoryAction->setEnabled(!hasBatchSelection);
     openMessageHooksAction->setEnabled(
         !hasBatchSelection &&

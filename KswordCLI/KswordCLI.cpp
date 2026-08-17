@@ -1292,7 +1292,7 @@ namespace
         { L"window", L"gui", L"KswordCLI.exe window gui [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query GUI window snapshot rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"" },
         { L"window", L"gui-threads", L"KswordCLI.exe window gui-threads [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query GUI thread snapshot rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"" },
         { L"window", L"hotkeys-pdb", L"KswordCLI.exe window hotkeys-pdb [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hotkey chain rows.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries, --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOTKEYS_PDB." },
-        { L"window", L"hooks-pdb", L"KswordCLI.exe window hooks-pdb [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hook chain rows.", L"Optional: --flags (default 0x3; add 0x4 for owner or 0x8 for target, for example 0x7/0xB; no selector keeps legacy either), --session-id, --pid, --tid, --max-entries (default 4096), --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB." },
+        { L"window", L"hooks-pdb", L"KswordCLI.exe window hooks-pdb [--flags 0xN] [--match legacy|owner|target|both] [--session-id N] [--pid PID] [--tid TID] [--max-entries N] [--limit N]", L"Query PDB-backed win32k hook chain rows.", L"Optional: --flags (default 0x3), --match (overrides only owner/target selector bits in --flags; default legacy), --session-id, --pid, --tid, --max-entries (default 4096; hard maximum 8192), --limit.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB; legacy/both require the complete filter to match one side; prints traversal diagnostics." },
         { L"window", L"detail", L"KswordCLI.exe window detail --hwnd HWND [--pid PID] [--tid TID] [--flags 0xN]", L"Query one HWND/tagWND runtime detail packet.", L"Required: --hwnd. Optional: --pid, --tid, --flags.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOW_DETAIL." },
         { L"window", L"gpu", L"KswordCLI.exe window gpu [--profile-flags 0xN] [--max-rows N] [--max-attached N] [--target NAME] [--limit N]", L"Query GPU/display/watchdog audit rows.", L"Optional: --profile-flags, --max-rows, --max-attached, --target, --limit.", L"Aliases: window display, window watchdog." },
         { L"window", L"display", L"KswordCLI.exe window display [--profile-flags 0xN] [--max-rows N] [--max-attached N] [--target NAME] [--limit N]", L"Alias for window gpu audit rows.", L"Optional: --profile-flags, --max-rows, --max-attached, --target, --limit.", L"Alias: window gpu." },
@@ -3995,6 +3995,62 @@ namespace
         return request;
     }
 
+    // applyMessageHookMatchOption maps the readable --match option onto the
+    // shared owner/target selector bits without disturbing other --flags bits.
+    // Inputs: parsed arguments and the flags produced by buildWin32kRequest.
+    // Processing: validates legacy|owner|target|both case-insensitively.
+    // Returns: flags with only the selector mask replaced when --match exists.
+    std::uint32_t applyMessageHookMatchOption(
+        const NamedArgs& args,
+        std::uint32_t flags)
+    {
+        const std::wstring* option = getOptionText(args, L"--match");
+        if (option == nullptr)
+        {
+            return flags;
+        }
+
+        const std::wstring mode = lowerWide(*option);
+        flags &= ~KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_MASK;
+        if (mode == L"legacy")
+        {
+            return flags;
+        }
+        if (mode == L"owner")
+        {
+            return flags | KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_OWNER;
+        }
+        if (mode == L"target")
+        {
+            return flags | KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET;
+        }
+        if (mode == L"both")
+        {
+            return flags | KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_MASK;
+        }
+        throw std::invalid_argument(
+            "invalid --match value (expected legacy, owner, target, or both)");
+    }
+
+    // messageHookMatchName renders the effective selector bits returned by R0.
+    // Inputs: response/request flags.
+    // Processing: ignores all flags outside the shared selector mask.
+    // Returns: a stable CLI label for diagnostics and scripts.
+    const wchar_t* messageHookMatchName(const std::uint32_t flags)
+    {
+        switch (flags & KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_MASK)
+        {
+        case KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_OWNER:
+            return L"owner";
+        case KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET:
+            return L"target";
+        case KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_MASK:
+            return L"both";
+        default:
+            return L"legacy";
+        }
+    }
+
     // queryWin32kProfileStatus prints module/profile/session readiness.
     // Inputs: parsed window options.
     // Processing: validates the variable session row response.
@@ -4175,15 +4231,25 @@ namespace
     int queryWin32kHooksPdb(const NamedArgs& args)
     {
         KSWORD_ARK_WIN32K_QUERY_REQUEST request = buildWin32kRequest(args);
+        request.flags = applyMessageHookMatchOption(args, request.flags);
         request.maxEntries = getOptionU32(
             args,
             L"--max-entries",
             KSWORD_ARK_WIN32K_MESSAGE_HOOK_DEFAULT_MAX_ENTRIES);
+        constexpr std::size_t headerSize =
+            sizeof(KSWORD_ARK_WIN32K_HOOK_SNAPSHOT_RESPONSE) -
+            sizeof(KSWORD_ARK_WIN32K_HOOK_ENTRY);
+        constexpr std::size_t hardMaxResponseBytes =
+            headerSize +
+            (static_cast<std::size_t>(KSWORD_ARK_WIN32K_HARD_MAX_ENTRIES) *
+                sizeof(KSWORD_ARK_WIN32K_HOOK_ENTRY));
+        static_assert(
+            hardMaxResponseBytes <= kHugeResponseBytes,
+            "win32k hook response buffer must hold the protocol hard maximum");
         IoctlResult io{};
-        std::vector<std::uint8_t> buffer(kLargeResponseBytes, 0U);
+        std::vector<std::uint8_t> buffer(kHugeResponseBytes, 0U);
         const int rc = sendRawIoctl(L"IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB", IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB, &request, sizeof(request), buffer, io);
         if (rc != 0) return normalizeIoctlRc(L"window hooks-pdb", io, rc);
-        constexpr std::size_t headerSize = sizeof(KSWORD_ARK_WIN32K_HOOK_SNAPSHOT_RESPONSE) - sizeof(KSWORD_ARK_WIN32K_HOOK_ENTRY);
         const auto* response = reinterpret_cast<const KSWORD_ARK_WIN32K_HOOK_SNAPSHOT_RESPONSE*>(buffer.data());
         std::size_t available = 0U;
         try { available = validateVariable(io.bytesReturned, headerSize, response->entrySize, sizeof(KSWORD_ARK_WIN32K_HOOK_ENTRY), L"win32k hooks-pdb"); }
@@ -4192,7 +4258,14 @@ namespace
         printCountHeader(response->version, response->totalCount, response->returnedCount, response->entrySize, io.bytesReturned);
         std::wcout << L"capability=0x" << std::hex << response->capabilityMask
                    << L" missing=0x" << response->missingCapabilityMask
-                   << std::dec << L"\n";
+                   << std::dec
+                   << L" match=" << messageHookMatchName(response->flags)
+                   << L" chains=" << response->discoveredChainCount
+                   << L" visited=" << response->visitedNodeCount
+                   << L" readFailures=" << response->readFailureCount
+                   << L" corruptLinks=" << response->corruptLinkCount
+                   << L" duplicates=" << response->duplicateCount
+                   << L"\n";
         const std::size_t parsed = responseCountLimit(response->returnedCount, available, getOptionU32(args, L"--limit", 128U));
         for (std::size_t i = 0; i < parsed; ++i)
         {
@@ -4211,6 +4284,7 @@ namespace
                        << std::dec << L" session=" << row->sessionId
                        << L" pid=" << row->processId
                        << L" tid=" << row->threadId
+                       << L" targetSession=" << row->targetSessionId
                        << L" targetPid=" << row->targetProcessId
                        << L" targetTid=" << row->targetThreadId
                        << L" type=" << row->hookType

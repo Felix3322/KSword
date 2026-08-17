@@ -336,6 +336,31 @@ KswordARKWin32kMessageAlreadySeen(
 }
 
 static BOOLEAN
+KswordARKWin32kMessageMatchesSide(
+    _In_opt_ const KSWORD_ARK_WIN32K_QUERY_REQUEST* Request,
+    _In_ ULONG RequestedSessionId,
+    _In_ ULONG ProcessId,
+    _In_ ULONG ThreadId,
+    _In_ ULONG SessionId
+    )
+{
+    if (RequestedSessionId != 0UL && SessionId != RequestedSessionId) {
+        return FALSE;
+    }
+    if (Request != NULL &&
+        Request->processId != 0UL &&
+        ProcessId != Request->processId) {
+        return FALSE;
+    }
+    if (Request != NULL &&
+        Request->threadId != 0UL &&
+        ThreadId != Request->threadId) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOLEAN
 KswordARKWin32kMessageMatchesRequest(
     _In_opt_ const KSWORD_ARK_WIN32K_QUERY_REQUEST* Request,
     _In_ ULONG RequestedSessionId,
@@ -362,22 +387,24 @@ KswordARKWin32kMessageMatchesRequest(
             KSWORD_ARK_WIN32K_MESSAGE_HOOK_QUERY_FLAG_MATCH_TARGET) != 0UL;
     }
 
-    if (RequestedSessionId != 0UL &&
-        (!matchOwner || OwnerSessionId != RequestedSessionId) &&
-        (!matchTarget || TargetSessionId != RequestedSessionId)) {
-        return FALSE;
-    }
-    if (Request != NULL && Request->processId != 0UL &&
-        (!matchOwner || OwnerProcessId != Request->processId) &&
-        (!matchTarget || TargetProcessId != Request->processId)) {
-        return FALSE;
-    }
-    if (Request != NULL && Request->threadId != 0UL &&
-        (!matchOwner || OwnerThreadId != Request->threadId) &&
-        (!matchTarget || TargetThreadId != Request->threadId)) {
-        return FALSE;
-    }
-    return TRUE;
+    // Treat Session/PID/TID as one predicate per side. Evaluating each field
+    // independently would allow a request to pass when, for example, Session
+    // matched the owner while PID matched the target even though neither side
+    // satisfied the complete filter.
+    return (matchOwner &&
+            KswordARKWin32kMessageMatchesSide(
+                Request,
+                RequestedSessionId,
+                OwnerProcessId,
+                OwnerThreadId,
+                OwnerSessionId)) ||
+        (matchTarget &&
+            KswordARKWin32kMessageMatchesSide(
+                Request,
+                RequestedSessionId,
+                TargetProcessId,
+                TargetThreadId,
+                TargetSessionId));
 }
 
 static VOID
