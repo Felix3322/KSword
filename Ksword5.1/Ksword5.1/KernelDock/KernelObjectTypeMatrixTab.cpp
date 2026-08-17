@@ -173,7 +173,7 @@ void KernelObjectTypeMatrixTab::initializeUi()
     toolbarLayout->setSpacing(6);
 
     m_refreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), this);
-    m_refreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(kernelText("kernel.object_type.toolbar.refresh.tooltip", QStringLiteral("刷新对象类型统计")));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 

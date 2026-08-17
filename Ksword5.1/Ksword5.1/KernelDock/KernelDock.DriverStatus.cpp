@@ -1329,7 +1329,7 @@ void KernelDock::initializeDriverStatusTab()
     m_refreshDriverStatusButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), m_driverStatusPage);
     m_refreshDriverStatusButton->setToolTip(kernelText("kernel.driver_status.toolbar.refresh.tooltip", QStringLiteral("刷新 KswordARK 驱动状态、协议、安全策略和能力矩阵")));
     m_refreshDriverStatusButton->setStyleSheet(blueButtonStyle());
-    m_refreshDriverStatusButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshDriverStatusButton);
 
     m_copyDriverStatusReportButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), kernelText("kernel.driver_status.toolbar.copy_report", QStringLiteral("复制诊断")), m_driverStatusPage);
     m_copyDriverStatusReportButton->setToolTip(kernelText("kernel.driver_status.toolbar.copy_report.tooltip", QStringLiteral("复制统一驱动状态和能力矩阵诊断报告")));

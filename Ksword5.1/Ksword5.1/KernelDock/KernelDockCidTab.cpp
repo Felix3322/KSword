@@ -185,7 +185,7 @@ void KernelDockCidTab::initializeUi()
     m_toolbarLayout->setSpacing(6);
 
     m_refreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), this);
-    m_refreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(kernelText("kernel.cid.toolbar.refresh.tooltip", QStringLiteral("刷新 CID / cross-view 证据")));
     m_refreshButton->setStyleSheet(blueButtonStyle());
 

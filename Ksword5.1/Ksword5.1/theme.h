@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QSize>
 #include <QString>
 
 #include <cmath>
@@ -16,6 +17,48 @@
 namespace KswordTheme
 {
     inline bool IsDarkModeEnabled();
+
+    // 纯图标按钮只允许两档几何：紧凑工具栏使用 28/16，独立或强调动作使用 32/18。
+    // 调用方不再自行组合按钮边长与图标边长，避免同类动作漂移到 30/34/36px。
+    inline QSize CompactIconButtonSize()
+    {
+        return QSize(28, 28);
+    }
+
+    inline QSize CompactIconSize()
+    {
+        return QSize(16, 16);
+    }
+
+    inline QSize StandardIconButtonSize()
+    {
+        return QSize(32, 32);
+    }
+
+    inline QSize StandardIconSize()
+    {
+        return QSize(18, 18);
+    }
+
+    template <typename ButtonType>
+    inline void ApplyCompactIconButtonMetrics(ButtonType* button)
+    {
+        if (button != nullptr)
+        {
+            button->setFixedSize(CompactIconButtonSize());
+            button->setIconSize(CompactIconSize());
+        }
+    }
+
+    template <typename ButtonType>
+    inline void ApplyStandardIconButtonMetrics(ButtonType* button)
+    {
+        if (button != nullptr)
+        {
+            button->setFixedSize(StandardIconButtonSize());
+            button->setIconSize(StandardIconSize());
+        }
+    }
 
     struct RgbOffset
     {

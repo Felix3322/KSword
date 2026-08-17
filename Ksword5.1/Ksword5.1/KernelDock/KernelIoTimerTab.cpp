@@ -148,8 +148,7 @@ void KernelIoTimerTab::initializeUi()
     toolbarLayout->setSpacing(6);
 
     m_refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), this);
-    m_refreshButton->setFixedSize(32, 30);
-    m_refreshButton->setIconSize(QSize(16, 16));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_startButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_resume.svg")), QString(), this);
     m_startButton->setMinimumHeight(30);
     m_stopButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_suspend.svg")), QString(), this);

@@ -87,7 +87,7 @@ void KernelCommunicationEndpointTab::initializeUi()
     toolbarLayout->setSpacing(6);
 
     m_refreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), this);
-    m_refreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(kernelText("kernel.communication_endpoint.toolbar.refresh.tooltip", QStringLiteral("刷新通信端点对象")));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 

@@ -485,10 +485,7 @@ namespace
         { SECURITY_MANDATORY_PROTECTED_PROCESS_RID, "ProtectedProcess", "受保护进程完整性" }
     };
 
-    // 默认按钮图标尺寸。
-    constexpr QSize DefaultIconSize(18, 18);
     constexpr QSize SideTabIconSize(22, 22);
-    constexpr QSize CompactIconButtonSize(28, 28);
     constexpr int ProcessTabMinHeightPx = 22;
     constexpr int ProcessNumericSortRole = Qt::UserRole + 200;
     constexpr int ProcessEfficiencyModeRole = Qt::UserRole + 201;
@@ -4081,10 +4078,8 @@ void ProcessDock::initializeTopControls()
     // 开始/暂停按钮：按需求仅显示图标。
     m_startButton = new QPushButton(QIcon(IconStart), "", this);
     m_pauseButton = new QPushButton(QIcon(IconPause), "", this);
-    m_startButton->setIconSize(DefaultIconSize);
-    m_pauseButton->setIconSize(DefaultIconSize);
-    m_startButton->setFixedSize(CompactIconButtonSize);
-    m_pauseButton->setFixedSize(CompactIconButtonSize);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_startButton);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_pauseButton);
     m_startButton->setToolTip("开始周期性刷新进程列表，并同步记录进程活动");
     m_pauseButton->setToolTip("暂停周期性刷新进程列表，并同步停止记录");
     languageManager.bindToolTip(
@@ -4370,8 +4365,7 @@ void ProcessDock::initializeProcessActivityPanel()
     // - 释放后不打开窗口详情，而是按目标窗口所属 PID 过滤进程列表并打开进程详情。
     ProcessWindowPickerDragButton* processPickerButton = new ProcessWindowPickerDragButton(m_activityPanelWidget);
     processPickerButton->setIcon(QIcon(IconWindowPickerTarget));
-    processPickerButton->setIconSize(QSize(16, 16));
-    processPickerButton->setFixedSize(CompactIconButtonSize);
+    KswordTheme::ApplyCompactIconButtonMetrics(processPickerButton);
     processPickerButton->setStyleSheet(buildBlueButtonStyle(true));
     processPickerButton->setToolTip(QStringLiteral("按住并拖拽准星到目标窗口，松开后按该窗口 PID 筛选进程并打开进程详细信息"));
     languageManager.bindToolTip(

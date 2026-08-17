@@ -6,9 +6,6 @@ using namespace service_dock_detail;
 
 namespace
 {
-    // kToolbarIconSize 作用：统一工具栏图标尺寸，保持视觉节奏一致。
-    constexpr QSize kToolbarIconSize(16, 16);
-
     // createServiceTable 作用：创建服务主列表控件并配置列结构。
     QTableWidget* createServiceTable(QWidget* parentWidget)
     {
@@ -108,42 +105,36 @@ void ServiceDock::initializeToolbar()
     // 基础刷新按钮组：
     // - 全量刷新与当前服务刷新拆分，避免误触全局重扫。
     m_refreshAllButton = new QToolButton(m_toolbarWidget);
-    m_refreshAllButton->setIcon(createBlueIcon(":/Icon/process_refresh.svg", kToolbarIconSize));
-    m_refreshAllButton->setIconSize(kToolbarIconSize);
-    m_refreshAllButton->setFixedSize(28, 28);
+    m_refreshAllButton->setIcon(createBlueIcon(":/Icon/process_refresh.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshAllButton);
     m_refreshAllButton->setToolTip(QStringLiteral("刷新全部服务列表"));
 
     m_refreshCurrentButton = new QToolButton(m_toolbarWidget);
-    m_refreshCurrentButton->setIcon(createBlueIcon(":/Icon/process_details.svg", kToolbarIconSize));
-    m_refreshCurrentButton->setIconSize(kToolbarIconSize);
-    m_refreshCurrentButton->setFixedSize(28, 28);
+    m_refreshCurrentButton->setIcon(createBlueIcon(":/Icon/process_details.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshCurrentButton);
     m_refreshCurrentButton->setToolTip(QStringLiteral("刷新当前选中服务详情"));
 
     // 服务控制按钮组：
     // - 全部使用图标按钮；
     // - 具体释义通过 tooltip 提示。
     m_startButton = new QToolButton(m_toolbarWidget);
-    m_startButton->setIcon(createBlueIcon(":/Icon/process_start.svg", kToolbarIconSize));
-    m_startButton->setIconSize(kToolbarIconSize);
-    m_startButton->setFixedSize(28, 28);
+    m_startButton->setIcon(createBlueIcon(":/Icon/process_start.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_startButton);
     m_startButton->setToolTip(QStringLiteral("启动当前服务"));
 
     m_stopButton = new QToolButton(m_toolbarWidget);
-    m_stopButton->setIcon(createBlueIcon(":/Icon/process_terminate.svg", kToolbarIconSize));
-    m_stopButton->setIconSize(kToolbarIconSize);
-    m_stopButton->setFixedSize(28, 28);
+    m_stopButton->setIcon(createBlueIcon(":/Icon/process_terminate.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_stopButton);
     m_stopButton->setToolTip(QStringLiteral("停止当前服务（高风险动作）"));
 
     m_pauseButton = new QToolButton(m_toolbarWidget);
-    m_pauseButton->setIcon(createBlueIcon(":/Icon/process_pause.svg", kToolbarIconSize));
-    m_pauseButton->setIconSize(kToolbarIconSize);
-    m_pauseButton->setFixedSize(28, 28);
+    m_pauseButton->setIcon(createBlueIcon(":/Icon/process_pause.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_pauseButton);
     m_pauseButton->setToolTip(QStringLiteral("暂停当前服务"));
 
     m_continueButton = new QToolButton(m_toolbarWidget);
-    m_continueButton->setIcon(createBlueIcon(":/Icon/process_resume.svg", kToolbarIconSize));
-    m_continueButton->setIconSize(kToolbarIconSize);
-    m_continueButton->setFixedSize(28, 28);
+    m_continueButton->setIcon(createBlueIcon(":/Icon/process_resume.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_continueButton);
     m_continueButton->setToolTip(QStringLiteral("继续当前服务"));
 
     // 快捷筛选按钮组：
@@ -202,9 +193,8 @@ void ServiceDock::initializeToolbar()
     m_startTypeCombo->setItemData(3, false, Qt::UserRole + 1);
 
     m_applyStartTypeButton = new QToolButton(m_toolbarWidget);
-    m_applyStartTypeButton->setIcon(createBlueIcon(":/Icon/service_apply.svg", kToolbarIconSize));
-    m_applyStartTypeButton->setIconSize(kToolbarIconSize);
-    m_applyStartTypeButton->setFixedSize(28, 28);
+    m_applyStartTypeButton->setIcon(createBlueIcon(":/Icon/service_apply.svg", KswordTheme::CompactIconSize()));
+    KswordTheme::ApplyCompactIconButtonMetrics(m_applyStartTypeButton);
     m_applyStartTypeButton->setToolTip(QStringLiteral("应用当前启动类型修改"));
 
     m_summaryLabel = new QLabel(QStringLiteral("状态：等待首次刷新"), m_toolbarWidget);

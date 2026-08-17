@@ -300,15 +300,13 @@ void FileMappedProcessWindow::initializeUi()
 
     m_refreshButton = new QPushButton(this);
     m_refreshButton->setIcon(QIcon(":/Icon/handle_refresh.svg"));
-    m_refreshButton->setIconSize(QSize(16, 16));
-    m_refreshButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(QStringLiteral("刷新 R0 映射进程扫描"));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_openProcessButton = new QPushButton(this);
     m_openProcessButton->setIcon(QIcon(":/Icon/process_details.svg"));
-    m_openProcessButton->setIconSize(QSize(16, 16));
-    m_openProcessButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_openProcessButton);
     m_openProcessButton->setToolTip(QStringLiteral("转到当前行进程详情"));
     m_openProcessButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 

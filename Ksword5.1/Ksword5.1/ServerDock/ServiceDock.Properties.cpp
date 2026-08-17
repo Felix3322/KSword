@@ -1,4 +1,5 @@
 #include "ServiceDock.Internal.h"
+#include "../theme.h"
 
 #include <QFileDialog>
 #include <QSignalBlocker>
@@ -8,11 +9,6 @@ using namespace service_dock_detail;
 
 namespace
 {
-    // kToolbarIconSize 作用：
-    // - 统一右侧属性页工具按钮图标尺寸；
-    // - 与顶部工具栏保持一致，降低视觉割裂感。
-    constexpr QSize kToolbarIconSize(16, 16);
-
     // kDetailRenderDebounceMs 作用：
     // - 主列表连续换选中行时的详情渲染去抖窗口；
     // - 方向键连滚只在停下来之后触发一次重量级页签重建。
@@ -85,9 +81,8 @@ namespace
         const QString& toolTipText)
     {
         QToolButton* button = new QToolButton(parentWidget);
-        button->setIcon(createBlueIcon(iconPath, kToolbarIconSize));
-        button->setIconSize(kToolbarIconSize);
-        button->setFixedSize(28, 28);
+        button->setIcon(createBlueIcon(iconPath, KswordTheme::CompactIconSize()));
+        KswordTheme::ApplyCompactIconButtonMetrics(button);
         button->setToolTip(toolTipText);
         return button;
     }

@@ -10295,22 +10295,22 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
     panel.backButton = new QPushButton(QIcon(":/Icon/file_nav_back.svg"), QString(), panel.navWidget);
     panel.backButton->setToolTip(QStringLiteral("后退"));
     panel.backButton->setStyleSheet(buildBlueButtonStyle());
-    panel.backButton->setFixedWidth(30);
+    KswordTheme::ApplyCompactIconButtonMetrics(panel.backButton);
 
     panel.forwardButton = new QPushButton(QIcon(":/Icon/file_nav_forward.svg"), QString(), panel.navWidget);
     panel.forwardButton->setToolTip(QStringLiteral("前进"));
     panel.forwardButton->setStyleSheet(buildBlueButtonStyle());
-    panel.forwardButton->setFixedWidth(30);
+    KswordTheme::ApplyCompactIconButtonMetrics(panel.forwardButton);
 
     panel.upButton = new QPushButton(QIcon(":/Icon/file_nav_up.svg"), QString(), panel.navWidget);
     panel.upButton->setToolTip(QStringLiteral("上级目录"));
     panel.upButton->setStyleSheet(buildBlueButtonStyle());
-    panel.upButton->setFixedWidth(30);
+    KswordTheme::ApplyCompactIconButtonMetrics(panel.upButton);
 
     panel.refreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), panel.navWidget);
     panel.refreshButton->setToolTip(QStringLiteral("刷新当前目录"));
     panel.refreshButton->setStyleSheet(buildBlueButtonStyle());
-    panel.refreshButton->setFixedWidth(30);
+    KswordTheme::ApplyCompactIconButtonMetrics(panel.refreshButton);
 
     // 地址区域采用“堆叠控件”：
     // - 面包屑页：默认显示；
@@ -12460,7 +12460,7 @@ void FileDock::initializeRecoveryPage()
     m_recoveryRefreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), toolWidget);
     m_recoveryRefreshButton->setToolTip(QStringLiteral("刷新可扫描卷列表"));
     m_recoveryRefreshButton->setStyleSheet(buildBlueButtonStyle());
-    m_recoveryRefreshButton->setFixedWidth(30);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_recoveryRefreshButton);
 
     m_recoveryScanButton = new QPushButton(QIcon(":/Icon/log_track.svg"), QStringLiteral("扫描误删"), toolWidget);
     m_recoveryScanButton->setToolTip(QStringLiteral("解析 NTFS MFT，扫描删除项"));

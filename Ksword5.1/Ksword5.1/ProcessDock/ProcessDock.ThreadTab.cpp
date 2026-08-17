@@ -81,10 +81,6 @@ namespace
     constexpr const char* IconThreadTab = ":/Icon/process_threads.svg";
     constexpr const char* IconThreadRefresh = ":/Icon/process_refresh.svg";
 
-    // 线程页按钮图标尺寸：与 ProcessDock 主控栏保持一致。
-    constexpr QSize ThreadDefaultIconSize(16, 16);
-    constexpr QSize ThreadCompactIconButtonSize(28, 28);
-
     // ThreadIdentityKey：按 PID/TID 合并 R3 基础线程与 R0 KTHREAD 扩展。
     struct ThreadIdentityKey
     {
@@ -551,8 +547,7 @@ void ProcessDock::initializeThreadPage()
     m_threadTopLayout->setSpacing(8);
 
     m_threadRefreshButton = new QPushButton(QIcon(IconThreadRefresh), "", m_threadPage);
-    m_threadRefreshButton->setIconSize(ThreadDefaultIconSize);
-    m_threadRefreshButton->setFixedSize(ThreadCompactIconButtonSize);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_threadRefreshButton);
     m_threadRefreshButton->setToolTip("刷新系统线程列表（优先 NtQuerySystemInformation）");
     m_threadRefreshButton->setStyleSheet(buildThreadButtonStyle(true));
 

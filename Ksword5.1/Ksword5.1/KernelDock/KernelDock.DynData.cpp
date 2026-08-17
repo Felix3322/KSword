@@ -3319,7 +3319,7 @@ void KernelDock::initializeDynDataTab()
     m_refreshDynDataButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), m_dynDataOverviewPage);
     m_refreshDynDataButton->setToolTip(kernelText("kernel.dyndata.toolbar.refresh.tooltip", QStringLiteral("刷新 R0 DynData 状态和字段表")));
     m_refreshDynDataButton->setStyleSheet(blueButtonStyle());
-    m_refreshDynDataButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshDynDataButton);
 
     m_copyDynDataReportButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), kernelText("kernel.dyndata.toolbar.copy_report", QStringLiteral("复制诊断")), m_dynDataOverviewPage);
     m_copyDynDataReportButton->setToolTip(kernelText("kernel.dyndata.toolbar.copy_report.tooltip", QStringLiteral("复制 DynData 状态、能力和字段列表到剪贴板")));

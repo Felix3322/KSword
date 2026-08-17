@@ -491,12 +491,12 @@ void ThreadStackWindow::initializeUi()
     m_toolbarLayout->setSpacing(6);
 
     m_refreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), this);
-    m_refreshButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(QStringLiteral("重新捕获调用栈"));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_copyButton = new QPushButton(QIcon(":/Icon/process_copy_row.svg"), QString(), this);
-    m_copyButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_copyButton);
     m_copyButton->setToolTip(QStringLiteral("复制全部调用栈"));
     m_copyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 

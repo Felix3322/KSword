@@ -2755,7 +2755,7 @@ void ProcessDetailWindow::initializeDetailTab()
     configureCopyableLabel(m_parentInfoLabel);
     m_detailOpenHandleDockButton = new QPushButton(QIcon(":/Icon/process_list.svg"), QString(), detailContent);
     m_detailOpenHandleDockButton->setToolTip(QStringLiteral("跳转到句柄 Dock，并按当前 PID 过滤"));
-    m_detailOpenHandleDockButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_detailOpenHandleDockButton);
     m_gotoParentButton = new QPushButton(QIcon(":/Icon/process_details.svg"), QString(), detailContent);
     languageManager.bindText(m_gotoParentButton, QStringLiteral("process.detail.action.goto_parent"), QStringLiteral("转到父进程"));
     m_gotoParentButton->setVisible(false);
@@ -4303,16 +4303,13 @@ void ProcessDetailWindow::initializeTokenSwitchTab()
     QHBoxLayout* tokenSwitchTopBarLayout = new QHBoxLayout();
     m_refreshTokenSwitchButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_tokenSwitchTab);
     m_refreshTokenSwitchButton->setToolTip(QStringLiteral("刷新当前进程令牌的各项开关状态"));
-    m_refreshTokenSwitchButton->setFixedSize(34, 34);
-    m_refreshTokenSwitchButton->setIconSize(QSize(16, 16));
+    KswordTheme::ApplyStandardIconButtonMetrics(m_refreshTokenSwitchButton);
     m_applyTokenSwitchButton = new QPushButton(QIcon(":/Icon/process_start.svg"), QString(), m_tokenSwitchTab);
     m_applyTokenSwitchButton->setToolTip(QStringLiteral("把下方复选框状态写回目标进程令牌"));
-    m_applyTokenSwitchButton->setFixedSize(34, 34);
-    m_applyTokenSwitchButton->setIconSize(QSize(16, 16));
+    KswordTheme::ApplyStandardIconButtonMetrics(m_applyTokenSwitchButton);
     m_refreshTokenAllInfoButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_tokenSwitchTab);
     m_refreshTokenAllInfoButton->setToolTip(QStringLiteral("刷新完整令牌信息（包含全部 TokenInformationClass 枚举）"));
-    m_refreshTokenAllInfoButton->setFixedSize(34, 34);
-    m_refreshTokenAllInfoButton->setIconSize(QSize(16, 16));
+    KswordTheme::ApplyStandardIconButtonMetrics(m_refreshTokenAllInfoButton);
     m_tokenSwitchStatusLabel = new QLabel(QStringLiteral("● 尚未刷新令牌开关"), m_tokenSwitchTab);
     m_tokenSwitchStatusLabel->setStyleSheet(
         QStringLiteral("color:%1; font-weight:600;")
@@ -4483,8 +4480,7 @@ void ProcessDetailWindow::initializeTokenSwitchTab()
 
     m_tokenRawApplyButton = new QPushButton(QIcon(":/Icon/process_start.svg"), QString(), rawSetGroup);
     m_tokenRawApplyButton->setToolTip(QStringLiteral("应用原始 NtSetInformationToken 设置"));
-    m_tokenRawApplyButton->setFixedSize(34, 34);
-    m_tokenRawApplyButton->setIconSize(QSize(16, 16));
+    KswordTheme::ApplyStandardIconButtonMetrics(m_tokenRawApplyButton);
 
     rawSetLayout->addWidget(new QLabel(QStringLiteral("信息类"), rawSetGroup), 0, 0);
     rawSetLayout->addWidget(m_tokenRawInfoClassCombo, 0, 1, 1, 2);

@@ -1755,7 +1755,7 @@ void KernelDock::initializeShadowSsdtTab()
     m_refreshShadowSsdtButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_shadowSsdtPage);
     m_refreshShadowSsdtButton->setToolTip(kernelText("kernel.hooks.shadow.toolbar.refresh.tooltip", QStringLiteral("刷新 SSSDT/Shadow SSDT 解析结果")));
     m_refreshShadowSsdtButton->setStyleSheet(kernelHookButtonStyle());
-    m_refreshShadowSsdtButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshShadowSsdtButton);
 
     m_shadowSsdtFilterEdit = new QLineEdit(m_shadowSsdtPage);
     m_shadowSsdtFilterEdit->setPlaceholderText(kernelText("kernel.hooks.shadow.toolbar.filter.placeholder", QStringLiteral("按索引/服务名/模块/地址/状态筛选")));
@@ -1825,7 +1825,7 @@ void KernelDock::initializeInlineHookTab()
     m_refreshInlineHookButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_inlineHookPage);
     m_refreshInlineHookButton->setToolTip(kernelText("kernel.hooks.inline.toolbar.scan.tooltip", QStringLiteral("扫描内核模块导出函数 Inline Hook")));
     m_refreshInlineHookButton->setStyleSheet(kernelHookButtonStyle());
-    m_refreshInlineHookButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshInlineHookButton);
 
     m_patchInlineHookButton = new QPushButton(QIcon(":/Icon/process_terminate.svg"), kernelText("kernel.hooks.inline.toolbar.patch", QStringLiteral("NOP 摘除选中")), m_inlineHookPage);
     m_patchInlineHookButton->setToolTip(kernelText("kernel.hooks.inline.toolbar.patch.tooltip", QStringLiteral("对当前选中 Hook 先普通请求，再经强制确认后写入 NOP")));
@@ -1920,7 +1920,7 @@ void KernelDock::initializeIatEatHookTab()
     m_refreshIatEatHookButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_iatEatHookPage);
     m_refreshIatEatHookButton->setToolTip(kernelText("kernel.hooks.iat.toolbar.scan.tooltip", QStringLiteral("扫描内核模块 IAT/EAT Hook")));
     m_refreshIatEatHookButton->setStyleSheet(kernelHookButtonStyle());
-    m_refreshIatEatHookButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshIatEatHookButton);
 
     m_iatEatHookModuleEdit = new QLineEdit(m_iatEatHookPage);
     m_iatEatHookModuleEdit->setPlaceholderText(kernelText("kernel.hooks.iat.toolbar.module.placeholder", QStringLiteral("模块过滤，如 ntoskrnl.exe / fltmgr.sys（留空扫描全部）")));
@@ -2006,7 +2006,7 @@ void KernelDock::initializeTimerDpcTab()
     m_refreshTimerDpcButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_timerDpcPage);
     m_refreshTimerDpcButton->setToolTip(kernelText("kernel.timer_dpc.refresh.tooltip", QStringLiteral("刷新每 CPU KTIMER/KDPC 快照")));
     m_refreshTimerDpcButton->setStyleSheet(kernelHookButtonStyle());
-    m_refreshTimerDpcButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshTimerDpcButton);
 
     m_timerDpcFilterEdit = new QLineEdit(m_timerDpcPage);
     m_timerDpcFilterEdit->setPlaceholderText(kernelText("kernel.timer_dpc.filter.placeholder", QStringLiteral("筛选 CPU/Bucket/Timer/DPC/例程/模块/状态")));

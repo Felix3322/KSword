@@ -129,22 +129,19 @@ void KernelNamedPipeTab::initializeUi()
 
     m_refreshButton = new QPushButton(this);
     m_refreshButton->setIcon(QIcon(":/Icon/handle_refresh.svg"));
-    m_refreshButton->setIconSize(QSize(16, 16));
-    m_refreshButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshButton);
     m_refreshButton->setToolTip(kernelText("kernel.named_pipe.toolbar.refresh.tooltip", QStringLiteral("刷新命名管道列表")));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_copyButton = new QPushButton(this);
     m_copyButton->setIcon(QIcon(":/Icon/handle_copy_row.svg"));
-    m_copyButton->setIconSize(QSize(16, 16));
-    m_copyButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_copyButton);
     m_copyButton->setToolTip(kernelText("kernel.named_pipe.toolbar.copy.tooltip", QStringLiteral("复制当前行")));
     m_copyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_detailButton = new QPushButton(this);
     m_detailButton->setIcon(QIcon(":/Icon/process_details.svg"));
-    m_detailButton->setIconSize(QSize(16, 16));
-    m_detailButton->setFixedSize(28, 28);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_detailButton);
     m_detailButton->setToolTip(kernelText("kernel.named_pipe.toolbar.detail.tooltip", QStringLiteral("刷新详情面板")));
     m_detailButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 

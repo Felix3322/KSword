@@ -2099,7 +2099,7 @@ void KernelDock::initializeCallbackEnumTab()
     m_refreshCallbackEnumButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_callbackEnumPage);
     m_refreshCallbackEnumButton->setToolTip(kernelText("kernel.callback.enum.toolbar.refresh.tooltip", QStringLiteral("刷新回调遍历结果")));
     m_refreshCallbackEnumButton->setStyleSheet(callbackEnumButtonStyle());
-    m_refreshCallbackEnumButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshCallbackEnumButton);
 
     QHBoxLayout* callbackPresetLayout = new QHBoxLayout();
     callbackPresetLayout->setContentsMargins(0, 0, 0, 0);

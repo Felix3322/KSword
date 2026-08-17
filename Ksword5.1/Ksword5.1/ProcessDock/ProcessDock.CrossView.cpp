@@ -424,7 +424,7 @@ void ProcessDock::initializeCrossViewPage()
     m_crossViewTopLayout->setSpacing(8);
 
     m_crossViewRefreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), m_crossViewPage);
-    m_crossViewRefreshButton->setFixedSize(QSize(32, 32));
+    KswordTheme::ApplyStandardIconButtonMetrics(m_crossViewRefreshButton);
     m_crossViewRefreshButton->setToolTip(QStringLiteral("查询 R0 Process/Thread Cross-View 证据"));
 
     m_crossViewSearchEdit = new QLineEdit(m_crossViewPage);

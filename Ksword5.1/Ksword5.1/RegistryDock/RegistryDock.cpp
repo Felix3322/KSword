@@ -196,7 +196,7 @@ void RegistryDock::initializeUi()
             m_renameButton, m_deleteButton, m_importButton, m_exportButton, m_searchButton, m_stopSearchButton })
     {
         button->setStyleSheet(blueButtonStyle());
-        button->setFixedWidth(34);
+        KswordTheme::ApplyCompactIconButtonMetrics(button);
     }
 
     m_pathEdit = new QLineEdit(m_toolBarWidget);

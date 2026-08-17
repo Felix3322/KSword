@@ -148,8 +148,7 @@ void KernelThreadAuditTab::initializeUi()
     m_terminateButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QString(), this);
     for (QPushButton* actionButton : { m_refreshButton, m_suspendButton, m_resumeButton, m_terminateButton })
     {
-        actionButton->setFixedSize(30, 30);
-        actionButton->setIconSize(QSize(16, 16));
+        KswordTheme::ApplyCompactIconButtonMetrics(actionButton);
     }
     const bool managementVisible = m_mode == Mode::SystemThreads;
     m_suspendButton->setVisible(managementVisible);

@@ -332,8 +332,7 @@ void SettingsDock::initializeAppearanceTab()
     m_followSystemButton = new QToolButton(themeGroupBox);
     m_followSystemButton->setIcon(QIcon(QString::fromUtf8(IconThemeFollowSystem)));
     m_followSystemButton->setCheckable(true);
-    m_followSystemButton->setIconSize(QSize(20, 20));
-    m_followSystemButton->setFixedSize(36, 36);
+    KswordTheme::ApplyStandardIconButtonMetrics(m_followSystemButton);
     m_followSystemButton->setToolTip(QStringLiteral("跟随系统主题（Windows 深浅切换时自动同步）"));
     languageManager.bindToolTip(m_followSystemButton, QStringLiteral("settings.theme.system.tooltip"), QStringLiteral("跟随系统主题（Windows 深浅切换时自动同步）"));
 
@@ -341,8 +340,7 @@ void SettingsDock::initializeAppearanceTab()
     m_lightModeButton = new QToolButton(themeGroupBox);
     m_lightModeButton->setIcon(QIcon(QString::fromUtf8(IconThemeLight)));
     m_lightModeButton->setCheckable(true);
-    m_lightModeButton->setIconSize(QSize(20, 20));
-    m_lightModeButton->setFixedSize(36, 36);
+    KswordTheme::ApplyStandardIconButtonMetrics(m_lightModeButton);
     m_lightModeButton->setToolTip(QStringLiteral("强制浅色模式（白底深色字）"));
     languageManager.bindToolTip(m_lightModeButton, QStringLiteral("settings.theme.light.tooltip"), QStringLiteral("强制浅色模式（白底深色字）"));
 
@@ -350,8 +348,7 @@ void SettingsDock::initializeAppearanceTab()
     m_darkModeButton = new QToolButton(themeGroupBox);
     m_darkModeButton->setIcon(QIcon(QString::fromUtf8(IconThemeDark)));
     m_darkModeButton->setCheckable(true);
-    m_darkModeButton->setIconSize(QSize(20, 20));
-    m_darkModeButton->setFixedSize(36, 36);
+    KswordTheme::ApplyStandardIconButtonMetrics(m_darkModeButton);
     m_darkModeButton->setToolTip(QStringLiteral("强制深色模式（黑底白字）"));
     languageManager.bindToolTip(m_darkModeButton, QStringLiteral("settings.theme.dark.tooltip"), QStringLiteral("强制深色模式（黑底白字）"));
 
@@ -499,8 +496,7 @@ void SettingsDock::initializeAppearanceTab()
     // m_browseBackgroundButton 作用：打开文件对话框选择背景图。
     m_browseBackgroundButton = new QToolButton(backgroundGroupBox);
     m_browseBackgroundButton->setIcon(QIcon(QString::fromUtf8(IconBrowseBackground)));
-    m_browseBackgroundButton->setIconSize(QSize(18, 18));
-    m_browseBackgroundButton->setFixedSize(34, 30);
+    KswordTheme::ApplyStandardIconButtonMetrics(m_browseBackgroundButton);
     m_browseBackgroundButton->setToolTip(QStringLiteral("浏览背景图文件"));
     languageManager.bindToolTip(m_browseBackgroundButton, QStringLiteral("settings.background.browse.tooltip"), QStringLiteral("浏览背景图文件"));
     pathLayout->addWidget(m_browseBackgroundButton);
@@ -508,8 +504,7 @@ void SettingsDock::initializeAppearanceTab()
     // m_resetBackgroundButton 作用：恢复默认背景路径。
     m_resetBackgroundButton = new QToolButton(backgroundGroupBox);
     m_resetBackgroundButton->setIcon(QIcon(QString::fromUtf8(IconResetBackground)));
-    m_resetBackgroundButton->setIconSize(QSize(18, 18));
-    m_resetBackgroundButton->setFixedSize(34, 30);
+    KswordTheme::ApplyStandardIconButtonMetrics(m_resetBackgroundButton);
     m_resetBackgroundButton->setToolTip(QStringLiteral("恢复默认背景路径"));
     languageManager.bindToolTip(m_resetBackgroundButton, QStringLiteral("settings.background.reset.tooltip"), QStringLiteral("恢复默认背景路径"));
     pathLayout->addWidget(m_resetBackgroundButton);

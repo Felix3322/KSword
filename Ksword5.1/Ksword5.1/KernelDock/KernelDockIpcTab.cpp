@@ -335,7 +335,7 @@ void KernelDockIpcTab::initializeAlpcPage()
     m_alpcToolbarLayout->setSpacing(6);
 
     m_alpcRefreshButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_alpcPage);
-    m_alpcRefreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_alpcRefreshButton);
     m_alpcRefreshButton->setToolTip(kernelText("kernel.ipc.toolbar.refresh.tooltip", QStringLiteral("刷新 ALPC 端口查询")));
     m_alpcRefreshButton->setStyleSheet(blueButtonStyle());
 

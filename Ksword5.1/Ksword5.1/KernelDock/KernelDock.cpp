@@ -883,7 +883,7 @@ void KernelDock::initializeObjectNamespaceTab()
     m_refreshObjectNamespaceButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_objectNamespaceOverviewPage);
     m_refreshObjectNamespaceButton->setToolTip(kernelText("kernel.main.object_namespace.refresh.tooltip", QStringLiteral("刷新对象命名空间枚举结果")));
     m_refreshObjectNamespaceButton->setStyleSheet(blueButtonStyle());
-    m_refreshObjectNamespaceButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshObjectNamespaceButton);
 
     m_objectNamespaceFilterEdit = new QLineEdit(m_objectNamespaceOverviewPage);
     m_objectNamespaceFilterEdit->setPlaceholderText(kernelText("kernel.main.object_namespace.filter.placeholder", QStringLiteral("按根目录/目录路径/对象名/对象类型/状态筛选")));
@@ -990,7 +990,7 @@ void KernelDock::initializeAtomTableTab()
     m_refreshAtomButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_atomPage);
     m_refreshAtomButton->setToolTip(kernelText("kernel.main.atom.refresh.tooltip", QStringLiteral("刷新原子表遍历结果")));
     m_refreshAtomButton->setStyleSheet(blueButtonStyle());
-    m_refreshAtomButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshAtomButton);
 
     m_atomFilterEdit = new QLineEdit(m_atomPage);
     m_atomFilterEdit->setPlaceholderText(kernelText("kernel.main.atom.filter.placeholder", QStringLiteral("按 Atom 值/十六进制/名称/来源筛选")));
@@ -1074,7 +1074,7 @@ void KernelDock::initializeNtQueryTab()
     m_refreshNtQueryButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), m_ntQueryPage);
     m_refreshNtQueryButton->setToolTip(kernelText("kernel.main.nt_query.refresh.tooltip", QStringLiteral("刷新历史 NtQuery 信息")));
     m_refreshNtQueryButton->setStyleSheet(blueButtonStyle());
-    m_refreshNtQueryButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_refreshNtQueryButton);
 
     m_ntQueryStatusLabel = new QLabel(kernelText("kernel.main.nt_query.status.waiting", QStringLiteral("状态：等待刷新")), m_ntQueryPage);
     m_ntQueryStatusLabel->setStyleSheet(statusLabelStyle(KswordTheme::TextSecondaryHex()));

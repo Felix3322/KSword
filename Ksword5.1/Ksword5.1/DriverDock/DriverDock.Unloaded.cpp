@@ -388,7 +388,7 @@ void DriverDock::initializeUnloadedPiddbTab()
         driverText(
             "driver.unloaded.refresh.tooltip",
             QStringLiteral("重新查询当前已卸载驱动来源")));
-    m_unloadedPiddbRefreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_unloadedPiddbRefreshButton);
 
     m_unloadedPiddbSourceLayout->addWidget(m_unloadedPiddbMmSourceRadio);
     m_unloadedPiddbSourceLayout->addWidget(m_unloadedPiddbPiDdbSourceRadio);

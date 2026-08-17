@@ -408,19 +408,19 @@ void DriverDock::initializeIntegrityTab()
     m_integrityModuleBaseEdit->setMaximumWidth(150);
 
     m_integrityFillFromSelectionButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QString(), m_integrityPage);
-    m_integrityFillFromSelectionButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_integrityFillFromSelectionButton);
     m_integrityFillFromSelectionButton->setToolTip(
         driverText("driver.integrity.form.fill.tooltip", QStringLiteral("从当前服务选择填充 DriverObject 名称")));
 
     m_integrityRefreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), m_integrityPage);
-    m_integrityRefreshButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_integrityRefreshButton);
     m_integrityRefreshButton->setToolTip(
         driverText(
             "driver.integrity.form.refresh.tooltip",
             QStringLiteral("查询 DriverObject/LDR/FastIo/CPU 完整性证据")));
 
     m_integrityCpuOnlyButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_threads.svg")), QString(), m_integrityPage);
-    m_integrityCpuOnlyButton->setFixedWidth(34);
+    KswordTheme::ApplyCompactIconButtonMetrics(m_integrityCpuOnlyButton);
     m_integrityCpuOnlyButton->setToolTip(
         driverText("driver.integrity.form.cpu_only.tooltip", QStringLiteral("仅查询 CPU entry / IDT / MSR 证据")));
 
