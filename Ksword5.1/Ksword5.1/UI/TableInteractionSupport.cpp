@@ -70,6 +70,7 @@ namespace
     using ks::ui::TableSnapshotComparisonLimits;
     using ks::ui::TableSnapshotRetentionLimits;
     using ks::ui::TableSnapshotRetentionResult;
+    using ks::ui::TableActionBarMode;
 
     constexpr char kInstalledProperty[] = "KSWORD_TABLE_INTERACTION_SUPPORT_INSTALLED";
     constexpr char kActionBarProperty[] = "KSWORD_TABLE_INTERACTION_ACTION_BAR";
@@ -794,14 +795,60 @@ namespace
     class TableActionBar final : public QFrame
     {
     public:
-        explicit TableActionBar(QTableView* tableView)
+        explicit TableActionBar(QTableView* tableView, const TableActionBarMode mode)
             : QFrame(tableView)
             , m_table(tableView)
+            , m_mode(mode)
         {
             setObjectName(QString::fromLatin1(kActionBarProperty));
             setFrameShape(QFrame::NoFrame);
             setFixedHeight(kActionBarHeight);
             setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+            // 表格操作条会同时出现在 Dock 与普通 QDialog 中，不能继续继承宿主的
+            // QPushButton/QToolButton 几何样式。普通弹窗主题会为按钮增加较大的
+            // padding 和粗体，曾导致插件管理页的同一套操作按钮明显大于进程页，
+            // 甚至挤压 32px 高的操作条。这里用 palette 角色建立自包含的紧凑基线，
+            // 保证换肤仍然生效，同时让所有 TableActionBarHost 的外观完全一致。
+            setStyleSheet(QStringLiteral(
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR{"
+                "  background-color:palette(base);"
+                "  border:none;"
+                "  border-bottom:1px solid palette(mid);"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QToolButton{"
+                "  min-height:20px;"
+                "  padding:2px 7px;"
+                "  color:palette(text) !important;"
+                "  background-color:transparent !important;"
+                "  border:1px solid transparent !important;"
+                "  border-radius:3px;"
+                "  font-weight:400;"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QToolButton:hover{"
+                "  background-color:palette(alternate-base) !important;"
+                "  border-color:palette(highlight) !important;"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QToolButton:pressed,"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QToolButton:checked{"
+                "  background-color:palette(highlight) !important;"
+                "  color:palette(highlighted-text) !important;"
+                "  border-color:palette(highlight) !important;"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QToolButton:disabled{"
+                "  color:palette(placeholder-text) !important;"
+                "  background-color:transparent !important;"
+                "  border-color:transparent !important;"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QScrollArea,"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QScrollArea::viewport{"
+                "  background-color:transparent !important;"
+                "  border:none !important;"
+                "}"
+                "QFrame#KSWORD_TABLE_INTERACTION_ACTION_BAR QCheckBox{"
+                "  background-color:transparent !important;"
+                "  font-weight:400;"
+                "}"));
 
             auto* layout = new QHBoxLayout(this);
             layout->setContentsMargins(4, 2, 4, 2);
@@ -1001,6 +1048,19 @@ namespace
         }
 
     public:
+        void setMode(const TableActionBarMode mode)
+        {
+            if (m_mode == mode)
+            {
+                applyModeVisibility();
+                return;
+            }
+
+            m_mode = mode;
+            updateControls();
+            updatePosition();
+        }
+
         void updatePosition()
         {
             if (m_table.isNull())
@@ -1015,9 +1075,14 @@ namespace
             }
             if (ks::ui::TableActionBarHost* host = ks::ui::TableActionBarHostFor(m_table.data()))
             {
-                host->setTopActionBarHeight(kActionBarHeight);
-                setGeometry(host->topActionBarGeometry());
-                raise();
+                const bool actionBarVisible = m_mode != TableActionBarMode::None;
+                host->setTopActionBarHeight(actionBarVisible ? kActionBarHeight : 0);
+                setVisible(actionBarVisible);
+                if (actionBarVisible)
+                {
+                    setGeometry(host->topActionBarGeometry());
+                    raise();
+                }
             }
             hideSourceViewportWidgets();
             updateComparisonOverlayGeometry();
@@ -2198,6 +2263,26 @@ namespace
             raise();
         }
 
+        void applyModeVisibility()
+        {
+            const bool actionBarVisible = m_mode != TableActionBarMode::None;
+            const bool fullMode = m_mode == TableActionBarMode::Full;
+            m_copyAllButton->setVisible(actionBarVisible);
+            m_exportButton->setVisible(actionBarVisible);
+            m_freezePaneButton->setVisible(fullMode);
+            m_pauseRefreshButton->setVisible(fullMode);
+            m_snapshotScrollArea->setVisible(fullMode);
+            m_addSnapshotButton->setVisible(fullMode);
+            m_cleanupButton->setVisible(fullMode && !m_cleanupMode);
+            m_doneCleanupButton->setVisible(fullMode && m_cleanupMode);
+            m_deleteSelectedButton->setVisible(fullMode && m_cleanupMode);
+            m_clearAllButton->setVisible(fullMode && m_cleanupMode);
+            m_differenceOnlyCheckBox->setVisible(fullMode && m_inComparison);
+            m_ignoreColumnsButton->setVisible(fullMode && m_inComparison);
+            m_currentViewButton->setVisible(fullMode);
+            m_compareViewButton->setVisible(fullMode);
+        }
+
         void updateControls()
         {
             const bool hasSnapshots = !m_snapshots.isEmpty();
@@ -2278,6 +2363,7 @@ namespace
                     snapshotButton->setEnabled(controlsAvailable);
                 }
             }
+            applyModeVisibility();
         }
 
         QPointer<QTableView> m_table;
@@ -2305,6 +2391,7 @@ namespace
         bool m_snapshotCaptureInProgress = false;
         bool m_comparisonInProgress = false;
         bool m_pauseCaptureInProgress = false;
+        TableActionBarMode m_mode = TableActionBarMode::Compact;
         QToolButton* m_copyAllButton = nullptr;
         QToolButton* m_exportButton = nullptr;
         QToolButton* m_freezePaneButton = nullptr;
@@ -2347,11 +2434,18 @@ namespace
         {
             return;
         }
+        const TableActionBarMode mode = ks::ui::EffectiveTableActionBarMode(tableView);
         TableActionBar* actionBar = actionBarForTable(tableView);
         if (actionBar == nullptr)
         {
-            actionBar = new TableActionBar(tableView);
+            if (mode == TableActionBarMode::None)
+            {
+                ks::ui::TableActionBarHostFor(tableView)->setTopActionBarHeight(0);
+                return;
+            }
+            actionBar = new TableActionBar(tableView, mode);
         }
+        actionBar->setMode(mode);
         actionBar->updatePosition();
     }
 

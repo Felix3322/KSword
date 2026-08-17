@@ -216,6 +216,7 @@ namespace
             return;
         }
 
+        ks::ui::SetTableActionBarMode(tableWidget, ks::ui::TableActionBarMode::None);
         tableWidget->setColumnCount(headers.size());
         tableWidget->setHorizontalHeaderLabels(headers);
         tableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);

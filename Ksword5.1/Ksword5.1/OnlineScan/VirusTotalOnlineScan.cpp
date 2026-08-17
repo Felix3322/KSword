@@ -957,6 +957,7 @@ namespace
         {
             return;
         }
+        ks::ui::SetTableActionBarMode(table, ks::ui::TableActionBarMode::None);
         configureReadOnlyTable(table);
         table->setFrameShape(QFrame::NoFrame);
         table->setShowGrid(false);
