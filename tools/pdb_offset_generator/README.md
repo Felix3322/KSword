@@ -38,14 +38,14 @@ Launcher identity list explicitly:
 py -3.12 tools\pdb_offset_generator\ksword_profile_release_sync.py `
   --source "$corpusRoot\profiles\ark_dyndata" `
   --release-root "Ksword5.1\x64\Release" `
-  --pack-only --emit-pack --pack-version 3 `
-  --pack-output "Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v3.json" `
+  --pack-only --emit-pack --pack-version 4 `
+  --pack-output "Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v4.json" `
   --manifest "Ksword5.1\Ksword5.1\profiles\ark_dyndata_manifest.json" `
   --report "$corpusRoot\logs\ark_dyndata_publish_report.launcher-intake.json"
 
 py -3.12 Launcher\tools\generate_support_manifest.py `
   --source Launcher\support_manifest_source.json `
-  --pack Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v3.json `
+  --pack Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v4.json `
   --output Launcher\launcher_support_manifest.json
 ```
 
@@ -130,74 +130,47 @@ python tools\pdb_offset_generator\ksword_pdb_profile_generator.py `
   --output D:\PDB\scratch\callback_profile_dryrun.json
 ```
 
-The generated JSON keeps the legacy `fields` and `missingFields` keys. Callback
-PDB items are written under `callbackItems` with `kind` set to `GlobalRva` or
-`StructOffset`. v3 typed items are written under `typedItems`; this array carries
-all resolved `StructOffset` fields plus callback/kernel `GlobalRva` values.
-Missing callback and kernel-global candidates are non-fatal and are reported
-under `diagnostics.missingItems`, `missingGlobals`, and `diagnostics.missingGlobals`.
+The generated JSON uses one `v4Items` matrix. Each item has a stable numeric
+`itemId`, string `kind`, capability group, value, and optional auxiliary values.
+The historical `fields`, `typeSizes`, `callbackItems`, and `typedItems` mirrors
+are not serialized. Missing candidates remain diagnostic-only under
+`v4MissingItems` and `diagnostics`.
 
-## Release sync packs
+## v4-only release policy
 
-`ksword_profile_release_sync.py` emits the v4 compact pack by default. v4 is
-the release default because it carries stable multi-module items and capability
-groups; v3 remains available for the typed-item compatibility path:
+`ark_dyndata_pack_v4.json` is the sole supported release artifact. The release
+sync rejects `--pack-version` values other than 4, omits the old field dictionary
+and legacy item arrays, and publishes only complete capability groups. Runtime
+R3/Light loaders look up v4 only. Core v4 items are projected in memory to the
+existing EX apply request so process, thread, callback, module, and token
+consumers retain their behavior without duplicate offsets on disk.
 
-```powershell
-python tools\pdb_offset_generator\ksword_profile_release_sync.py `
-  --emit-pack
-```
-
-To publish the v3 compatibility pack alongside the default v4 pack, request
-pack v3 explicitly and write it to `Release\profiles\ark_dyndata_pack_v3.json`:
+Use:
 
 ```powershell
 python tools\pdb_offset_generator\ksword_profile_release_sync.py `
-  --emit-pack `
-  --pack-version 3 `
-  --pack-output Release\profiles\ark_dyndata_pack_v3.json
-```
-
-The default output path is version-specific:
-
-- v3: `<release-root>\profiles\ark_dyndata_pack_v3.json` (preferred for
-  `EpActiveProcessLinks` and other typed `StructOffset` fields)
-- v4: `<release-root>\profiles\ark_dyndata_pack_v4.json` (default; stable
-  multi-module items and capability groups)
-
-`--pack-only` keeps its existing behavior and can be combined with
-`--pack-version 3` or `--pack-version 4`. `--pack-output` overrides the computed
-v3/v4 path when a specific destination is required.
-
-For a release-side v3 pack that lands at `Release\profiles\ark_dyndata_pack_v3.json`
-and does not publish scattered JSON, use pack-only together with `--clean-target`:
-
-```powershell
-python tools\pdb_offset_generator\ksword_profile_release_sync.py `
+  --source D:\KswordKernelCorpus\profiles\ark_dyndata `
   --release-root Ksword5.1\x64\Release `
-  --pack-only `
-  --pack-version 3 `
-  --pack-output Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
+  --pack-only --emit-pack --pack-version 4 `
+  --pack-output Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v4.json `
   --clean-target
 ```
 
-This keeps the Release tree on the compact pack path only; it skips PDB/PE
-publication and skips copying scattered `profiles\ark_dyndata\*.json` payloads.
+The two timer IDs `1004` and `1006` remain reserved protocol numbers and are
+not generated because no runtime consumer reads them. Incomplete CI and work
+queue groups are omitted as a whole. This prevents a profile from advertising
+a capability that R0 would reject immediately.
 
-Pack v3 retains the compact identity and `fields` layout, and adds a typed
-`items` array for every profile. R3 loaders accept packVersion 3 or 4; v3 is
-the compatibility option when a driver does not provide the v4 endpoint.
+## v4 pack schema
 
-Pack v4 is the primary path. It stores stable wire items in `items` and their
-per-module capability summary in `capabilityGroups`; `legacyItems` exists only
-to let a v4 artifact be interpreted by the retained v3 compatibility layer.
-New release flows must use its v4 payload rather than publishing v1/v2 packs.
+The pack has no top-level field dictionary and no per-profile legacy mirrors.
+Every usable offset, RVA, type size, bit field, or enum value appears exactly
+once in `profile.items`:
 
 ```json
 {
   "schemaVersion": 1,
-  "packVersion": 3,
-  "fieldDictionary": ["EpUniqueProcessId"],
+  "packVersion": 4,
   "profiles": [
     {
       "moduleClassId": 0,
@@ -208,10 +181,29 @@ New release flows must use its v4 payload rather than publishing v1/v2 packs.
       "pdbName": "ntkrnlmp.pdb",
       "pdbGuid": "",
       "pdbAge": 1,
-      "fields": [[0, 768]],
       "items": [
-        { "name": "EpUniqueProcessId", "kind": "StructOffset", "value": 1088 },
-        { "name": "PspCidTable", "kind": "GlobalRva", "value": 1193046 }
+        {
+          "itemId": 58,
+          "name": "EpUniqueProcessId",
+          "itemKind": 1,
+          "flags": 1,
+          "capabilityGroupId": 1,
+          "valueLow": 1088,
+          "valueHigh": 0,
+          "aux0": 0,
+          "aux1": 0,
+          "aux2": 0,
+          "aux3": 0
+        }
+      ],
+      "capabilityGroups": [
+        {
+          "groupId": 1,
+          "flags": 0,
+          "requiredItemCount": 1,
+          "optionalItemCount": 0,
+          "groupName": "ntos.core"
+        }
       ],
       "missingFields": [],
       "missingGlobals": ["PiDDBCacheTable"],
@@ -221,80 +213,35 @@ New release flows must use its v4 payload rather than publishing v1/v2 packs.
 }
 ```
 
-Release reports now include per-profile `missingFields`, `missingGlobals`, and
-`coveragePercent` so the pack can be audited without opening every scattered
-profile.
+Release reports include per-profile `missingFields`, `missingGlobals`, and
+`coveragePercent`. Source corpus files use `v4Items`; release sync validates and
+converts those entries to the numeric wire shape above. The source compatibility
+parser may read an older corpus while it is being regenerated, but it never
+publishes legacy keys.
 
 ## ActiveProcessLinks audit helper
 
 Use `ksword_active_process_links_audit.py` to verify that the current
-`ark_dyndata_pack_v3.json` contains `_EPROCESS.ActiveProcessLinks` for the
+`ark_dyndata_pack_v4.json` contains `_EPROCESS.ActiveProcessLinks` for the
 local `ntoskrnl.exe` identity:
 
 ```powershell
 python tools\pdb_offset_generator\ksword_active_process_links_audit.py `
-  --pack Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
+  --pack Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v4.json `
   --kernel C:\Windows\System32\ntoskrnl.exe
 ```
 
-The script prints the matching profile name, the legacy `fields` offset list,
-the v3 typed item offset list, and exits non-zero if the offset is missing.
+The script prints the matching profile name and v4 item offset list, and exits
+non-zero if the offset is missing.
 
-## callbackItems release validation
+## v4 item validation
 
-Release sync accepts profiles with missing or empty `callbackItems`; those
-profiles remain publishable and simply carry no callback items in v2. If
-`callbackItems` is present, every item must pass these checks:
-
-- `kind` must be exactly `GlobalRva` or `StructOffset`.
-- `name` must correspond to a shared callback field ID declared in
-  `shared/driver/KswordArkDynDataIoctl.h` (`KSW_DYN_FIELD_ID_CB_*`).
-- `value` must parse as an unsigned 32-bit integer.
-- `GlobalRva` values must be non-zero and must not exceed
-  `KSW_DYN_PROFILE_GLOBAL_RVA_MAX`.
-- `StructOffset` values must not be `0xFFFFFFFF` and must not exceed
-  `KSW_DYN_PROFILE_OFFSET_MAX`.
-
-Allowed `GlobalRva` names:
-
-- `PspCreateProcessNotifyRoutine`
-- `PspCreateThreadNotifyRoutine`
-- `PspLoadImageNotifyRoutine`
-- `PspNotifyEnableMask`
-- `CmCallbackListHead`
-
-Allowed `StructOffset` names:
-
-- `_OBJECT_TYPE.CallbackList`
-- `_CALLBACK_ENTRY_ITEM.EntryList`
-- `_CALLBACK_ENTRY_ITEM.PreOperation`
-- `_CALLBACK_ENTRY_ITEM.PostOperation`
-- `_CALLBACK_ENTRY_ITEM.Operations`
-- `_CALLBACK_ENTRY_ITEM.CallbackEntry`
-- `_CALLBACK_ENTRY.Altitude`
-- `_CALLBACK_ENTRY.RegistrationContext`
-
-For compatibility with existing generator output, release sync also accepts the
-input alias `_CALLBACK_ENTRY_ITEM.EntryItemList` and writes it into v2 packs as
-the canonical `_CALLBACK_ENTRY_ITEM.EntryList` name.
-Manifest and report JSON include total `callbackItemCount`, and the per-profile
-report entries also keep individual callback item counts for audit purposes.
-
-## v3 typed item validation
-
-Release sync accepts source `typedItems` and pack-side `items` arrays. Each item
-must use `kind` `StructOffset` or `GlobalRva`. `GlobalRva` accepts the callback
-names above plus optional kernel globals:
-
-- `PspCidTable`
-- `PsLoadedModuleList`
-- `MmUnloadedDrivers`
-- `PiDDBCacheTable`
-- `KeServiceDescriptorTableShadow`
-
-`StructOffset` accepts the legacy field dictionary names plus the new process,
-thread, handle table, KLDR, and DRIVER_OBJECT field names documented in
-`docs/next_phase_manifests/dyndata_v3.md`.
+Source `v4Items` must use the stable IDs and kinds declared in
+`shared/driver/KswordArkDynDataIoctl.h`. Values must fit the corresponding
+offset/RVA/type-size limits. Duplicate IDs, unknown IDs, invalid auxiliary bit
+field metadata, and incomplete fixed capability groups are rejected or omitted
+before publication. Timer IDs `1004` and `1006` are reserved and must not appear
+in generated source or release packs.
 
 ## ntoskrnl deep runtime offset catalog
 

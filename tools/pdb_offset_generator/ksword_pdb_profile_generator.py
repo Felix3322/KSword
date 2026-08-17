@@ -37,6 +37,47 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    # Keep the generator's numeric v4 catalog identical to the release
+    # validator.  The import is local to this tools directory and has no
+    # runtime application dependencies.
+    from ksword_profile_release_sync import (
+        KNOWN_FIELD_IDS as V4_CORE_ITEM_IDS,
+        V4_ITEM_KIND_IDS as V4_WIRE_ITEM_KIND_IDS,
+        CALLBACK_ITEM_KIND_GLOBAL_RVA,
+        CALLBACK_ITEM_KIND_STRUCT_OFFSET,
+        CALLBACK_ITEM_KIND_TYPE_SIZE,
+        GLOBAL_RVA_FIELD_IDS,
+        CALLBACK_STRUCT_OFFSET_FIELD_IDS,
+        TYPED_TYPE_SIZE_FIELD_IDS,
+        CALLBACK_NAME_ALIASES,
+    )
+except ImportError:  # pragma: no cover - direct library embedding fallback
+    V4_CORE_ITEM_IDS = {}
+    V4_WIRE_ITEM_KIND_IDS = {
+        "StructOffset": 1,
+        "GlobalRva": 2,
+        "FunctionRva": 3,
+        "EnumValue": 4,
+        "TypeSize": 5,
+        "BitField": 6,
+        "ListHeadGlobal": 7,
+    }
+    CALLBACK_ITEM_KIND_GLOBAL_RVA = "GlobalRva"
+    CALLBACK_ITEM_KIND_STRUCT_OFFSET = "StructOffset"
+    CALLBACK_ITEM_KIND_TYPE_SIZE = "TypeSize"
+    GLOBAL_RVA_FIELD_IDS = {}
+    CALLBACK_STRUCT_OFFSET_FIELD_IDS = {}
+    TYPED_TYPE_SIZE_FIELD_IDS = {}
+    CALLBACK_NAME_ALIASES = {}
+
+V4_CORE_ITEM_IDS = {
+    **V4_CORE_ITEM_IDS,
+    **GLOBAL_RVA_FIELD_IDS,
+    **CALLBACK_STRUCT_OFFSET_FIELD_IDS,
+    **TYPED_TYPE_SIZE_FIELD_IDS,
+}
+
 import pefile
 import requests
 
@@ -238,14 +279,11 @@ TYPE_SIZE_MAP: dict[str, str] = {
     "PiDdbTypeSize": "_PIDDB_CACHE_ENTRY",
 }
 
-# v4-only module items. 这些字段不进入旧 v1/v2/v3 fields，
-# 通过独立的 v4Items 数组携带结构偏移、类型大小和位域元数据。
+# v4-only module items. v4Items 统一携带结构偏移、类型大小和位域元数据。
 V4_FIELD_MAP: dict[str, tuple[str, str]] = {
     "KprcbTimerTable": ("_KPRCB", "TimerTable"),
     "KtimerTableTimerEntries": ("_KTIMER_TABLE", "TimerEntries"),
-    "KtimerTableEntryLock": ("_KTIMER_TABLE_ENTRY", "Lock"),
     "KtimerTableEntryEntry": ("_KTIMER_TABLE_ENTRY", "Entry"),
-    "KtimerTableEntryTime": ("_KTIMER_TABLE_ENTRY", "Time"),
     "KtimerTimerListEntry": ("_KTIMER", "TimerListEntry"),
     "KtimerDueTime": ("_KTIMER", "DueTime"),
     "KtimerDpc": ("_KTIMER", "Dpc"),
@@ -366,9 +404,7 @@ V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "EthActiveExWorker": (1001, "BitField", 2),
     "KprcbTimerTable": (1002, "StructOffset", 2),
     "KtimerTableTimerEntries": (1003, "StructOffset", 2),
-    "KtimerTableEntryLock": (1004, "StructOffset", 2),
     "KtimerTableEntryEntry": (1005, "StructOffset", 2),
-    "KtimerTableEntryTime": (1006, "StructOffset", 2),
     "KtimerTimerListEntry": (1007, "StructOffset", 2),
     "KtimerDueTime": (1008, "StructOffset", 2),
     "KtimerDpc": (1009, "StructOffset", 2),
@@ -1964,6 +2000,49 @@ def build_v4_items(
     return items, missing
 
 
+def build_v4_core_items(typed_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project legacy-resolved fields into the canonical v4 item catalog.
+
+    The generator keeps all resolved offsets in one v4Items array.  This makes
+    the release pack independent of the historical ``fields`` and
+    ``typedItems`` mirrors while retaining the same field IDs for EX consumers.
+    """
+    output: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for source in typed_items:
+        if not isinstance(source, dict):
+            continue
+        raw_name = str(source.get("name", "")).strip()
+        raw_kind = str(source.get("kind", "")).strip()
+        canonical_name = CALLBACK_NAME_ALIASES.get(raw_name, raw_name)
+        item_id = V4_CORE_ITEM_IDS.get(canonical_name)
+        if item_id is None or item_id in seen_ids:
+            continue
+        item_kind = V4_WIRE_ITEM_KIND_IDS.get(raw_kind)
+        if item_kind is None:
+            continue
+        try:
+            value = int(str(source.get("value", "0")), 0)
+        except (TypeError, ValueError):
+            continue
+        if value < 0 or value > 0xFFFFFFFF:
+            continue
+        seen_ids.add(item_id)
+        output.append({
+            "itemId": item_id,
+            "name": canonical_name,
+            "kind": raw_kind,
+            "flags": "required" if bool(source.get("required", True)) else "optional",
+            "capabilityGroupId": 1,
+            "value": f"0x{value:08X}",
+            "aux0": 0,
+            "aux1": 0,
+            "aux2": 0,
+            "aux3": 0,
+        })
+    return output
+
+
 def resolve_v4_layouts(types_text: str) -> tuple[
     dict[tuple[str, str], int],
     dict[str, int],
@@ -1998,7 +2077,7 @@ def refresh_v4_profile(
     profile_path: Path,
     types_text: str,
 ) -> None:
-    """Refresh v4 payload while preserving legacy/callback data in a profile."""
+    """Refresh the sole v4 payload while preserving identity and diagnostics."""
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     if not isinstance(profile, dict):
         raise ValueError(f"profile root is not an object: {profile_path}")
@@ -2034,7 +2113,24 @@ def refresh_v4_profile(
                 if str(item.get("name", "")) not in present_names
             ]
             v4_items.sort(key=lambda item: int(item.get("itemId", 0)))
+    previous_items = profile.get("v4Items")
+    if isinstance(previous_items, list):
+        present_ids = {int(item.get("itemId", 0)) for item in v4_items if isinstance(item, dict)}
+        v4_items.extend(
+            item for item in previous_items
+            if isinstance(item, dict) and int(item.get("itemId", 0)) not in present_ids
+        )
+        v4_items.sort(key=lambda item: int(item.get("itemId", 0)))
     profile["v4Items"] = v4_items
+    for obsolete_key in (
+        "fields",
+        "typeSizes",
+        "callbackItems",
+        "typedItems",
+        "callbackItemSchemaVersion",
+        "typedItemSchemaVersion",
+    ):
+        profile.pop(obsolete_key, None)
     profile["v4MissingItems"] = v4_missing_items
     diagnostics = profile.get("diagnostics")
     if not isinstance(diagnostics, dict):
@@ -2070,6 +2166,7 @@ def v4_profile_complete(profile_path: Path) -> bool:
         for definition in V4_ITEM_DEFINITIONS.values()
         if definition[2] in active_groups
     }
+    allowed_ids.update(V4_CORE_ITEM_IDS.values())
     actual_ids = {
         item.get("itemId")
         for item in raw_items
@@ -2095,10 +2192,10 @@ def build_profile(
       only for callback GlobalRva items.
 
     Processing:
-    - Preserves the legacy fields/missingFields schema exactly for current R3
-      consumers and v1 release pack tooling.
-    - Adds callbackItems as an optional v2 extension and puts all missing
-      callback candidates under diagnostics.missingItems.
+    - Resolves legacy field families only as generator inputs, then projects
+      every usable value into the canonical v4Items matrix.
+    - Keeps missing-field/type/global diagnostics without serializing duplicate
+      offset arrays.
 
     Return behavior:
     - Returns a JSON-serializable dictionary; it does not write files.
@@ -2186,6 +2283,12 @@ def build_profile(
         typed_items.append({"kind": "TypeSize", "name": field_name, "value": size_text})
     typed_items.extend(callback_items)
     typed_items.extend(kernel_global_items)
+    v4_core_items = build_v4_core_items(typed_items)
+    v4_item_ids = {int(item.get("itemId", 0)) for item in v4_core_items}
+    canonical_v4_items = v4_core_items + [
+        item for item in v4_items
+        if int(item.get("itemId", 0)) not in v4_item_ids
+    ]
 
     total_candidates = (
         len(FIELD_MAP) +
@@ -2204,8 +2307,6 @@ def build_profile(
     profile_name = f"{entry.class_name}_{entry.arch}_{entry.version}_{pdb_identity.symbol_key.lower()}"
     return {
         "schemaVersion": KSW_SCHEMA_VERSION,
-        "callbackItemSchemaVersion": CALLBACK_ITEM_SCHEMA_VERSION,
-        "typedItemSchemaVersion": TYPED_ITEM_SCHEMA_VERSION,
         "profileName": profile_name,
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "generator": "tools/pdb_offset_generator/ksword_pdb_profile_generator.py",
@@ -2223,15 +2324,13 @@ def build_profile(
             "pdbAge": pdb_identity.pdb_age,
             "pdbSymbolKey": pdb_identity.symbol_key,
         },
-        "fields": resolved_fields,
-        "missingFields": missing_fields,
-        "typeSizes": resolved_type_sizes,
-        "missingTypeSizes": missing_type_sizes,
-        "callbackItems": callback_items,
-        "typedItems": typed_items,
-        "v4Items": v4_items,
+        # v4Items is the sole offset matrix.  The old fields/typeSizes/
+        # callbackItems/typedItems mirrors are intentionally not serialized.
+        "v4Items": canonical_v4_items,
         "idtBaseline": idt_baseline,
         "v4MissingItems": v4_missing_items,
+        "missingFields": missing_fields,
+        "missingTypeSizes": missing_type_sizes,
         "missingGlobals": missing_globals,
         "coveragePercent": round(coverage_percent, 1),
         "diagnostics": {
@@ -2397,8 +2496,7 @@ def run_local_dry_run(args: argparse.Namespace) -> int:
 
     write_json_atomic(output_path, profile)
     print(f"[OK] {output_path}")
-    print(f"callbackItems={len(profile.get('callbackItems', []))}")
-    print(f"typedItems={len(profile.get('typedItems', []))}")
+    print(f"v4Items={len(profile.get('v4Items', []))}")
     print(f"missingGlobals={len(profile.get('missingGlobals', []))}")
     print(f"coveragePercent={profile.get('coveragePercent', 0.0)}")
     diagnostics = profile.get("diagnostics", {})

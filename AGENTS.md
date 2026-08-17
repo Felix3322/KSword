@@ -97,8 +97,7 @@ Copy-Item 'third_party\zstd\LICENSE.txt' (Join-Path $licenseDir 'zstd-LICENSE.tx
 
 $profileDir=Join-Path $stage 'profiles'
 if (!(Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir | Out-Null }
-Copy-Item 'Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json' $profileDir -Force
-Copy-Item 'Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v4.json' $profileDir -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v4.json.qz' $profileDir -Force
 Copy-Item 'Ksword5.1\x64\Release\profiles\launcher_support_manifest.json' $profileDir -Force
 Copy-Item 'Ksword5.1\x64\Release\profiles\registry_optimization_items.json' $profileDir -Force
 Copy-Item 'Ksword5.1\x64\Release\profiles\registry_optimization_assets' $profileDir -Recurse -Force
@@ -137,7 +136,7 @@ if ($exit -ne 0) { exit $exit }
 ```powershell
 $seven='C:\Users\Felix\CLionProjects\Wisdom-Weasel\7z.exe'
 & $seven t $archive
-& $seven l $archive 'Release\Launcher.exe' 'Release\Ksword5.1.exe' 'Release\KswordARKLight.exe' 'Release\Taskbar.exe' 'Release\KswordHUD.exe' 'Release\APIMonitor_x64.dll' 'Release\KswordARK.sys' 'Release\KswordARKDriver\KswordARK.sys' 'Release\LICENSE' 'Release\COMMUNITY_COVENANT.md' 'Release\licenses\third_party\systeminformer-LICENSE.txt' 'Release\licenses\third_party\easy-hwid-spoofer-LICENSE.txt' 'Release\licenses\third_party\fltk-LICENSE.txt' 'Release\licenses\third_party\qt-advanced-docking-system-LICENSE.txt' 'Release\licenses\third_party\zstd-LICENSE.txt' 'Release\profiles\launcher_support_manifest.json' 'Release\profiles\ark_dyndata_pack_v3.json' 'Release\profiles\registry_optimization_items.json' 'Release\profiles\registry_optimization_assets\Config\Data.zip' 'Release\languages\zh-CN.json' 'Release\languages\en-US.json' 'Release\platforms\qwindows.dll'
+& $seven l $archive 'Release\Launcher.exe' 'Release\Ksword5.1.exe' 'Release\KswordARKLight.exe' 'Release\Taskbar.exe' 'Release\KswordHUD.exe' 'Release\APIMonitor_x64.dll' 'Release\KswordARK.sys' 'Release\KswordARKDriver\KswordARK.sys' 'Release\LICENSE' 'Release\COMMUNITY_COVENANT.md' 'Release\licenses\third_party\systeminformer-LICENSE.txt' 'Release\licenses\third_party\easy-hwid-spoofer-LICENSE.txt' 'Release\licenses\third_party\fltk-LICENSE.txt' 'Release\licenses\third_party\qt-advanced-docking-system-LICENSE.txt' 'Release\licenses\third_party\zstd-LICENSE.txt' 'Release\profiles\launcher_support_manifest.json' 'Release\profiles\ark_dyndata_pack_v4.json.qz' 'Release\profiles\registry_optimization_items.json.qz' 'Release\profiles\registry_optimization_assets\Config\Data.zip' 'Release\languages\zh-CN.json' 'Release\languages\en-US.json' 'Release\platforms\qwindows.dll'
 ```
 
 校验通过时，`7z t` 输出应包含 `Everything is Ok`；主程序顶部“许可证”页面从 exe 同目录读取根 `LICENSE`。本流程生成的包根目录必须是 `Release\`，不要把 `dist\KswordARK-release-work\` 或其它临时目录打进包里。
@@ -153,7 +152,7 @@ py -3.12 tools\pdb_offset_generator\launcher_report_intake.py $reportDir --corpu
 
 工具会校验 SHA256 和 PE/RSDS 身份、下载精确 PDB，并生成 NTOS/NTKRLA57 偏移配置；collection-only 模块只保存 PE/PDB。Wine、非 amd64、无 RSDS 或校验和不匹配的报告不得进入正式矩阵。
 
-导入后运行 `ksword_profile_release_sync.py` 重新生成 `ark_dyndata_pack_v3.json` 和默认的 `ark_dyndata_pack_v4.json`，再运行 `Launcher/tools/generate_support_manifest.py` 更新支持清单。最后确认新 PDB GUID/Age 在清单中唯一且 `complete=true`，并构建 Launcher Release。重复导入应显示 `existing`。
+导入后运行 `ksword_profile_release_sync.py` 重新生成唯一发布矩阵 `ark_dyndata_pack_v4.json`，再运行 `Launcher/tools/generate_support_manifest.py` 更新支持清单。最后确认新 PDB GUID/Age 在清单中唯一且 `complete=true`，并构建 Launcher Release。重复导入应显示 `existing`。
 
 
 ## Phase -1 协作规范

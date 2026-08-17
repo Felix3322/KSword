@@ -3,9 +3,9 @@
 Ksword DynData pack / deep-offset 覆盖审计脚本。
 
 用途：
-- 只读检查主 GUI 随包携带的 ark_dyndata_pack_v3.json；
+- 只读检查主 GUI 随包携带的 ark_dyndata_pack_v4.json；
 - 只读检查 profiles/pdb_deep_offsets 里的 ntoskrnl / win32k 深度偏移库；
-- 验证 deep alias 字段是否已经进入 v3 pack 的 fields/items；
+- 验证 deep alias 字段是否已经进入 v4 pack 的 items；
 - 记录 win32k public PDB 是否已具备 tagWND/tagTHREADINFO 等私有 GUI 布局；
 - 输出 JSON 报告，帮助发布前确认程序不依赖 E 盘 PDB 缓存。
 
@@ -26,7 +26,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROFILE_ROOT = REPO_ROOT / "Ksword5.1" / "Ksword5.1" / "profiles"
-DEFAULT_PACK_PATH = DEFAULT_PROFILE_ROOT / "ark_dyndata_pack_v3.json"
+DEFAULT_PACK_PATH = DEFAULT_PROFILE_ROOT / "ark_dyndata_pack_v4.json"
 DEFAULT_MANIFEST_PATH = DEFAULT_PROFILE_ROOT / "ark_dyndata_manifest.json"
 DEFAULT_OUTPUT_PATH = Path(r"D:\Temp\ksword_pdb_deep_offsets\ksword_dyndata_pack_deep_audit.json")
 SYMBOL_CACHE_KEY_RE = re.compile(r"^(?P<guid>[0-9A-Fa-f]{32})(?P<age>[0-9A-Fa-f]+)$")
@@ -267,39 +267,29 @@ def deep_library_paths(manifest: dict[str, Any], manifest_path: Path) -> list[Pa
     return sorted(deep_directory.glob("*_deep_offsets.json"), key=lambda path: path.name.lower())
 
 
-def build_profile_view(profile: dict[str, Any], field_dictionary: list[str]) -> PackProfileView:
+def build_profile_view(profile: dict[str, Any]) -> PackProfileView:
     """把 compact pack profile 转成可审计集合。
 
     输入：
     - profile：pack 中的一条 profile。
-    - field_dictionary：pack 级字段字典。
     处理：
-    - fields 用索引还原为字段名；
-    - items 直接抽取 name。
+    - 直接从 v4 items 抽取 name。
     返回：
     - PackProfileView，供覆盖检查使用。
     """
-    field_names: set[str] = set()
-    for pair in profile.get("fields", []):
-        if not isinstance(pair, list) or len(pair) < 2:
-            continue
-        index = pair[0]
-        if isinstance(index, int) and 0 <= index < len(field_dictionary):
-            field_names.add(field_dictionary[index])
-
     item_names: set[str] = set()
     for item in profile.get("items", []):
         if isinstance(item, dict) and str(item.get("name", "")).strip():
             item_names.add(str(item["name"]).strip())
 
-    return PackProfileView(profile=profile, field_names=field_names, item_names=item_names)
+    return PackProfileView(profile=profile, field_names=set(), item_names=item_names)
 
 
 def find_matching_profiles(pack: dict[str, Any], deep_library: dict[str, Any], deep_path: Path) -> list[PackProfileMatch]:
     """查找与 deep 库 PDB identity 匹配的 pack profile。
 
     输入：
-    - pack：ark_dyndata_pack_v3.json 对象。
+    - pack：ark_dyndata_pack_v4.json 对象。
     - deep_library：单个 deep-offset JSON 对象。
     处理：
     - 优先使用 deep source.pdbGuid/pdbAge；
@@ -375,7 +365,7 @@ def required_status(view: PackProfileView, required_names: list[str]) -> dict[st
     - view：pack profile 归一化视图。
     - required_names：功能所需字段名。
     处理：
-    - 同时接受 fields 和 items 中的字段。
+    - 只接受 v4 items 中的字段。
     返回：
     - present/missing/ready 三元状态。
     """
@@ -407,11 +397,6 @@ def audit_deep_library(pack: dict[str, Any], deep_path: Path, deep_library: dict
     返回：
     - JSON 可序列化审计结果。
     """
-    field_dictionary = pack.get("fieldDictionary", [])
-    if not isinstance(field_dictionary, list):
-        field_dictionary = []
-    field_dictionary = [str(name) for name in field_dictionary]
-
     alias_rows = [
         row for row in deep_library.get("kswordAliasFields", [])
         if isinstance(row, dict) and str(row.get("kswordItemName", "")).strip()
@@ -423,7 +408,7 @@ def audit_deep_library(pack: dict[str, Any], deep_path: Path, deep_library: dict
     profile_reports: list[dict[str, Any]] = []
     for profile_match in matching_profiles:
         profile = profile_match.profile
-        view = build_profile_view(profile, field_dictionary)
+        view = build_profile_view(profile)
         combined_names = view.field_names | view.item_names
         missing_aliases = [name for name in alias_names if name not in combined_names]
         profile_reports.append({
@@ -579,7 +564,7 @@ def build_report(pack_path: Path, manifest_path: Path) -> dict[str, Any]:
     """构建完整审计报告。
 
     输入：
-    - pack_path：ark_dyndata_pack_v3.json。
+    - pack_path：ark_dyndata_pack_v4.json。
     - manifest_path：ark_dyndata_manifest.json。
     处理：
     - 读取 pack/manifest/deep libraries；
@@ -596,8 +581,18 @@ def build_report(pack_path: Path, manifest_path: Path) -> dict[str, Any]:
     incomplete: list[str] = []
     libraries: list[dict[str, Any]] = []
 
-    if int(pack.get("packVersion", 0) or 0) < 3:
-        errors.append("ark_dyndata_pack_v3.json packVersion is lower than 3.")
+    if int(pack.get("packVersion", 0) or 0) != 4:
+        errors.append("ark_dyndata_pack_v4.json packVersion must be 4.")
+    if "fieldDictionary" in pack:
+        errors.append("v4 pack must not contain fieldDictionary.")
+    legacy_keys = {"fields", "legacyItems", "callbackItems", "typedItems"}
+    legacy_key_profile_count = sum(
+        any(key in profile for key in legacy_keys)
+        for profile in pack.get("profiles", [])
+        if isinstance(profile, dict)
+    )
+    if legacy_key_profile_count:
+        errors.append(f"{legacy_key_profile_count} v4 profiles contain legacy offset mirrors.")
     if not deep_paths:
         errors.append("manifest has no deepOffsetLibraries entries.")
 
@@ -645,7 +640,7 @@ def build_report(pack_path: Path, manifest_path: Path) -> dict[str, Any]:
         "manifestPath": str(manifest_path),
         "packVersion": pack.get("packVersion"),
         "profileCount": len(pack.get("profiles", [])) if isinstance(pack.get("profiles"), list) else 0,
-        "fieldDictionaryCount": len(pack.get("fieldDictionary", [])) if isinstance(pack.get("fieldDictionary"), list) else 0,
+        "legacyKeyProfileCount": legacy_key_profile_count,
         "deepLibraryCount": len(libraries),
         "libraries": libraries,
         "errors": errors,
@@ -670,7 +665,7 @@ def main() -> int:
     - 0 表示审计文件写出；存在 errors 时返回 2。
     """
     parser = argparse.ArgumentParser(description="Audit Ksword DynData pack coverage against deep-offset libraries.")
-    parser.add_argument("--pack", default=str(DEFAULT_PACK_PATH), help="Path to ark_dyndata_pack_v3.json.")
+    parser.add_argument("--pack", default=str(DEFAULT_PACK_PATH), help="Path to ark_dyndata_pack_v4.json.")
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST_PATH), help="Path to ark_dyndata_manifest.json.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH), help="JSON report output path.")
     args = parser.parse_args()
@@ -682,7 +677,7 @@ def main() -> int:
 
     print(f"ok={report['ok']}")
     print(f"profileCount={report['profileCount']}")
-    print(f"fieldDictionaryCount={report['fieldDictionaryCount']}")
+    print(f"legacyKeyProfileCount={report['legacyKeyProfileCount']}")
     print(f"deepLibraryCount={report['deepLibraryCount']}")
     print(f"errors={len(report['errors'])}")
     print(f"warnings={len(report['warnings'])}")

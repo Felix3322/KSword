@@ -96,8 +96,8 @@ namespace process_detail_window_internal
 
         // findDynDataPackJsonPath 作用：
         // - 输入无；
-        // - 处理：优先从 deep offset 目录的父级 profiles 定位 ark_dyndata_pack_v3.json；
-        // - 返回：找到的 v3 pack 路径，找不到时返回空字符串。
+        // - 处理：优先从 deep offset 目录的父级 profiles 定位 ark_dyndata_pack_v4.json；
+        // - 返回：找到的 v4 pack 路径，找不到时返回空字符串。
         QString findDynDataPackJsonPath()
         {
             QStringList candidatePaths;
@@ -106,15 +106,15 @@ namespace process_detail_window_internal
             {
                 QDir profileDirectory(deepDirectoryText);
                 profileDirectory.cdUp();
-                candidatePaths.push_back(profileDirectory.filePath(QStringLiteral("ark_dyndata_pack_v3.json")));
+                candidatePaths.push_back(profileDirectory.filePath(QStringLiteral("ark_dyndata_pack_v4.json")));
             }
 
             const QString applicationDirectory = QCoreApplication::applicationDirPath();
             const QString currentDirectory = QDir::currentPath();
-            candidatePaths.push_back(QDir(applicationDirectory).filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-            candidatePaths.push_back(QDir(applicationDirectory).filePath(QStringLiteral("../profiles/ark_dyndata_pack_v3.json")));
-            candidatePaths.push_back(QDir(currentDirectory).filePath(QStringLiteral("profiles/ark_dyndata_pack_v3.json")));
-            candidatePaths.push_back(QDir(currentDirectory).filePath(QStringLiteral("Ksword5.1/Ksword5.1/profiles/ark_dyndata_pack_v3.json")));
+            candidatePaths.push_back(QDir(applicationDirectory).filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
+            candidatePaths.push_back(QDir(applicationDirectory).filePath(QStringLiteral("../profiles/ark_dyndata_pack_v4.json")));
+            candidatePaths.push_back(QDir(currentDirectory).filePath(QStringLiteral("profiles/ark_dyndata_pack_v4.json")));
+            candidatePaths.push_back(QDir(currentDirectory).filePath(QStringLiteral("Ksword5.1/Ksword5.1/profiles/ark_dyndata_pack_v4.json")));
 
             for (const QString& pathText : candidatePaths)
             {
@@ -730,7 +730,7 @@ namespace process_detail_window_internal
     {
         // 函数用途：
         // - 在 R3 侧给 deep PDB runtime sampler 加一层 identity 保险；
-        // - deep JSON 本身只知道 PDB GUID/Age，v3 pack 知道同一 PDB 对应的 PE TimeDateStamp/SizeOfImage；
+        // - deep JSON 本身只知道 PDB GUID/Age，v4 pack 知道同一 PDB 对应的 PE TimeDateStamp/SizeOfImage；
         // - 只有当前 R0 DynData 报告的 ntoskrnl identity 与 pack profile 完全一致时才允许采样。
         QStringList detailLines;
         detailLines << QStringLiteral("[PDB Deep Runtime Identity Guard]");
@@ -780,7 +780,7 @@ namespace process_detail_window_internal
         const QString packJsonPath = findDynDataPackJsonPath();
         if (packJsonPath.isEmpty())
         {
-            return finishWithDetail(false, QStringLiteral("未找到 profiles/ark_dyndata_pack_v3.json，无法把 PDB identity 映射到 PE identity。"));
+            return finishWithDetail(false, QStringLiteral("未找到 profiles/ark_dyndata_pack_v4.json，无法把 PDB identity 映射到 PE identity。"));
         }
 
         const QJsonObject packRootObject = readJsonObjectFromFile(packJsonPath, &parseDetail);
@@ -816,13 +816,13 @@ namespace process_detail_window_internal
             if (profileTimeDateStamp == timeDateStamp && profileSizeOfImage == sizeOfImage)
             {
                 detailLines << QStringLiteral("匹配 profile: %1").arg(profileName);
-                return finishWithDetail(true, QStringLiteral("deep JSON 的 PDB identity 与当前 ntoskrnl PE identity 经 v3 pack 校验一致。"));
+                return finishWithDetail(true, QStringLiteral("deep JSON 的 PDB identity 与当前 ntoskrnl PE identity 经 v4 pack 校验一致。"));
             }
         }
 
         if (candidateProfileLines.isEmpty())
         {
-            return finishWithDetail(false, QStringLiteral("v3 pack 中没有与 deep JSON PDB GUID/Age 对应的 profile。"));
+            return finishWithDetail(false, QStringLiteral("v4 pack 中没有与 deep JSON PDB GUID/Age 对应的 profile。"));
         }
 
         detailLines << QStringLiteral("同 PDB GUID/Age 的 pack profile 候选:");

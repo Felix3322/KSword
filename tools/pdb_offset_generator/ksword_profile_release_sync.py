@@ -12,17 +12,14 @@ Processing:
   R3 KernelDock loader and R0 packed profile apply protocol.
 - Reject profiles with missing module identity, no usable fields/items, unknown
   fields, or offsets outside the shared protocol range.
-- Validate optional callbackItems and v3 typed items without requiring them;
-  when present, items must use shared field names, allowed item kinds, and safe
-  uint32 payload ranges.
+- Validate the v4 item matrix and capability groups using shared names, stable
+  IDs, allowed item kinds, and safe uint32 payload ranges.
 - Deduplicate profiles by the R0 identity tuple used for safe apply:
   module class, machine, TimeDateStamp, and SizeOfImage.
 - Copy only accepted profile JSON files into Release\\profiles\\ark_dyndata
   when scattered JSON publishing is requested.
-- Optionally emit a compact Release\\profiles\\ark_dyndata_pack_v3.json or
-  Release\\profiles\\ark_dyndata_pack_v4.json pack. v3 carries typed
-  StructOffset and GlobalRva items plus coverage metadata; v4 adds stable
-  multi-module items and capability groups.
+- Emit one compact Release\\profiles\\ark_dyndata_pack_v4.json pack. Legacy
+  fields and typed-item mirrors are projected once and omitted from the pack.
 - Write a manifest outside the scanned JSON directory so KernelDock does not
   attempt to parse the manifest as a scattered runtime profile.
 
@@ -48,15 +45,13 @@ from typing import Any
 
 DEFAULT_SOURCE_DIR = Path(r"D:\PDB\profiles\ark_dyndata")
 DEFAULT_LOCAL_KERNEL = Path(r"C:\Windows\System32\ntoskrnl.exe")
-KSW_PACK_VERSION_V3 = 3
 KSW_PACK_VERSION_V4 = 4
 KSW_DEFAULT_PACK_VERSION = KSW_PACK_VERSION_V4
-KSW_SUPPORTED_PACK_VERSIONS = (KSW_PACK_VERSION_V3, KSW_PACK_VERSION_V4)
+# v4 is the only release format.
+KSW_SUPPORTED_PACK_VERSIONS = (KSW_PACK_VERSION_V4,)
 DEFAULT_PACK_FILE_NAMES = {
-    KSW_PACK_VERSION_V3: "ark_dyndata_pack_v3.json",
     KSW_PACK_VERSION_V4: "ark_dyndata_pack_v4.json",
 }
-# Kept for callers and docs that reference the default compact pack name.
 DEFAULT_PACK_FILE_NAME = DEFAULT_PACK_FILE_NAMES[KSW_DEFAULT_PACK_VERSION]
 KSW_DYN_PROFILE_OFFSET_MAX = 0x0000FFFF
 KSW_DYN_PROFILE_GLOBAL_RVA_MAX = 0x7FFFFFFF
@@ -71,7 +66,7 @@ CALLBACK_ITEM_KINDS = {CALLBACK_ITEM_KIND_GLOBAL_RVA, CALLBACK_ITEM_KIND_STRUCT_
 # These names mirror the KSW_DYN_FIELD_ID_CB_* field-id additions in
 # shared/driver/KswordArkDynDataIoctl.h. The numeric values are kept here as
 # validation evidence and to catch duplicate aliases that target the same shared
-# callback field ID before a bad v2 pack reaches R3/R0.
+# callback field ID before a bad source item reaches the v4 pack.
 CALLBACK_GLOBAL_RVA_FIELD_IDS = {
     "PspCreateProcessNotifyRoutine": 44,
     "PspCreateThreadNotifyRoutine": 45,
@@ -339,7 +334,7 @@ TYPED_TYPE_SIZE_FIELD_IDS = {
 # The generator historically emitted the concrete PDB member spelling
 # EntryItemList. The shared protocol field name is EntryList, so release sync
 # accepts the generator spelling as an input alias and writes the canonical name
-# to v2 packs.
+# to the canonical v4 item name.
 CALLBACK_NAME_ALIASES = {
     "_CALLBACK_ENTRY_ITEM.EntryItemList": "_CALLBACK_ENTRY_ITEM.EntryList",
 }
@@ -391,7 +386,9 @@ V4_FLTMGR_MINIFILTER_GROUP_ID = 3
 V4_CI_KERNEL_HASH_GROUP_ID = 4
 V4_WORK_QUEUE_GROUP_ID = 5
 V4_FIXED_CAPABILITY_GROUP_COUNTS = {
-    V4_TIMER_GROUP_ID: (17, 0),
+    # 1004/1006 were never consumed by the timer snapshot.  Keep their
+    # protocol IDs reserved, but do not generate them or count them here.
+    V4_TIMER_GROUP_ID: (15, 0),
     V4_FLTMGR_MINIFILTER_GROUP_ID: (1, 0),
     V4_CI_KERNEL_HASH_GROUP_ID: (5, 4),
     V4_WORK_QUEUE_GROUP_ID: (23, 0),
@@ -400,9 +397,9 @@ V4_SPECIAL_ITEM_IDS = {
     "EthActiveExWorker": 1001,
     "KprcbTimerTable": 1002,
     "KtimerTableTimerEntries": 1003,
-    "KtimerTableEntryLock": 1004,
+    # 1004 reserved: KtimerTableEntryLock had no runtime consumer.
     "KtimerTableEntryEntry": 1005,
-    "KtimerTableEntryTime": 1006,
+    # 1006 reserved: KtimerTableEntryTime had no runtime consumer.
     "KtimerTimerListEntry": 1007,
     "KtimerDueTime": 1008,
     "KtimerDpc": 1009,
@@ -449,6 +446,12 @@ V4_SPECIAL_ITEM_IDS = {
     "WqEthreadTcb": 1323,
 }
 V4_ITEM_IDS_BY_NAME = {**KNOWN_FIELD_IDS, **V4_SPECIAL_ITEM_IDS}
+V4_CORE_ITEM_IDS = {
+    **KNOWN_FIELD_IDS,
+    **GLOBAL_RVA_FIELD_IDS,
+    **CALLBACK_STRUCT_OFFSET_FIELD_IDS,
+    **TYPED_TYPE_SIZE_FIELD_IDS,
+}
 V4_SPECIAL_ITEM_GROUPS = {
     **{
         name: V4_TIMER_GROUP_ID
@@ -557,7 +560,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--local-kernel", default=str(DEFAULT_LOCAL_KERNEL), help="Optional ntoskrnl.exe path for match smoke test.")
     parser.add_argument("--dry-run", action="store_true", help="Validate and write reports without copying profiles.")
-    parser.add_argument("--clean-target", action="store_true", help="Delete stale *.json files from target before copying.")
+    parser.add_argument("--clean-target", action="store_true", help="Move stale scattered profiles to the temporary archive before copying.")
     parser.add_argument("--max-copy", type=int, default=0, help="Copy at most N accepted profiles; 0 means all.")
     parser.add_argument("--manifest", default="", help="Manifest path; defaults to <release-root>\\profiles\\ark_dyndata_manifest.json.")
     parser.add_argument("--report", default=str(Path(r"D:\PDB") / "logs" / "ark_dyndata_publish_report.json"), help="Detailed report JSON path.")
@@ -568,16 +571,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         choices=KSW_SUPPORTED_PACK_VERSIONS,
         default=KSW_DEFAULT_PACK_VERSION,
-        help=(
-            "Compact pack format version to emit when --emit-pack/--pack-only is used; "
-            "3 adds typed items, 4 adds stable multi-module items and capability groups. "
-            "Default: 4."
-        ),
+        help="Must be 4. v4 is the only published compact profile format.",
     )
     parser.add_argument(
         "--pack-output",
         default="",
-        help="Pack output path; defaults to <release-root>\\profiles\\ark_dyndata_pack_v<pack-version>.json.",
+        help="Pack output path; defaults to <release-root>\\profiles\\ark_dyndata_pack_v4.json.",
     )
     return parser.parse_args(argv)
 
@@ -764,6 +763,21 @@ def normalize_typed_item_name(name: str, kind: str) -> tuple[str, int] | None:
     return None
 
 
+def v4_kind_for_field_name(name: str) -> str | None:
+    """Return the v4 item kind for a legacy field name.
+
+    This is used only while ingesting older corpus JSON.  The emitted pack
+    always stores the resulting numeric v4 item once, with no legacy mirror.
+    """
+    if name in GLOBAL_RVA_FIELD_IDS:
+        return CALLBACK_ITEM_KIND_GLOBAL_RVA
+    if name in TYPED_TYPE_SIZE_FIELD_IDS:
+        return CALLBACK_ITEM_KIND_TYPE_SIZE
+    if name in TYPED_STRUCT_OFFSET_FIELD_IDS or name in CALLBACK_STRUCT_OFFSET_FIELD_IDS:
+        return CALLBACK_ITEM_KIND_STRUCT_OFFSET
+    return None
+
+
 def validate_callback_items(path: Path, data: dict[str, Any], state: ValidationState) -> list[dict[str, Any]] | None:
     """Validate optional callbackItems and return a compact normalized list.
 
@@ -867,7 +881,7 @@ def typed_items_from_data(data: dict[str, Any]) -> Any:
     Processing:
     - Accepts both items and typedItems so the release tool can read the compact
       pack spelling and the scattered-profile spelling.
-    - Prefers items when both are present because it is the v3 pack key.
+    - Prefers items when both are present because it is the newer source key.
 
     Return behavior:
     - Returns the raw JSON value for downstream validation.
@@ -981,6 +995,8 @@ def validate_v4_items(path: Path, data: dict[str, Any], state: ValidationState) 
 
         name = str(item.get("name", "")).strip()
         expected_item_id = V4_SPECIAL_ITEM_IDS.get(name)
+        if expected_item_id is None:
+            expected_item_id = V4_CORE_ITEM_IDS.get(name)
         item_id = parse_uint32(item.get("itemId"))
         if expected_item_id is None or item_id != expected_item_id or item_id == 0 or item_id in seen_item_ids:
             reject(state, path, f"v4_item_id_invalid:{name}:{item_id}")
@@ -992,10 +1008,16 @@ def validate_v4_items(path: Path, data: dict[str, Any], state: ValidationState) 
         group_id = parse_uint32(item.get("capabilityGroupId"))
         value = parse_uint32(item.get("value"))
         aux_values = [parse_uint32(item.get(f"aux{aux_index}", 0)) for aux_index in range(4)]
-        expected_group_id = V4_SPECIAL_ITEM_GROUPS.get(name)
+        expected_group_id = V4_SPECIAL_ITEM_GROUPS.get(name, V4_CORE_GROUP_ID if name in V4_CORE_ITEM_IDS else None)
         if item_kind is None or group_id != expected_group_id or value is None or any(aux is None for aux in aux_values):
             reject(state, path, f"v4_item_shape_invalid:{name}")
             return None
+
+        if name in V4_CORE_ITEM_IDS:
+            expected_kind = v4_kind_for_field_name(name)
+            if expected_kind is None or kind_name != expected_kind:
+                reject(state, path, f"v4_item_kind_invalid:{name}")
+                return None
 
         if kind_name == "StructOffset" and (value == 0xFFFFFFFF or value > KSW_DYN_PROFILE_OFFSET_MAX):
             reject(state, path, f"v4_struct_offset_invalid:{name}")
@@ -1326,35 +1348,15 @@ def module_class_id_from_text(module_class: str) -> int | None:
     return None
 
 
-def build_pack_field_dictionary(records: list[ProfileRecord]) -> tuple[list[str], dict[str, int]]:
-    """Build the compact field dictionary used by the profile pack.
-
-    Inputs:
-    - records: Final deduplicated profile records.
-
-    Processing:
-    - Collects every field name once and sorts them for deterministic output.
-    - Produces both the dictionary list and a name-to-index lookup table.
-
-    Return behavior:
-    - Returns (fieldDictionary, fieldIndexMap).
-    """
-    field_names = sorted({field_name for record in records for field_name in record.data.get("fields", {}).keys()})
-    field_index = {name: index for index, name in enumerate(field_names)}
-    return field_names, field_index
-
-
 def records_for_pack_version(records: list[ProfileRecord], pack_version: int) -> list[ProfileRecord]:
     """Return records representable by one compact pack format.
 
-    v3 can encode typed-only records, and v4 is the only format that can carry
-    v4-only module capability items.
+    v4 is the only publishable format.  A record is retained only when its
+    v4 item projection contains at least one complete capability/core item.
     """
     if pack_version not in KSW_SUPPORTED_PACK_VERSIONS:
         raise ValueError(f"unsupported pack version: {pack_version}")
-    if pack_version == KSW_PACK_VERSION_V3:
-        return [record for record in records if record.field_count > 0 or record.typed_items]
-    return [record for record in records if record.field_count > 0 or record.typed_items or record.v4_items]
+    return [record for record in records if build_pack_v4_items(record)]
 
 
 def build_pack_typed_items(record: ProfileRecord, pack_version: int) -> list[dict[str, Any]]:
@@ -1373,26 +1375,39 @@ def build_pack_typed_items(record: ProfileRecord, pack_version: int) -> list[dic
     Return behavior:
     - Returns a JSON-ready typed item list.
     """
-    if pack_version != KSW_PACK_VERSION_V3:
+    if pack_version != KSW_PACK_VERSION_V4:
         return []
     if record.typed_items:
         return [dict(item) for item in record.typed_items]
 
     typed_items: list[dict[str, Any]] = []
     for field_name, offset_value in sorted(record.data.get("fields", {}).items()):
-        if field_name not in TYPED_KERNEL_STRUCT_OFFSET_FIELD_IDS:
+        kind_name = v4_kind_for_field_name(str(field_name))
+        if kind_name is None:
             continue
-        typed_items.append({"name": field_name, "kind": CALLBACK_ITEM_KIND_STRUCT_OFFSET, "value": require_uint32(offset_value, f"{record.path}:{field_name}")})
+        typed_items.append({"name": field_name, "kind": kind_name, "value": require_uint32(offset_value, f"{record.path}:{field_name}")})
     for item in record.callback_items:
         typed_items.append(dict(item))
     return typed_items
 
 
 def build_pack_v4_items(record: ProfileRecord) -> list[dict[str, Any]]:
-    """Convert legacy typed items plus v4-only items to stable wire records."""
+    """Convert source items to the single stable v4 wire representation.
+
+    The source generator may still provide legacy-shaped fields while a local
+    corpus is being migrated.  They are projected once here and never copied
+    into the release pack, so the pack has no duplicate ``fields`` or
+    ``legacyItems`` payload.
+    """
     source_typed_items: list[dict[str, Any]] = []
     if record.identity.module_class in {"ntoskrnl", "ntkrla57"}:
-        source_typed_items = record.typed_items or build_pack_typed_items(record, KSW_PACK_VERSION_V3)
+        source_typed_items = record.typed_items or build_pack_typed_items(record, KSW_PACK_VERSION_V4)
+        if not source_typed_items:
+            for field_name, offset_value in record.data.get("fields", {}).items():
+                kind_name = v4_kind_for_field_name(str(field_name))
+                if kind_name is not None:
+                    source_typed_items.append({"name": field_name, "kind": kind_name, "value": offset_value})
+            source_typed_items.extend(record.callback_items)
     packed_items: list[dict[str, Any]] = []
     seen_item_ids: set[int] = set()
     for item in source_typed_items:
@@ -1442,7 +1457,28 @@ def build_pack_v4_items(record: ProfileRecord) -> list[dict[str, Any]]:
                 "aux3": int(item["aux3"]),
             }
         )
-    return sorted(packed_items, key=lambda item: int(item["itemId"]))
+    # A partially resolved special group is unusable at runtime.  Drop the
+    # whole group so the pack cannot advertise a capability that the R0
+    # contract will immediately reject.
+    present_groups: dict[int, tuple[int, int]] = {}
+    for item in packed_items:
+        group_id = int(item["capabilityGroupId"])
+        required, optional = present_groups.get(group_id, (0, 0))
+        if int(item["flags"]) & 1:
+            required += 1
+        else:
+            optional += 1
+        present_groups[group_id] = (required, optional)
+    complete_groups = {
+        group_id
+        for group_id, counts in present_groups.items()
+        if group_id not in V4_FIXED_CAPABILITY_GROUP_COUNTS
+        or counts == V4_FIXED_CAPABILITY_GROUP_COUNTS[group_id]
+    }
+    return sorted(
+        [item for item in packed_items if int(item["capabilityGroupId"]) in complete_groups],
+        key=lambda item: int(item["itemId"]),
+    )
 
 
 def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1475,7 +1511,7 @@ def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[st
     return groups
 
 
-def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int], pack_version: int) -> dict[str, Any]:
+def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int] | None = None, pack_version: int = KSW_PACK_VERSION_V4) -> dict[str, Any]:
     """Convert one validated profile record into a compact pack entry.
 
     Inputs:
@@ -1486,9 +1522,8 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
     Processing:
     - Normalizes module identity and PDB metadata to compact numeric/string
       values.
-    - Stores field payload as [fieldIndex, offset] pairs sorted by field index.
-    - For v3 packs, emits typed items using canonical shared protocol names and
-      compact integer values; v4 emits stable item packets and capability groups.
+    - Stores one numeric v4 item payload per resolved offset.
+    - Does not copy legacy fields, callbackItems, typedItems, or legacyItems.
 
     Return behavior:
     - Returns a JSON-serializable dictionary for the pack file.
@@ -1501,15 +1536,12 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
     if module_class is None:
         raise ValueError(f"unsupported module class for {record.path}")
 
-    fields = record.data.get("fields", {})
-    if not isinstance(fields, dict):
-        raise ValueError(f"invalid field set for {record.path}")
-
-    packed_fields: list[list[int]] = []
-    for field_name, offset_value in sorted(fields.items(), key=lambda item: field_index[item[0]]):
-        packed_fields.append([field_index[field_name], require_uint32(offset_value, f"{record.path}:{field_name}")])
-
     pdb_age = parse_uint32(module.get("pdbAge")) or 0
+    if pack_version != KSW_PACK_VERSION_V4:
+        raise ValueError("only v4 profile packs are supported")
+    v4_items = build_pack_v4_items(record)
+    if not v4_items:
+        raise ValueError(f"v4 item set is empty for {record.path}")
 
     profile_entry = {
         "moduleClassId": module_class,
@@ -1521,25 +1553,14 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
         "pdbGuid": str(module.get("pdbGuid", "")),
         "pdbAge": pdb_age,
         "sha256": str(module.get("sha256", "")).strip().lower(),
-        "fields": packed_fields,
+        "items": v4_items,
+        "capabilityGroups": build_pack_v4_capability_groups(v4_items),
+        "coveragePercent": record.coverage_percent,
+        "missingFields": record.missing_fields,
+        "missingGlobals": record.missing_globals,
     }
     if record.idt_baseline is not None:
         profile_entry["idtBaseline"] = record.idt_baseline
-    if pack_version == KSW_PACK_VERSION_V3:
-        profile_entry["items"] = build_pack_typed_items(record, pack_version)
-        profile_entry["coveragePercent"] = record.coverage_percent
-        profile_entry["missingFields"] = record.missing_fields
-        profile_entry["missingGlobals"] = record.missing_globals
-    elif pack_version == KSW_PACK_VERSION_V4:
-        v4_items = build_pack_v4_items(record)
-        if not v4_items:
-            raise ValueError(f"v4 item set is empty for {record.path}")
-        profile_entry["legacyItems"] = build_pack_typed_items(record, KSW_PACK_VERSION_V3)
-        profile_entry["items"] = v4_items
-        profile_entry["capabilityGroups"] = build_pack_v4_capability_groups(v4_items)
-        profile_entry["coveragePercent"] = record.coverage_percent
-        profile_entry["missingFields"] = record.missing_fields
-        profile_entry["missingGlobals"] = record.missing_globals
     return profile_entry
 
 
@@ -1551,10 +1572,9 @@ def build_profile_pack(records: list[ProfileRecord], pack_version: int) -> dict[
     - pack_version: Compact pack schema version selected by the caller.
 
     Processing:
-    - Creates a once-per-pack field dictionary.
-    - Converts each profile into a compact numeric identity plus field-index
-      tuples.
-    - Emits only the supported v3 or v4 payload shape.
+    - Converts each profile into a compact identity plus canonical v4 items and
+      complete capability groups.
+    - Omits every legacy offset mirror.
 
     Return behavior:
     - Returns a JSON-serializable pack dictionary.
@@ -1564,12 +1584,10 @@ def build_profile_pack(records: list[ProfileRecord], pack_version: int) -> dict[
     selected_records = records_for_pack_version(records, pack_version)
     if not selected_records:
         raise ValueError(f"no profiles are representable in pack version {pack_version}")
-    field_dictionary, field_index = build_pack_field_dictionary(selected_records)
     return {
         "schemaVersion": KSW_SCHEMA_VERSION,
         "packVersion": pack_version,
-        "fieldDictionary": field_dictionary,
-        "profiles": [build_pack_profile_entry(record, field_index, pack_version) for record in selected_records],
+        "profiles": [build_pack_profile_entry(record, pack_version=pack_version) for record in selected_records],
     }
 
 
@@ -1620,30 +1638,37 @@ def ensure_safe_target(target_dir: Path) -> None:
 
 
 def clean_scattered_profile_target(target_dir: Path, keep_names: set[str] | None = None) -> int:
-    """Delete stale scattered JSON profiles from the release profile directory.
+    """Move stale scattered JSON profiles to a recoverable temp archive.
 
     Inputs:
     - target_dir: Release\\profiles\\ark_dyndata destination.
 
     Processing:
-    - Verifies the expected directory suffix before deleting anything.
-    - Removes only direct child *.json files not named in keep_names; pack files
+    - Verifies the expected directory suffix before moving anything.
+    - Moves only direct child *.json files not named in keep_names; pack files
       and manifests live in the parent profiles directory and are never touched.
 
     Return behavior:
-    - Returns the number of JSON files removed.
+    - Returns the number of JSON files archived.
     """
     if not target_dir.exists():
         return 0
 
     ensure_safe_target(target_dir)
-    removed_count = 0
+    archive_root = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "Ksword5.1-stale-offsets" / time.strftime("%Y%m%d-%H%M%S")
+    archived_count = 0
     for stale_file in target_dir.glob("*.json"):
         if keep_names is not None and stale_file.name in keep_names:
             continue
-        stale_file.unlink()
-        removed_count += 1
-    return removed_count
+        archive_root.mkdir(parents=True, exist_ok=True)
+        destination = archive_root / stale_file.name
+        suffix = 1
+        while destination.exists():
+            destination = archive_root / f"{stale_file.stem}.{suffix}{stale_file.suffix}"
+            suffix += 1
+        shutil.move(str(stale_file), str(destination))
+        archived_count += 1
+    return archived_count
 
 
 def atomic_copy2(source_path: Path, destination: Path) -> None:
@@ -1733,12 +1758,10 @@ def build_manifest(
     """
     class_counts: dict[str, int] = {}
     local_match: dict[str, Any] | None = None
-    callback_item_count = 0
-    typed_item_count = 0
+    v4_item_count = 0
     for record in records:
         class_counts[record.identity.module_class] = class_counts.get(record.identity.module_class, 0) + 1
-        callback_item_count += len(record.callback_items)
-        typed_item_count += len(record.typed_items)
+        v4_item_count += len(build_pack_v4_items(record))
         if local_identity is not None and record.identity == local_identity:
             local_match = {"profile": str(record.path), "profileName": record.profile_name}
 
@@ -1746,28 +1769,21 @@ def build_manifest(
     manifest_pack_version = KSW_DEFAULT_PACK_VERSION
     if pack is not None:
         pack_profiles = pack.get("profiles", [])
-        pack_fields = pack.get("fieldDictionary", [])
-        pack_callback_item_count = 0
-        pack_typed_item_count = 0
+        pack_v4_item_count = 0
         if isinstance(pack_profiles, list):
             for profile in pack_profiles:
                 if not isinstance(profile, dict):
                     continue
-                callback_items = profile.get("callbackItems", [])
-                if isinstance(callback_items, list):
-                    pack_callback_item_count += len(callback_items)
-                typed_items = profile.get("items", [])
-                if isinstance(typed_items, list):
-                    pack_typed_item_count += len(typed_items)
+                items = profile.get("items", [])
+                if isinstance(items, list):
+                    pack_v4_item_count += len(items)
         manifest_pack_version = parse_uint32(pack.get("packVersion")) or KSW_DEFAULT_PACK_VERSION
         pack_summary = {
             "path": str(pack_path) if pack_path is not None else None,
             "schemaVersion": pack.get("schemaVersion"),
             "packVersion": pack.get("packVersion"),
             "profileCount": len(pack_profiles) if isinstance(pack_profiles, list) else 0,
-            "fieldDictionaryCount": len(pack_fields) if isinstance(pack_fields, list) else 0,
-            "callbackItemCount": pack_callback_item_count,
-            "typedItemCount": pack_typed_item_count,
+            "v4ItemCount": pack_v4_item_count,
         }
 
     manifest = {
@@ -1777,8 +1793,7 @@ def build_manifest(
         "publishMode": "pack-only" if pack_only else ("pack-and-json" if pack is not None else "json"),
         "acceptedBeforeDedup": len(state.accepted),
         "publishedProfiles": len(records),
-        "callbackItemCount": callback_item_count,
-        "typedItemCount": typed_item_count,
+        "v4ItemCount": v4_item_count,
         "copiedProfiles": len(copied),
         "removedScatteredProfiles": removed_scattered_profiles,
         "rejectedProfiles": len(state.rejected),
@@ -1797,8 +1812,7 @@ def build_manifest(
                 "profileName": record.profile_name,
                 "identity": record.identity.__dict__,
                 "fieldCount": record.field_count,
-                "callbackItemCount": len(record.callback_items),
-                "typedItemCount": len(record.typed_items),
+                "v4ItemCount": len(build_pack_v4_items(record)),
                 "missingFields": record.missing_fields,
                 "missingGlobals": record.missing_globals,
                 "coveragePercent": record.coverage_percent,
@@ -1874,7 +1888,7 @@ def main(argv: list[str] | None = None) -> int:
         if record is not None:
             state.accepted.append(record)
 
-    final_records = deduplicate_profiles(state)
+    final_records = records_for_pack_version(deduplicate_profiles(state), KSW_PACK_VERSION_V4)
     local_identity = parse_pe_identity(Path(args.local_kernel)) if args.local_kernel else None
     if not final_records:
         print("no publishable profiles remain after validation", file=sys.stderr)
@@ -1923,8 +1937,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"sourceProfiles={len(list(source_dir.glob('*.json')))}")
     print(f"acceptedBeforeDedup={len(state.accepted)}")
     print(f"publishedProfiles={len(final_records)}")
-    print(f"callbackItems={report_manifest['callbackItemCount']}")
-    print(f"typedItems={report_manifest['typedItemCount']}")
+    print(f"v4Items={report_manifest['v4ItemCount']}")
     print(f"rejectedProfiles={len(state.rejected)}")
     print(f"duplicateGroups={len(state.duplicate_groups)}")
     print(f"copiedProfiles={len(copied)}")

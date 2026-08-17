@@ -5194,7 +5194,7 @@ void KernelPage::ExecuteSelectedAction(const KernelActionId actionId) {
         requireSelectedRow = false;
         confirmTitle = L"DynData Profile 应用";
         confirmText =
-            L"将查询当前 R0 ntoskrnl identity，在本地 profiles\\ark_dyndata_pack_v*.json 中寻找精确匹配，"
+            L"将查询当前 R0 ntoskrnl identity，在本地 profiles\\ark_dyndata_pack_v4.json 中寻找精确匹配，"
             L"然后通过 ArkDriverClient 调用 applyDynDataProfile/Ex 写入驱动 DynData 状态。\n\n"
             L"该操作会改变 R0 DynData 字段来源，影响后续内核枚举、CrossView、回调和 DriverObject 解析。是否继续？";
         break;

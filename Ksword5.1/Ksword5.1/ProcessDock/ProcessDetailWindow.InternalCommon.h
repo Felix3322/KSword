@@ -218,7 +218,7 @@ namespace process_detail_window_internal
 
     // pdbRuntimeCatalogMatchesKernelIdentity 作用：
     // - 输入当前 R0 DynData 报告的 ntoskrnl TimeDateStamp/SizeOfImage；
-    // - 处理时用 deep JSON 的 PDB GUID/Age 反查本地 v3 pack profile，再比较 PE identity；
+    // - 处理时用 deep JSON 的 PDB GUID/Age 反查本地 v4 pack profile，再比较 PE identity；
     // - 返回 true 表示 deep offset 可用于本机 runtime sampler，false 时 detailTextOut 写明跳过原因。
     bool pdbRuntimeCatalogMatchesKernelIdentity(
         std::uint32_t timeDateStamp,

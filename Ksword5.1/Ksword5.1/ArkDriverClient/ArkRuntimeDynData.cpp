@@ -2399,7 +2399,7 @@ namespace ksword::ark
                 switch (groupId)
                 {
                 case KSW_DYN_V4_CAPABILITY_GROUP_TIMER_DPC:
-                    group.requiredItemCount = 17U;
+                    group.requiredItemCount = 15U;
                     group.optionalItemCount = 0U;
                     break;
                 case KSW_DYN_V4_CAPABILITY_GROUP_FLTMGR_MINIFILTER:

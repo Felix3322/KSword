@@ -896,9 +896,7 @@ Return Value:
         switch (item->itemId) {
         case KSW_DYN_V4_ITEM_ID_KPRCB_TIMER_TABLE: destination = &LayoutOut->KprcbTimerTable; break;
         case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_TIMER_ENTRIES: destination = &LayoutOut->TimerTableTimerEntries; break;
-        case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_LOCK: destination = &LayoutOut->TimerTableEntryLock; break;
         case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_ENTRY: destination = &LayoutOut->TimerTableEntryEntry; break;
-        case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_TIME: destination = &LayoutOut->TimerTableEntryTime; break;
         case KSW_DYN_V4_ITEM_ID_KTIMER_TIMER_LIST_ENTRY: destination = &LayoutOut->TimerTimerListEntry; break;
         case KSW_DYN_V4_ITEM_ID_KTIMER_DUE_TIME: destination = &LayoutOut->TimerDueTime; break;
         case KSW_DYN_V4_ITEM_ID_KTIMER_DPC: destination = &LayoutOut->TimerDpc; break;
@@ -933,7 +931,9 @@ Return Value:
     }
     KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
-    return (foundCount == 16UL) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+    // The v4 timer contract contains fourteen consumed layout values.  The
+    // reserved Lock/Time IDs are intentionally absent from new profiles.
+    return (foundCount == 14UL) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS
