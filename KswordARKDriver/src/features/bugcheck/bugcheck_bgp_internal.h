@@ -100,6 +100,7 @@ typedef struct _KSWORD_ARK_BGP_CONTEXT
     ULONG ProbeBpp;
     volatile LONG Stage;
     volatile LONG DrawStarted;
+    volatile LONG ResourceUpdateActive;
     volatile LONG LockHeld;
     volatile LONG DrawStageStarted;
     volatile LONG64 DrawCount;

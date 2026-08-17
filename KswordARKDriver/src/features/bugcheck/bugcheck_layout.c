@@ -13,7 +13,6 @@ Abstract:
 --*/
 
 #include "bugcheck_layout.h"
-#include "bugcheck_layout_detailed.h"
 
 #include <ntstrsafe.h>
 #include <stdarg.h>
@@ -67,9 +66,12 @@ KswordARKBugcheckLayoutIsDetailed(
     _In_ ULONG Height
     )
 {
-    // The wide 720-line mode matches the information-dense design safely.
-    return Width >= KSWORD_ARK_BUGCHECK_LAYOUT_DETAILED_WIDTH &&
-        Height >= KSWORD_ARK_BUGCHECK_LAYOUT_DETAILED_HEIGHT;
+    // Keep one predictable two-column information hierarchy on physical 2K
+    // displays as well as virtual crash modes.  The legacy dense renderer
+    // remains compiled for reference but is no longer selected.
+    UNREFERENCED_PARAMETER(Width);
+    UNREFERENCED_PARAMETER(Height);
+    return FALSE;
 }
 
 BOOLEAN
@@ -215,6 +217,36 @@ KswordARKBugcheckLayoutWriteFrame(
         Frame);
 }
 
+static BOOLEAN
+KswordARKBugcheckLayoutWriteVerdict(
+    _Inout_ KSWORD_ARK_BUGCHECK_LAYOUT_WRITER* Writer,
+    _In_ LONG X,
+    _In_ LONG Y,
+    _In_ ULONG Classification
+    )
+{
+    NTSTATUS status;
+
+    if (Writer == NULL || !NT_SUCCESS(Writer->Status) ||
+        Writer->Canvas->DrawVerdict == NULL) {
+        return FALSE;
+    }
+    status = Writer->Canvas->DrawVerdict(
+        Writer->Canvas->Context,
+        Writer->OriginX + X,
+        Y,
+        Classification);
+    if (NT_SUCCESS(status)) {
+        return TRUE;
+    }
+    if (status != STATUS_NOT_FOUND &&
+        status != STATUS_DEVICE_NOT_READY &&
+        status != STATUS_DEVICE_BUSY) {
+        Writer->Status = status;
+    }
+    return FALSE;
+}
+
 static PCSTR
 KswordARKBugcheckLayoutModuleText(
     _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics
@@ -245,6 +277,57 @@ KswordARKBugcheckLayoutSummaryText(
     }
 }
 
+static PCSTR
+KswordARKBugcheckLayoutHumanCauseText(
+    _In_ ULONG BugCheckCode
+    )
+{
+    switch (BugCheckCode) {
+    case 0x0000000A:
+        return "KERNEL CODE ACCESSED INVALID MEMORY AT HIGH IRQL.";
+    case 0x000000D1:
+        return "A DRIVER ACCESSED INVALID MEMORY AT HIGH IRQL.";
+    case 0x0000001E:
+    case 0x0000003B:
+    case 0x0000007E:
+        return "A KERNEL EXCEPTION WAS NOT HANDLED.";
+    case 0x00000050:
+        return "KERNEL CODE ACCESSED AN INVALID MEMORY PAGE.";
+    case 0x000000BE:
+        return "KERNEL CODE TRIED TO WRITE PROTECTED MEMORY.";
+    case 0x0000009F:
+        return "A DRIVER DID NOT COMPLETE A POWER TRANSITION.";
+    case 0x000000EF:
+        return "A WINDOWS CRITICAL PROCESS TERMINATED.";
+    case 0x00000116:
+    case 0x00000117:
+        return "THE DISPLAY DRIVER OR GPU STOPPED RESPONDING.";
+    case 0x00000124:
+        return "HARDWARE REPORTED AN UNRECOVERABLE ERROR.";
+    case 0x00000133:
+        return "A DPC OR INTERRUPT HANDLER TOOK TOO LONG.";
+    default:
+        return "WINDOWS STOPPED TO PROTECT SYSTEM DATA.";
+    }
+}
+
+static PCSTR
+KswordARKBugcheckLayoutFallbackVerdictText(
+    _In_ ULONG Classification
+    )
+{
+    switch (Classification) {
+    case KSWORD_ARK_BUGCHECK_MODULE_OURS:
+        return "KSWORDARK MAY BE RESPONSIBLE.";
+    case KSWORD_ARK_BUGCHECK_MODULE_MICROSOFT:
+        return "MICROSOFT CODE MAY BE RESPONSIBLE.";
+    case KSWORD_ARK_BUGCHECK_MODULE_THIRD_PARTY:
+        return "A THIRD-PARTY DRIVER MAY BE RESPONSIBLE.";
+    default:
+        return "THE RESPONSIBLE COMPONENT IS UNKNOWN.";
+    }
+}
+
 static VOID
 KswordARKBugcheckLayoutWriteHeader(
     _Inout_ KSWORD_ARK_BUGCHECK_LAYOUT_WRITER* Writer,
@@ -252,40 +335,48 @@ KswordARKBugcheckLayoutWriteHeader(
     _In_ BOOLEAN Compact
     )
 {
-    if (Compact) {
-        KswordARKBugcheckLayoutWriteFormatted(
-            Writer, 280L, 18L, KswordArkBugcheckLayoutColorAccent, 37UL,
-            "KSWORD ARK CRASH DIAGNOSTICS");
-        KswordARKBugcheckLayoutWriteFormatted(
-            Writer, 280L, 40L, KswordArkBugcheckLayoutColorText, 37UL,
-            "A FATAL KERNEL ERROR OCCURRED.");
-        KswordARKBugcheckLayoutWriteFormatted(
-            Writer, 280L, 56L, KswordArkBugcheckLayoutColorMuted, 37UL,
-            "CRASH CONTEXT CAPTURED.");
-        KswordARKBugcheckLayoutWriteFormatted(
-            Writer, 280L, 72L, KswordArkBugcheckLayoutColorMuted, 37UL,
-            "PRESERVE THE NEWEST DUMP.");
-        return;
-    }
-
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 280L, 18L, KswordArkBugcheckLayoutColorAccent, 50UL,
+        Writer, 280L, 18L, KswordArkBugcheckLayoutColorAccent,
+        Compact ? 37UL : 42UL,
         "KSWORD ARK CRASH DIAGNOSTICS");
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 280L, 40L, KswordArkBugcheckLayoutColorText, 58UL,
-        "A FATAL KERNEL ERROR HAS OCCURRED.");
+        Writer, 280L, 42L, KswordArkBugcheckLayoutColorText,
+        Compact ? 37UL : 42UL,
+        "A FATAL KERNEL ERROR OCCURRED.");
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 280L, 56L, KswordArkBugcheckLayoutColorMuted, 58UL,
-        "THE SYSTEM HAS STOPPED TO PROTECT DATA.");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 280L, 72L, KswordArkBugcheckLayoutColorMuted, 58UL,
-        "THIS SCREEN PRESERVES THE CRASH CONTEXT.");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 880L, 20L, KswordArkBugcheckLayoutColorText, 14UL,
-        "CRASH CPU %02lu", Diagnostics->Cpu);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 880L, 42L, KswordArkBugcheckLayoutColorMuted, 14UL,
-        "IRQL %lu", Diagnostics->Irql);
+        Writer, 280L, 60L, KswordArkBugcheckLayoutColorMuted,
+        Compact ? 37UL : 42UL,
+        "PRESERVE THE NEWEST MINIDUMP.");
+
+    if (!KswordARKBugcheckLayoutWriteVerdict(
+            Writer,
+            Compact ? 304L : 688L,
+            Compact ? 94L : 12L,
+            Diagnostics->CandidateClass)) {
+        LONG verdictX;
+        LONG verdictY;
+        ULONG maximumCharacters;
+
+        verdictX = Compact ? 304L : 688L;
+        verdictY = Compact ? 94L : 20L;
+        maximumCharacters = Compact ? 35UL : 34UL;
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer,
+            verdictX,
+            verdictY,
+            KswordArkBugcheckLayoutColorWarning,
+            maximumCharacters,
+            "%s",
+            KswordARKBugcheckLayoutFallbackVerdictText(
+                Diagnostics->CandidateClass));
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer,
+            verdictX,
+            verdictY + 20L,
+            KswordArkBugcheckLayoutColorText,
+            maximumCharacters,
+            "SEND THE MINIDUMP OR A PHOTO.");
+    }
 }
 
 static VOID
@@ -298,101 +389,56 @@ KswordARKBugcheckLayoutDrawCompact(
 {
     PCSTR moduleText;
 
+    UNREFERENCED_PARAMETER(CallbackMask);
+    UNREFERENCED_PARAMETER(ModuleCount);
     moduleText = KswordARKBugcheckLayoutModuleText(Diagnostics);
     KswordARKBugcheckLayoutWriteFrame(
-        Writer, 16L, 110L, KswordArkBugcheckLayoutFrameCompactColumn);
+        Writer, 16L, 292L, KswordArkBugcheckLayoutFrameCompactColumn);
     KswordARKBugcheckLayoutWriteFrame(
-        Writer, 328L, 110L, KswordArkBugcheckLayoutFrameCompactColumn);
-    KswordARKBugcheckLayoutWriteFrame(
-        Writer, 16L, 292L, KswordArkBugcheckLayoutFrameCompactWide);
+        Writer, 328L, 292L, KswordArkBugcheckLayoutFrameCompactColumn);
 
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 120L, KswordArkBugcheckLayoutColorMuted, 29UL,
-        "BUGCHECK");
+        Writer, 28L, 302L, KswordArkBugcheckLayoutColorMuted, 29UL,
+        "STOP  0x%08lX", Diagnostics->BugCheckCode);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 138L, KswordArkBugcheckLayoutColorAccent, 29UL,
+        Writer, 28L, 320L, KswordArkBugcheckLayoutColorAccent, 29UL,
         "%s", KswordARKBugcheckName(Diagnostics->BugCheckCode));
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 152L, KswordArkBugcheckLayoutColorText, 29UL,
-        "CODE  0x%08lX", Diagnostics->BugCheckCode);
+        Writer, 28L, 338L, KswordArkBugcheckLayoutColorText, 29UL,
+        "PARAM1  0x%p", (PVOID)Diagnostics->Parameter1);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 166L, KswordArkBugcheckLayoutColorText, 29UL,
-        "ARG1  0x%p", (PVOID)Diagnostics->Parameter1);
+        Writer, 28L, 354L, KswordArkBugcheckLayoutColorText, 29UL,
+        "PARAM2  0x%p", (PVOID)Diagnostics->Parameter2);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 180L, KswordArkBugcheckLayoutColorText, 29UL,
-        "ARG2  0x%p", (PVOID)Diagnostics->Parameter2);
+        Writer, 28L, 370L, KswordArkBugcheckLayoutColorText, 29UL,
+        "PARAM3  0x%p", (PVOID)Diagnostics->Parameter3);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 194L, KswordArkBugcheckLayoutColorText, 29UL,
-        "ARG3  0x%p", (PVOID)Diagnostics->Parameter3);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 208L, KswordArkBugcheckLayoutColorText, 29UL,
-        "ARG4  0x%p", (PVOID)Diagnostics->Parameter4);
+        Writer, 28L, 386L, KswordArkBugcheckLayoutColorText, 29UL,
+        "PARAM4  0x%p", (PVOID)Diagnostics->Parameter4);
 
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 120L, KswordArkBugcheckLayoutColorMuted, 29UL,
-        "FAULT CONTEXT");
+        Writer, 340L, 302L, KswordArkBugcheckLayoutColorMuted, 29UL,
+        "LIKELY CAUSE");
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 138L, KswordArkBugcheckLayoutColorAccent, 29UL,
-        "IP    0x%p", (PVOID)Diagnostics->FaultAddress);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 152L, KswordArkBugcheckLayoutColorText, 29UL,
-        "PARAM %lu  %s",
-        Diagnostics->FaultParameter,
-        Diagnostics->FaultMeaning);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 166L, KswordArkBugcheckLayoutColorText, 29UL,
-        "CPU %lu   IRQL %lu", Diagnostics->Cpu, Diagnostics->Irql);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 180L, KswordArkBugcheckLayoutColorText, 29UL,
-        "MODULE  %s", moduleText);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 194L, KswordArkBugcheckLayoutColorText, 29UL,
-        "CLASS   %s",
-        KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass));
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 208L, KswordArkBugcheckLayoutColorText, 29UL,
-        "CONF    %s",
-        KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
-
-    // The 228..284 band remains empty for Windows dump progress text.
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 302L, KswordArkBugcheckLayoutColorMuted, 32UL,
-        "FAULTING MODULE");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 320L, KswordArkBugcheckLayoutColorAccent, 32UL,
+        Writer, 340L, 320L, KswordArkBugcheckLayoutColorAccent, 29UL,
         "%s", moduleText);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 336L, KswordArkBugcheckLayoutColorText, 32UL,
-        "BASE  0x%p", (PVOID)Diagnostics->CandidateModuleBase);
+        Writer, 340L, 338L, KswordArkBugcheckLayoutColorText, 29UL,
+        "%s / %s",
+        KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass),
+        KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 352L, KswordArkBugcheckLayoutColorText, 32UL,
-        "SIZE  0x%08lX", Diagnostics->CandidateModuleSize);
+        Writer, 340L, 354L, KswordArkBugcheckLayoutColorText, 29UL,
+        "FAULT IP  0x%p", (PVOID)Diagnostics->FaultAddress);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 368L, KswordArkBugcheckLayoutColorText, 32UL,
-        "OFF   0x%p", (PVOID)Diagnostics->CandidateModuleOffset);
+        Writer, 340L, 370L, KswordArkBugcheckLayoutColorText, 29UL,
+        "MODULE OFFSET  0x%p",
+        (PVOID)Diagnostics->CandidateModuleOffset);
     KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 384L, KswordArkBugcheckLayoutColorText, 32UL,
-        "ADDR  0x%p", (PVOID)Diagnostics->CandidateAddress);
+        Writer, 340L, 386L, KswordArkBugcheckLayoutColorWarning, 29UL,
+        "KEEP THE NEWEST MINIDUMP");
 
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 302L, KswordArkBugcheckLayoutColorMuted, 30UL,
-        "DUMP STATUS");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 320L, KswordArkBugcheckLayoutColorAccent, 30UL,
-        "STAGE  %s", KswordARKBugcheckDumpTypeText(Diagnostics->LastDumpType));
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 336L, KswordArkBugcheckLayoutColorText, 30UL,
-        "REASON %s", KswordARKBugcheckReasonText(Diagnostics->LastReason));
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 352L, KswordArkBugcheckLayoutColorText, 30UL,
-        "CALLBACKS 0x%02lX", CallbackMask & 0x0FUL);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 368L, KswordArkBugcheckLayoutColorText, 30UL,
-        "MODULES   %lu", ModuleCount);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 340L, 384L, KswordArkBugcheckLayoutColorText, 30UL,
-        "ACTION  PRESERVE NEWEST DUMP");
-
+    // The 228..284 band remains empty for Windows dump progress text.
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 16L, 442L, KswordArkBugcheckLayoutColorMuted, 68UL,
         "WINDOWS IS WRITING THE CRASH DUMP. DO NOT POWER OFF.");
@@ -406,6 +452,117 @@ KswordARKBugcheckLayoutDrawFull(
     _In_ ULONG ModuleCount
     )
 {
+    PCSTR usefulModuleText;
+
+    UNREFERENCED_PARAMETER(CallbackMask);
+    UNREFERENCED_PARAMETER(ModuleCount);
+    usefulModuleText = KswordARKBugcheckLayoutModuleText(Diagnostics);
+
+    KswordARKBugcheckLayoutWriteFrame(
+        Writer, 16L, 156L, KswordArkBugcheckLayoutFrameFullBottomLeft);
+    KswordARKBugcheckLayoutWriteFrame(
+        Writer, 508L, 156L, KswordArkBugcheckLayoutFrameFullBottomRight);
+    KswordARKBugcheckLayoutWriteFrame(
+        Writer, 16L, 348L, KswordArkBugcheckLayoutFrameFullBottomLeft);
+    KswordARKBugcheckLayoutWriteFrame(
+        Writer, 508L, 348L, KswordArkBugcheckLayoutFrameFullBottomRight);
+
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 168L, KswordArkBugcheckLayoutColorMuted, 50UL,
+        "WHAT HAPPENED");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 190L, KswordArkBugcheckLayoutColorAccent, 50UL,
+        "%s", KswordARKBugcheckName(Diagnostics->BugCheckCode));
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 210L, KswordArkBugcheckLayoutColorAccent, 50UL,
+        "STOP CODE  0x%08lX", Diagnostics->BugCheckCode);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 236L, KswordArkBugcheckLayoutColorText, 50UL,
+        "%s", KswordARKBugcheckLayoutHumanCauseText(
+            Diagnostics->BugCheckCode));
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 264L, KswordArkBugcheckLayoutColorText, 50UL,
+        "CRASH CPU / IRQL  %lu / %lu",
+        Diagnostics->Cpu,
+        Diagnostics->Irql);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 290L, KswordArkBugcheckLayoutColorMuted, 50UL,
+        "WINDOWS STOPPED TO PROTECT SYSTEM DATA.");
+
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 168L, KswordArkBugcheckLayoutColorMuted, 52UL,
+        "LIKELY CAUSE");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 190L, KswordArkBugcheckLayoutColorAccent, 52UL,
+        "%s", usefulModuleText);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 210L, KswordArkBugcheckLayoutColorText, 52UL,
+        "CLASS / CONFIDENCE  %s / %s",
+        KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass),
+        KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 236L, KswordArkBugcheckLayoutColorText, 52UL,
+        "FAULT ADDRESS  0x%p", (PVOID)Diagnostics->FaultAddress);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 256L, KswordArkBugcheckLayoutColorText, 52UL,
+        "MODULE OFFSET  %s+0x%p",
+        usefulModuleText,
+        (PVOID)Diagnostics->CandidateModuleOffset);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 276L, KswordArkBugcheckLayoutColorText, 52UL,
+        "SOURCE PARAM%lu  %s",
+        Diagnostics->CandidateParameter,
+        Diagnostics->CandidateSource);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 296L, KswordArkBugcheckLayoutColorMuted, 52UL,
+        "THE DUMP PROVIDES THE FINAL ATTRIBUTION.");
+
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 360L, KswordArkBugcheckLayoutColorMuted, 50UL,
+        "RAW CRASH PARAMETERS");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 384L, KswordArkBugcheckLayoutColorText, 50UL,
+        "PARAM1  0x%p", (PVOID)Diagnostics->Parameter1);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 404L, KswordArkBugcheckLayoutColorText, 50UL,
+        "PARAM2  0x%p", (PVOID)Diagnostics->Parameter2);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 424L, KswordArkBugcheckLayoutColorText, 50UL,
+        "PARAM3  0x%p", (PVOID)Diagnostics->Parameter3);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 444L, KswordArkBugcheckLayoutColorText, 50UL,
+        "PARAM4  0x%p", (PVOID)Diagnostics->Parameter4);
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 28L, 470L, KswordArkBugcheckLayoutColorMuted, 50UL,
+        "FAULT VALUE SOURCE  PARAM%lu  %s",
+        Diagnostics->FaultParameter,
+        Diagnostics->FaultMeaning);
+
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 360L, KswordArkBugcheckLayoutColorMuted, 52UL,
+        "WHAT TO DO NEXT");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 384L, KswordArkBugcheckLayoutColorAccent, 52UL,
+        "> KEEP THE NEWEST MINIDUMP.");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 406L, KswordArkBugcheckLayoutColorText, 52UL,
+        "> SEND THE MINIDUMP OR A PHOTO OF THIS PAGE.");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 428L, KswordArkBugcheckLayoutColorText, 52UL,
+        "> REVIEW RECENT DRIVER OR HARDWARE CHANGES.");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 450L, KswordArkBugcheckLayoutColorWarning, 52UL,
+        "> DO NOT POWER OFF WHILE WINDOWS WRITES THE DUMP.");
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 520L, 478L, KswordArkBugcheckLayoutColorMuted, 52UL,
+        "DUMP CREATION IS MANAGED BY WINDOWS.");
+
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer, 16L, 724L, KswordArkBugcheckLayoutColorMuted, 80UL,
+        "WAITING FOR WINDOWS TO COMPLETE THE CRASH DUMP. DO NOT POWER OFF.");
+    return;
+
+#if 0
     PCSTR moduleText;
 
     moduleText = KswordARKBugcheckLayoutModuleText(Diagnostics);
@@ -611,6 +768,7 @@ KswordARKBugcheckLayoutDrawFull(
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 16L, 724L, KswordArkBugcheckLayoutColorMuted, 80UL,
         "WAITING FOR WINDOWS TO COMPLETE THE CRASH DUMP. DO NOT POWER OFF.");
+#endif
 }
 
 NTSTATUS
@@ -623,7 +781,6 @@ KswordARKBugcheckLayoutDraw(
 {
     KSWORD_ARK_BUGCHECK_LAYOUT_WRITER writer;
     BOOLEAN compact;
-    BOOLEAN detailed;
 
     if (Canvas == NULL || Diagnostics == NULL ||
         Canvas->DrawText == NULL || Canvas->DrawFrame == NULL ||
@@ -638,18 +795,7 @@ KswordARKBugcheckLayoutDraw(
         Canvas->Width,
         Canvas->Height);
     writer.Status = STATUS_SUCCESS;
-    detailed = KswordARKBugcheckLayoutIsDetailed(
-        Canvas->Width,
-        Canvas->Height);
     compact = KswordARKBugcheckLayoutIsCompact(Canvas->Width, Canvas->Height);
-
-    if (detailed) {
-        return KswordARKBugcheckLayoutDrawDetailed(
-            Canvas,
-            Diagnostics,
-            CallbackMask,
-            ModuleCount);
-    }
     KswordARKBugcheckLayoutWriteHeader(&writer, Diagnostics, compact);
     if (compact) {
         KswordARKBugcheckLayoutDrawCompact(

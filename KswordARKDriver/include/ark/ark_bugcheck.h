@@ -32,6 +32,15 @@ KswordARKBugcheckIoctlSetBitmap(
     _Out_ size_t* BytesReturned
     );
 
+NTSTATUS
+KswordARKBugcheckIoctlSetVerdictResources(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
 
 // Initialize and tear down the independent one-shot BugCheck delay guard.
 // HVCI systems use a delay-only callback; other systems may use the exported

@@ -757,6 +757,18 @@ KswordARKBugcheckBgpBeginDraw(
     if (InterlockedCompareExchange(&g_KswordArkBgp.DrawStarted, 1, 0) != 0) {
         return STATUS_DEVICE_BUSY;
     }
+    KeMemoryBarrier();
+    if (InterlockedCompareExchange(
+            &g_KswordArkBgp.ResourceUpdateActive,
+            0,
+            0) != 0) {
+        status = STATUS_DEVICE_BUSY;
+        InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
+        KswordARKBugcheckBgpRecordStage(
+            (LONG)(KswordArkBgpStageRejected | 4UL),
+            status);
+        return status;
+    }
 
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageCallbackEntered,

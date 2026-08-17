@@ -57,6 +57,110 @@ namespace ksword::ark
             nullptr,
             0);
     }
+
+    IoResult DriverClient::setBugcheckVerdictResources(
+        const std::vector<BugcheckVerdictBitmap>& resources) const
+    {
+        IoResult result{};
+        std::uint32_t seenMask = 0;
+        std::uint64_t dataBytes = 0;
+
+        if (resources.size() != KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_COUNT)
+        {
+            result.win32Error = ERROR_INVALID_PARAMETER;
+            return result;
+        }
+
+        for (const BugcheckVerdictBitmap& resource : resources)
+        {
+            const std::uint64_t expectedStride =
+                static_cast<std::uint64_t>(resource.width) * 4ULL;
+            const std::uint64_t expectedBytes =
+                expectedStride * static_cast<std::uint64_t>(resource.height);
+            if (resource.language >= KSWORD_ARK_BUGCHECK_VERDICT_LANGUAGE_COUNT ||
+                resource.classification >= KSWORD_ARK_BUGCHECK_VERDICT_CLASS_COUNT ||
+                resource.width == 0 || resource.height == 0 ||
+                resource.width > KSWORD_ARK_BUGCHECK_VERDICT_MAX_WIDTH ||
+                resource.height > KSWORD_ARK_BUGCHECK_VERDICT_MAX_HEIGHT ||
+                resource.stride != expectedStride ||
+                expectedBytes == 0 ||
+                expectedBytes != resource.bgraPixels.size())
+            {
+                result.win32Error = ERROR_INVALID_PARAMETER;
+                return result;
+            }
+
+            const std::uint32_t bitIndex =
+                resource.language * KSWORD_ARK_BUGCHECK_VERDICT_CLASS_COUNT +
+                resource.classification;
+            const std::uint32_t bit = 1UL << bitIndex;
+            if ((seenMask & bit) != 0)
+            {
+                result.win32Error = ERROR_INVALID_PARAMETER;
+                return result;
+            }
+            seenMask |= bit;
+            dataBytes += expectedBytes;
+        }
+
+        const std::uint64_t entriesBytes =
+            sizeof(KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_ENTRY) *
+            KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_COUNT;
+        const std::uint64_t packetBytes64 =
+            sizeof(KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_HEADER) +
+            entriesBytes + dataBytes;
+        if (dataBytes > KSWORD_ARK_BUGCHECK_VERDICT_MAX_DATA_BYTES ||
+            packetBytes64 > std::numeric_limits<unsigned long>::max())
+        {
+            result.win32Error = ERROR_ARITHMETIC_OVERFLOW;
+            return result;
+        }
+
+        std::vector<std::uint8_t> packet(
+            static_cast<std::size_t>(packetBytes64));
+        auto* header = reinterpret_cast<
+            KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_HEADER*>(packet.data());
+        auto* entries = reinterpret_cast<
+            KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_ENTRY*>(
+                packet.data() + sizeof(*header));
+        header->version = KSWORD_ARK_BUGCHECK_VERDICT_PROTOCOL_VERSION;
+        header->size = sizeof(*header);
+        header->magic = KSWORD_ARK_BUGCHECK_VERDICT_MAGIC;
+        header->resourceCount =
+            KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_COUNT;
+        header->entriesOffset = sizeof(*header);
+        header->totalSize = static_cast<unsigned long>(packet.size());
+
+        std::size_t dataOffset = sizeof(*header) +
+            static_cast<std::size_t>(entriesBytes);
+        for (std::size_t index = 0; index < resources.size(); ++index)
+        {
+            const BugcheckVerdictBitmap& resource = resources[index];
+            KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_ENTRY& entry = entries[index];
+            entry.language = resource.language;
+            entry.classification = resource.classification;
+            entry.width = resource.width;
+            entry.height = resource.height;
+            entry.stride = resource.stride;
+            entry.format = KSWORD_ARK_BUGCHECK_VERDICT_FORMAT_BGRA32;
+            entry.dataOffset = static_cast<unsigned long>(dataOffset);
+            entry.dataLength = static_cast<unsigned long>(
+                resource.bgraPixels.size());
+            std::memcpy(
+                packet.data() + dataOffset,
+                resource.bgraPixels.data(),
+                resource.bgraPixels.size());
+            dataOffset += resource.bgraPixels.size();
+        }
+
+        return deviceIoControl(
+            IOCTL_KSWORD_ARK_SET_BUGCHECK_VERDICT_RESOURCES,
+            packet.data(),
+            static_cast<unsigned long>(packet.size()),
+            nullptr,
+            0);
+    }
+
     BugcheckGuardResult DriverClient::configureBugcheckGuard(
         const unsigned long action,
         const unsigned long delaySeconds,

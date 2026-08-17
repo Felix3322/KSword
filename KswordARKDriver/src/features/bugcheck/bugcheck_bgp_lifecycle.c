@@ -124,6 +124,7 @@ KswordARKBugcheckBgpParseBitmap(
     )
 {
     PVOID parsedRectangle;
+    LONG state;
     NTSTATUS status;
 
     if (Rectangle == NULL) {
@@ -133,10 +134,14 @@ KswordARKBugcheckBgpParseBitmap(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
-    if (InterlockedCompareExchange(
-            &g_KswordArkBgp.State,
-            0,
-            0) != KswordArkBgpStateReady ||
+    state = InterlockedCompareExchange(&g_KswordArkBgp.State, 0, 0);
+    if ((state != KswordArkBgpStateReady &&
+         state != KswordArkBgpStateArmed) ||
+        (state == KswordArkBgpStateArmed &&
+         InterlockedCompareExchange(
+             &g_KswordArkBgp.ResourceUpdateActive,
+             0,
+             0) == 0) ||
         g_KswordArkBgp.ParseBitmap == NULL) {
         return STATUS_DEVICE_NOT_READY;
     }
@@ -154,6 +159,47 @@ KswordARKBugcheckBgpParseBitmap(
 
     *Rectangle = parsedRectangle;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswordARKBugcheckBgpBeginResourceUpdate(
+    VOID
+    )
+{
+    LONG state;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    state = InterlockedCompareExchange(&g_KswordArkBgp.State, 0, 0);
+    if (state != KswordArkBgpStateReady &&
+        state != KswordArkBgpStateArmed) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswordArkBgp.ResourceUpdateActive,
+            1,
+            0) != 0) {
+        return STATUS_DEVICE_BUSY;
+    }
+    KeMemoryBarrier();
+    if (InterlockedCompareExchange(
+            &g_KswordArkBgp.DrawStarted,
+            0,
+            0) != 0) {
+        InterlockedExchange(&g_KswordArkBgp.ResourceUpdateActive, 0);
+        return STATUS_DEVICE_BUSY;
+    }
+    return STATUS_SUCCESS;
+}
+
+VOID
+KswordARKBugcheckBgpEndResourceUpdate(
+    VOID
+    )
+{
+    KeMemoryBarrier();
+    InterlockedExchange(&g_KswordArkBgp.ResourceUpdateActive, 0);
 }
 
 VOID
@@ -193,6 +239,7 @@ KswordARKBugcheckBgpArm(
     g_KswordArkBgp.RequiredWidth = RequiredWidth;
     g_KswordArkBgp.RequiredHeight = RequiredHeight;
     InterlockedExchange(&g_KswordArkBgp.DrawStarted, 0);
+    InterlockedExchange(&g_KswordArkBgp.ResourceUpdateActive, 0);
     InterlockedExchange(&g_KswordArkBgp.DrawStageStarted, 0);
     InterlockedExchange(&g_KswordArkBgp.Stage, KswordArkBgpStageIdle);
     InterlockedExchange(&g_KswordArkBgp.ClearStatus, STATUS_PENDING);

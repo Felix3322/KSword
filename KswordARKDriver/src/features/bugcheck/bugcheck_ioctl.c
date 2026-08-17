@@ -11,6 +11,7 @@ Abstract:
 --*/
 
 #include "bugcheck_internal.h"
+#include "bugcheck_panel.h"
 
 NTSTATUS
 KswordARKBugcheckIoctlSetBitmap(
@@ -99,4 +100,45 @@ KswordARKBugcheckIoctlSetBitmap(
     InterlockedExchange(&g_KswordArkBugcheckState.Bitmap.Valid, 1);
     InterlockedExchange(&g_KswordArkBugcheckState.Bitmap.Uploading, 0);
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswordARKBugcheckIoctlSetVerdictResources(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    PVOID packet;
+    NTSTATUS status;
+
+    UNREFERENCED_PARAMETER(Device);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (InputBufferLength <
+            sizeof(KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_HEADER) ||
+        InputBufferLength > MAXULONG) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    packet = NULL;
+    status = WdfRequestRetrieveInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_BUGCHECK_VERDICT_RESOURCE_HEADER),
+        &packet,
+        NULL);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    return KswordARKBugcheckPanelInstallVerdictResources(
+        packet,
+        (ULONG)InputBufferLength);
 }

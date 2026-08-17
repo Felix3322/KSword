@@ -273,13 +273,13 @@ KswordARKBugcheckVerdictText(
 {
     switch (Classification) {
     case KSWORD_ARK_BUGCHECK_MODULE_OURS:
-        return "KswordARK may be involved. Capture this page and attach the crash dump when reporting the issue.";
+        return "This is a KswordARK problem. We are very sorry. Send the MiniDump to the developers as soon as possible so it can be fixed.";
     case KSWORD_ARK_BUGCHECK_MODULE_MICROSOFT:
-        return "The available crash parameters point to a known Microsoft kernel component.";
+        return "This is not a KswordARK problem. Microsoft's spaghetti code struck again. Send the MiniDump or a photo of this page to technical support.";
     case KSWORD_ARK_BUGCHECK_MODULE_THIRD_PARTY:
-        return "The available crash parameters point to another third-party kernel component.";
+        return "This is neither a KswordARK nor a Microsoft problem. A third-party driver is responsible. Send the MiniDump or a photo of this page to technical support.";
     default:
-        return "The faulting component is unknown. Capture this page and preserve the crash dump.";
+        return "This is nobody's fault. Your computer just exploded. Restart it, reinstall it, or buy a new one.";
     }
 }
 

@@ -18,6 +18,12 @@ KswordARKBugcheckPanelShutdown(
     );
 
 NTSTATUS
+KswordARKBugcheckPanelInstallVerdictResources(
+    _In_reads_bytes_(PacketLength) const VOID* Packet,
+    _In_ ULONG PacketLength
+    );
+
+NTSTATUS
 KswordARKBugcheckPanelDraw(
     _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics,
     _In_ ULONG CallbackMask,

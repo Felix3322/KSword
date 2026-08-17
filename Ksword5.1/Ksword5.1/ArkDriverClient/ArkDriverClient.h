@@ -7,6 +7,16 @@
 
 namespace ksword::ark
 {
+    struct BugcheckVerdictBitmap
+    {
+        std::uint32_t language = 0;
+        std::uint32_t classification = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t stride = 0;
+        std::vector<std::uint8_t> bgraPixels;
+    };
+
     // Format the immutable R0 evidence packet as a stable diagnostic block.
     // UI layers may prepend localized context, but should not reinterpret a
     // present certificate table as a successful trust-chain validation.
@@ -47,6 +57,10 @@ namespace ksword::ark
             std::uint32_t stride,
             std::uint32_t brandColorRgb,
             const std::vector<std::uint8_t>& bgraPixels) const;
+
+        // Install the complete bilingual BGP verdict-card resource set.
+        IoResult setBugcheckVerdictResources(
+            const std::vector<BugcheckVerdictBitmap>& resources) const;
 
 
         // Confirmation-gated control/status path for the one-shot KeBugCheckEx delay guard.
