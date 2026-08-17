@@ -118,14 +118,14 @@ public slots:
     void focusWindowDockByPids(const QString& pidListText);
 
     // openProcessDetailByPid 作用：
-    // - 打开指定 PID 的独立进程详情窗口，不切换当前 Dock；
-    // - 供其他 Dock 的关联进程跳转入口调用。
+    // - 打开指定 PID 的独立进程详情窗口，不改变当前 Dock 标签；
+    // - 供 FileDock 的“占用句柄扫描结果”窗口跳转调用。
     // 调用方式：QMetaObject::invokeMethod(mainWindow, "openProcessDetailByPid", ... )。
     // 入参 pid：目标进程 PID。
     void openProcessDetailByPid(quint32 pid);
 
     // openProcessDetailByIdentity 作用：
-    // - 不切换当前 Dock，按 PID+创建时间打开历史记录对应的独立详情窗口；
+    // - 按 PID+创建时间打开历史记录对应的独立进程详情窗口，不改变当前 Dock 标签；
     // - 调用方式：TableInteractionSupport 的历史事件跳转入口调用；
     // - 入参 pid：历史记录 PID；
     // - 入参 creationTime100ns：捕获时的进程创建时间；

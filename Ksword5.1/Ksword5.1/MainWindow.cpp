@@ -10633,6 +10633,7 @@ void MainWindow::openProcessDetailByIdentity(
             static_cast<std::uint32_t>(pid),
             static_cast<std::uint64_t>(creationTime100ns));
     }
+    // 历史目标失效时 ProcessDock 会弹出明确提示；详情请求不改变当前 Dock 标签。
 }
 
 void MainWindow::focusServiceDockByName(const QString& serviceNameText)

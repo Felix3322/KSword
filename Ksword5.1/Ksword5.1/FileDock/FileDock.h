@@ -510,6 +510,7 @@ private:
     // showFileDetailDialog：
     // - 作用：打开文件详情窗口（多 Tab 信息展示）；initialTabKey 可直达指定页。
     void showFileDetailDialog(const QString& filePath, const QString& initialTabKey = QString());
+    void showFileDetailDialog(const QStringList& filePaths, const QString& initialTabKey = QString());
 
     // openHandleUsageScanWindow：
     // - 作用：兼容原有调用点，打开属性窗口内的统一占用/解锁页；

@@ -865,6 +865,9 @@
     <ClCompile Include="ksword\file\file_handle_tools.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ksword\file\file_metadata_transaction.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ksword\file\pe_analyzer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1709,6 +1712,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\file\file_handle_tools.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ksword\file\file_metadata_transaction.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\file\pe_analyzer.h">

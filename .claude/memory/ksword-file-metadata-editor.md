@@ -45,3 +45,22 @@ metadata:
   的旧结果覆盖新状态。
 - 组合文本必须先对模板调用 `ks::i18n::sourceText` 再 `.arg(...)`。新增可见文本定点同步
   `languages/zh-CN.json` 与 `languages/en-US.json`，并运行 `tools/i18n_language_pack.py audit`。
+
+## 统一暂存与 R3 编辑范围
+
+- 文件属性窗口支持 `QStringList` 多目标。多选只打开一个批量窗口，常规页显示汇总，哈希页和
+  元数据页支持批量处理；PE、签名、重解析点、占用、FileObject、Storage、Minifilter、依赖 DLL、
+  字符串和十六进制等单文件分析导航在批量模式禁用并给出原因。
+- 所有编辑页只生成 `ks::file::metadata::TargetPatch`，页面内的“暂存”按钮不触碰文件。窗口底部
+  “保存全部修改”是唯一写入入口，带“创建备份再修改”选项，默认勾选。
+- `ksword/file/file_metadata_transaction.*` 只使用 R3 Win32/NT API，统一执行卷序列号 + 文件索引
+  身份复核、备份、后台写入、写后回读、逐操作结果和失败回滚。高风险操作（原始重解析点、EA、
+  Object ID、PE 资源、嵌入式签名清除）未勾选备份时拒绝执行。
+- 已覆盖基础属性/四个时间戳、重命名、8.3 短名、目录大小写敏感、Shell PropertyStore、ADS 与
+  Zone.Identifier、EA 原始字节、安全 SDDL/Owner/Group/DACL/SACL/继承保护/有效权限、压缩/稀疏/
+  EFS/Integrity Stream/Object ID/硬链接、原始重解析缓冲、PE VERSIONINFO/Manifest/其它资源原始
+  更新，以及 R3 `WinVerifyTrust` 证书链、签名者、颁发者、SHA-256 指纹、有效期、时间戳和 Catalog
+  状态展示。
+- 默认数据流、文件长度、有效数据长度、分配大小、USN/MFT 日志和自动重新签名仍保持只读。已签名
+  文件保存前提供“清除嵌入式签名并继续 / 保留签名数据并继续 / 取消”三选一，Catalog 签名只显示
+  失效，不能从目标文件本身删除。

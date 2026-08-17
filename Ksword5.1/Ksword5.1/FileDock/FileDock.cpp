@@ -26,6 +26,7 @@
 #include "../KernelDock/KernelCleanImageBaseline.h"
 #include "../PluginHost.h"
 #include "../ksword/file/file_handle_tools.h"
+#include "../ksword/file/file_metadata_transaction.h"
 #include "../ksword/file/file.h"
 
 #include <QApplication>
@@ -35,6 +36,7 @@
 #include <QButtonGroup>
 #include <QClipboard>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
 #include <QCryptographicHash>
@@ -84,6 +86,7 @@
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSortFilterProxyModel>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -5196,10 +5199,36 @@ namespace
             const QString& filePath,
             QWidget* parent = nullptr,
             const QString& initialTabKey = QString())
+            : FileDetailDialog(QStringList{ filePath }, parent, initialTabKey)
+        {
+        }
+
+        explicit FileDetailDialog(
+            const QStringList& filePaths,
+            QWidget* parent = nullptr,
+            const QString& initialTabKey = QString())
             : QDialog(parent)
-            , m_filePath(filePath)
+            , m_filePaths(filePaths)
+            , m_filePath(filePaths.value(0))
+            , m_batchMode(filePaths.size() > 1)
             , m_initialTabKey(initialTabKey.trimmed().toLower())
         {
+            QStringList normalizedPaths;
+            QSet<QString> seenPaths;
+            for (const QString& candidatePath : m_filePaths)
+            {
+                const QString normalizedPath = QDir::cleanPath(
+                    QDir::toNativeSeparators(candidatePath.trimmed()));
+                const QString identityKey = normalizedPath.toLower();
+                if (!normalizedPath.isEmpty() && !seenPaths.contains(identityKey))
+                {
+                    seenPaths.insert(identityKey);
+                    normalizedPaths.push_back(normalizedPath);
+                }
+            }
+            m_filePaths = normalizedPaths;
+            m_filePath = m_filePaths.value(0);
+            m_batchMode = m_filePaths.size() > 1;
             m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
             m_usageScanCancelRequested = std::make_shared<std::atomic_bool>(false);
             // 文件属性与进程属性同为独立、非模态详情窗；不要继承隐藏 Dock 的子窗口外观。
@@ -5207,7 +5236,9 @@ namespace
             setWindowModality(Qt::NonModal);
             setAttribute(Qt::WA_DeleteOnClose, true);
             setObjectName(QStringLiteral("FileDetailDialogRoot"));
-            setWindowTitle(QStringLiteral("文件属性 - %1").arg(QFileInfo(filePath).fileName()));
+            setWindowTitle(m_batchMode
+                ? ks::i18n::sourceText(QStringLiteral("批量文件属性 - %1 项")).arg(m_filePaths.size())
+                : QStringLiteral("文件属性 - %1").arg(QFileInfo(m_filePath).fileName()));
             // 文件属性窗内容可能包含超长路径、证书链和 PE 字段：
             // - 最大宽度按父窗口客户区 75% 限制；
             // - 初始宽度同步裁剪，防止窗口被长文本撑出屏幕。
@@ -5219,9 +5250,13 @@ namespace
 
             // 采用与进程属性相同的左侧导航结构：QTabWidget 继续承载现有懒加载逻辑，
             // 仅隐藏原生顶栏并改由可翻译的垂直导航按钮驱动。
-            QHBoxLayout* rootLayout = new QHBoxLayout(this);
-            rootLayout->setContentsMargins(8, 8, 8, 8);
+            QVBoxLayout* dialogLayout = new QVBoxLayout(this);
+            dialogLayout->setContentsMargins(8, 8, 8, 8);
+            dialogLayout->setSpacing(6);
+            QHBoxLayout* rootLayout = new QHBoxLayout();
+            rootLayout->setContentsMargins(0, 0, 0, 0);
             rootLayout->setSpacing(6);
+            dialogLayout->addLayout(rootLayout, 1);
 
             m_tabNavigation = new QWidget(this);
             m_tabNavigation->setObjectName(QStringLiteral("FileDetailTabNavigation"));
@@ -5326,7 +5361,57 @@ namespace
                         }
                     });
             }
+            if (m_batchMode)
+            {
+                const QSet<int> batchEnabledTabs{ 0, 1, 4 };
+                for (int tabIndex = 0; tabIndex < m_tabNavigationButtons.size(); ++tabIndex)
+                {
+                    QToolButton* const navigationButton = m_tabNavigationButtons.at(tabIndex);
+                    if (navigationButton == nullptr || batchEnabledTabs.contains(tabIndex))
+                    {
+                        continue;
+                    }
+                    navigationButton->setEnabled(false);
+                    m_tabWidget->setTabEnabled(tabIndex, false);
+                    navigationButton->setToolTip(ks::i18n::sourceText(QStringLiteral(
+                        "批量模式下此分析页不可用。请只选择一个目标后打开该页。")));
+                }
+                QLabel* batchHintLabel = new QLabel(
+                    ks::i18n::sourceText(QStringLiteral(
+                        "批量模式：常规信息显示汇总，哈希与元数据编辑支持批量处理；其余单文件分析页已禁用。")),
+                    m_tabNavigation);
+                batchHintLabel->setWordWrap(true);
+                batchHintLabel->setObjectName(QStringLiteral("FileDetailBatchHint"));
+                navigationLayout->addWidget(batchHintLabel);
+            }
             navigationLayout->addStretch(1);
+
+            QFrame* saveBar = new QFrame(this);
+            saveBar->setObjectName(QStringLiteral("FileMetadataSaveBar"));
+            QHBoxLayout* saveLayout = new QHBoxLayout(saveBar);
+            saveLayout->setContentsMargins(8, 6, 8, 6);
+            m_backupBeforeSaveCheck = new QCheckBox(
+                ks::i18n::sourceText(QStringLiteral("创建备份再修改")), saveBar);
+            m_backupBeforeSaveCheck->setChecked(true);
+            m_pendingChangesLabel = new QLabel(
+                ks::i18n::sourceText(QStringLiteral("● 暂无待保存修改")), saveBar);
+            m_pendingChangesLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            m_discardPendingButton = new QPushButton(
+                ks::i18n::sourceText(QStringLiteral("放弃暂存")), saveBar);
+            m_saveAllButton = new QPushButton(
+                ks::i18n::sourceText(QStringLiteral("保存全部修改")), saveBar);
+            m_saveAllButton->setDefault(true);
+            m_discardPendingButton->setEnabled(false);
+            m_saveAllButton->setEnabled(false);
+            saveLayout->addWidget(m_backupBeforeSaveCheck);
+            saveLayout->addWidget(m_pendingChangesLabel, 1);
+            saveLayout->addWidget(m_discardPendingButton);
+            saveLayout->addWidget(m_saveAllButton);
+            dialogLayout->addWidget(saveBar, 0);
+            connect(m_discardPendingButton, &QPushButton::clicked, this,
+                [this]() { discardPendingChanges(); });
+            connect(m_saveAllButton, &QPushButton::clicked, this,
+                [this]() { saveAllPendingChanges(); });
 
             connect(m_tabWidget, &QTabWidget::currentChanged, this, [this](const int tabIndex)
                 {
@@ -5367,6 +5452,40 @@ namespace
         }
 
     protected:
+        void closeEvent(QCloseEvent* event) override
+        {
+            if (event == nullptr)
+            {
+                return;
+            }
+            if (m_transactionBusy)
+            {
+                QMessageBox::information(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("正在保存文件元数据")),
+                    ks::i18n::sourceText(QStringLiteral(
+                        "保存事务仍在运行。请等待逐操作结果返回后再关闭窗口。")));
+                event->ignore();
+                return;
+            }
+            if (pendingTargetCount() > 0)
+            {
+                const QMessageBox::StandardButton choice = QMessageBox::question(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("放弃暂存修改")),
+                    ks::i18n::sourceText(QStringLiteral(
+                        "仍有尚未写入的暂存修改。关闭窗口将放弃这些修改，文件不会变化。是否关闭？")),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No);
+                if (choice != QMessageBox::Yes)
+                {
+                    event->ignore();
+                    return;
+                }
+            }
+            QDialog::closeEvent(event);
+        }
+
         void changeEvent(QEvent* event) override
         {
             QDialog::changeEvent(event);
@@ -5376,8 +5495,10 @@ namespace
             }
             if (event->type() == QEvent::LanguageChange)
             {
-                setWindowTitle(ks::i18n::displayText(QStringLiteral("文件属性 - %1"))
-                    .arg(QFileInfo(m_filePath).fileName()));
+                setWindowTitle(m_batchMode
+                    ? ks::i18n::sourceText(QStringLiteral("批量文件属性 - %1 项")).arg(m_filePaths.size())
+                    : ks::i18n::displayText(QStringLiteral("文件属性 - %1"))
+                        .arg(QFileInfo(m_filePath).fileName()));
                 refreshGeneralTab();
                 return;
             }
@@ -7745,10 +7866,10 @@ namespace
 
         void startSignatureLoad(CodeEditorWidget* textEditorWidget)
         {
-            // 用途：后台通过 KswordARK 读取 PE Security Directory、完整
-            // WIN_CERTIFICATE 外层结构和内核 CI 缓存签名等级。
+            // 用途：后台先用 R3 WinVerifyTrust/证书链/Catalog API 验证，再补充 KswordARK
+            // PE Security Directory、WIN_CERTIFICATE 外层结构和内核 CI 缓存签名等级。
             // 输入：textEditorWidget 为签名页显示目标。
-            // 处理：只调用 ArkDriverClient；不经过 PowerShell/WinTrust。
+            // 处理：R3 与 R0 证据并列展示，不经过 PowerShell。
             // 返回：无。
             if (textEditorWidget == nullptr)
             {
@@ -7756,7 +7877,7 @@ namespace
             }
 
             textEditorWidget->setLocalizedText(
-                QStringLiteral("正在通过 KswordARK R0 读取签名证据...\n目标: %1")
+                QStringLiteral("正在通过 R3 WinVerifyTrust 与 KswordARK R0 读取签名证据...\n目标: %1")
                     .arg(QDir::toNativeSeparators(m_filePath)));
 
             const QString filePathSnapshot = m_filePath;
@@ -7766,6 +7887,32 @@ namespace
             auto* task = QRunnable::create([guardThis, editorGuard, filePathSnapshot, ntPathSnapshot]()
                 {
                     QString finalText;
+                    const ks::file::metadata::SignatureInspection r3Signature =
+                        ks::file::metadata::inspectSignature(filePathSnapshot);
+                    finalText += QStringLiteral("[R3 WinVerifyTrust / 证书链]\n");
+                    finalText += QStringLiteral("WinVerifyTrust: 0x%1\n")
+                        .arg(static_cast<quint32>(r3Signature.trustStatus), 8, 16, QLatin1Char('0'));
+                    finalText += QStringLiteral("嵌入式签名: %1\n")
+                        .arg(r3Signature.embedded ? QStringLiteral("是") : QStringLiteral("否"));
+                    finalText += QStringLiteral("Catalog 签名: %1\n")
+                        .arg(r3Signature.catalog ? QStringLiteral("是") : QStringLiteral("否"));
+                    finalText += QStringLiteral("Catalog 路径: %1\n")
+                        .arg(r3Signature.catalogPath.isEmpty() ? QStringLiteral("-") : r3Signature.catalogPath);
+                    finalText += QStringLiteral("签名者: %1\n")
+                        .arg(r3Signature.signer.isEmpty() ? QStringLiteral("-") : r3Signature.signer);
+                    finalText += QStringLiteral("颁发者: %1\n")
+                        .arg(r3Signature.issuer.isEmpty() ? QStringLiteral("-") : r3Signature.issuer);
+                    finalText += QStringLiteral("证书 SHA-256: %1\n")
+                        .arg(r3Signature.sha256Fingerprint.isEmpty()
+                            ? QStringLiteral("-") : r3Signature.sha256Fingerprint);
+                    finalText += QStringLiteral("有效期: %1 → %2\n")
+                        .arg(r3Signature.validFrom.isEmpty() ? QStringLiteral("-") : r3Signature.validFrom)
+                        .arg(r3Signature.validUntil.isEmpty() ? QStringLiteral("-") : r3Signature.validUntil);
+                    finalText += QStringLiteral("时间戳签名者: %1\n")
+                        .arg(r3Signature.timestampSigner.isEmpty()
+                            ? QStringLiteral("-") : r3Signature.timestampSigner);
+                    finalText += QStringLiteral("链状态: %1\n\n")
+                        .arg(r3Signature.chainStatus.isEmpty() ? QStringLiteral("-") : r3Signature.chainStatus);
                     if (ntPathSnapshot.isEmpty())
                     {
                         finalText += QStringLiteral("无法生成供内核使用的 NT 路径。\n");
@@ -7784,7 +7931,7 @@ namespace
                             ksword::ark::formatImageSignatureEvidence(signatureResult));
                         finalText += QStringLiteral("\n");
                         finalText += QStringLiteral(
-                            "结论边界：PE 证书表及 WIN_CERTIFICATE 记录属于磁盘结构证据，不等于证书链可信；CI cached signing level 是独立的内核缓存结果。此页未调用 WinTrust。");
+                            "结论边界：WinVerifyTrust 负责 R3 信任验证；PE 证书表及 WIN_CERTIFICATE 是磁盘结构证据；CI cached signing level 是独立的内核缓存结果。Catalog 签名不能从目标文件本身删除。");
                     }
 
                     FileDetailDialog* targetDialog = guardThis.data();
@@ -8216,6 +8363,7 @@ namespace
                 return;
             }
 
+            m_metadataApplyingSnapshot = true;
             m_metadataSnapshot = snapshot;
             m_metadataHasSnapshot = true;
             const std::array<LARGE_INTEGER, 4> timeValues = fileMetadataTimes(snapshot.basicInfo);
@@ -8245,9 +8393,68 @@ namespace
                 {
                     m_metadataAttributeChecks[attributeIndex]->setChecked(
                         (snapshot.basicInfo.FileAttributes & attributeMasks[attributeIndex]) != 0U);
+                    m_metadataAttributeTouched[attributeIndex] = false;
                 }
             }
+            m_metadataApplyingSnapshot = false;
             setMetadataEditorBusy(false);
+        }
+
+        static FileMetadataSnapshot metadataSnapshotForEditor(
+            const ks::file::metadata::FileSnapshot& snapshot)
+        {
+            FileMetadataSnapshot editorSnapshot;
+            editorSnapshot.ok = snapshot.ok;
+            editorSnapshot.win32Error = snapshot.win32Error;
+            editorSnapshot.basicInfo = snapshot.basicInfo;
+            editorSnapshot.identityAvailable = snapshot.identity.available;
+            editorSnapshot.volumeSerialNumber = snapshot.identity.volumeSerialNumber;
+            editorSnapshot.fileIndex = snapshot.identity.fileIndex;
+            return editorSnapshot;
+        }
+
+        void applyBatchMetadataSnapshotsToEditor(
+            const QList<ks::file::metadata::FileSnapshot>& snapshots)
+        {
+            if (snapshots.isEmpty())
+            {
+                return;
+            }
+            applyMetadataSnapshotToEditor(metadataSnapshotForEditor(snapshots.front()));
+            if (!m_batchMode)
+            {
+                return;
+            }
+
+            m_metadataApplyingSnapshot = true;
+            const auto& attributeMasks = editableFileAttributeMasks();
+            for (std::size_t attributeIndex = 0;
+                 attributeIndex < attributeMasks.size();
+                 ++attributeIndex)
+            {
+                QCheckBox* const attributeCheck = m_metadataAttributeChecks[attributeIndex];
+                if (attributeCheck == nullptr)
+                {
+                    continue;
+                }
+                const DWORD attributeMask = attributeMasks[attributeIndex];
+                const bool firstValue =
+                    (snapshots.front().basicInfo.FileAttributes & attributeMask) != 0U;
+                const bool allSame = std::all_of(
+                    snapshots.cbegin(),
+                    snapshots.cend(),
+                    [attributeMask, firstValue](const ks::file::metadata::FileSnapshot& item)
+                    {
+                        return ((item.basicInfo.FileAttributes & attributeMask) != 0U) == firstValue;
+                    });
+                attributeCheck->setTristate(true);
+                attributeCheck->setCheckState(
+                    allSame
+                        ? (firstValue ? Qt::Checked : Qt::Unchecked)
+                        : Qt::PartiallyChecked);
+                m_metadataAttributeTouched[attributeIndex] = false;
+            }
+            m_metadataApplyingSnapshot = false;
         }
 
         void refreshMetadataEditor()
@@ -8257,17 +8464,31 @@ namespace
                 return;
             }
 
+            if (pendingTargetCount() > 0)
+            {
+                QMessageBox::information(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("元数据编辑")),
+                    ks::i18n::sourceText(QStringLiteral(
+                        "存在尚未保存的暂存修改。请先保存或放弃暂存，再重新读取。")));
+                return;
+            }
+
             m_metadataHasSnapshot = false;
             setMetadataEditorBusy(true);
             m_metadataStatusLabel->setText(
                 ks::i18n::sourceText(QStringLiteral("● 正在后台读取文件元数据...")));
             const std::uint64_t operationGeneration = ++m_metadataOperationGeneration;
-            const QString filePathSnapshot = m_filePath;
+            const QStringList filePathSnapshots = m_filePaths;
             QPointer<FileDetailDialog> guardThis(this);
-            auto* task = QRunnable::create([guardThis, filePathSnapshot, operationGeneration]()
+            auto* task = QRunnable::create([guardThis, filePathSnapshots, operationGeneration]()
                 {
-                    const FileMetadataSnapshot snapshot =
-                        FileDetailDialog::readFileMetadataSnapshot(filePathSnapshot);
+                    QList<ks::file::metadata::FileSnapshot> snapshots;
+                    snapshots.reserve(filePathSnapshots.size());
+                    for (const QString& filePath : filePathSnapshots)
+                    {
+                        snapshots.push_back(ks::file::metadata::readFileSnapshot(filePath));
+                    }
                     FileDetailDialog* targetDialog = guardThis.data();
                     if (targetDialog == nullptr)
                     {
@@ -8275,34 +8496,58 @@ namespace
                     }
                     QMetaObject::invokeMethod(
                         targetDialog,
-                        [guardThis, snapshot, operationGeneration]()
+                        [guardThis, snapshots, filePathSnapshots, operationGeneration]()
                         {
                             if (guardThis == nullptr ||
                                 guardThis->m_metadataOperationGeneration != operationGeneration)
                             {
                                 return;
                             }
-                            if (!snapshot.ok)
+                            QList<ks::file::metadata::FileSnapshot> successfulSnapshots;
+                            QList<ks::file::metadata::TargetPatch> targetPatches;
+                            int failedCount = 0;
+                            DWORD firstError = ERROR_SUCCESS;
+                            for (qsizetype index = 0; index < snapshots.size(); ++index)
                             {
-                                guardThis->m_metadataHasSnapshot = false;
-                                guardThis->setMetadataEditorBusy(false);
-                                if (guardThis->m_metadataStatusLabel != nullptr)
+                                const ks::file::metadata::FileSnapshot& snapshot = snapshots.at(index);
+                                if (!snapshot.ok)
                                 {
-                                    guardThis->m_metadataStatusLabel->setText(
-                                        ks::i18n::displayText(QStringLiteral("● 元数据读取失败：%1"))
-                                            .arg(formatWin32ErrorText(snapshot.win32Error)));
+                                    ++failedCount;
+                                    if (firstError == ERROR_SUCCESS) firstError = snapshot.win32Error;
+                                    continue;
                                 }
+                                successfulSnapshots.push_back(snapshot);
+                                ks::file::metadata::TargetPatch patch;
+                                patch.originalPath = filePathSnapshots.value(index);
+                                patch.snapshot = snapshot;
+                                targetPatches.push_back(patch);
+                            }
+
+                            guardThis->m_pendingPatches = targetPatches;
+                            guardThis->m_metadataHasSnapshot = !successfulSnapshots.isEmpty();
+                            if (successfulSnapshots.isEmpty())
+                            {
+                                guardThis->setMetadataEditorBusy(false);
+                                guardThis->m_metadataStatusLabel->setText(
+                                    ks::i18n::displayText(QStringLiteral("● 元数据读取失败：%1"))
+                                        .arg(formatWin32ErrorText(firstError)));
+                                guardThis->updatePendingSaveUi();
                                 return;
                             }
 
-                            guardThis->applyMetadataSnapshotToEditor(snapshot);
+                            guardThis->applyBatchMetadataSnapshotsToEditor(successfulSnapshots);
                             if (guardThis->m_metadataStatusLabel != nullptr)
                             {
-                                guardThis->m_metadataStatusLabel->setText(
-                                    ks::i18n::displayText(QStringLiteral(
-                                        "● 当前值已读取：属性 %1。仅勾选“修改”的时间会被写入。"))
-                                        .arg(formatHexValue(snapshot.basicInfo.FileAttributes, 8)));
+                                guardThis->m_metadataStatusLabel->setText(failedCount == 0
+                                    ? ks::i18n::sourceText(QStringLiteral(
+                                        "● 已读取 %1 个目标。编辑内容只会暂存，底部保存前文件不会变化。"))
+                                        .arg(successfulSnapshots.size())
+                                    : ks::i18n::sourceText(QStringLiteral(
+                                        "● 已读取 %1 个目标，%2 个目标读取失败。失败目标不会进入保存事务。"))
+                                        .arg(successfulSnapshots.size())
+                                        .arg(failedCount));
                             }
+                            guardThis->updatePendingSaveUi();
                         },
                         Qt::QueuedConnection);
                 });
@@ -8317,18 +8562,16 @@ namespace
                 return;
             }
 
-            FileMetadataUpdateRequest request;
-            request.validateIdentity = m_metadataSnapshot.identityAvailable;
-            request.expectedVolumeSerialNumber = m_metadataSnapshot.volumeSerialNumber;
-            request.expectedFileIndex = m_metadataSnapshot.fileIndex;
-            QStringList changeSummaryList;
             const std::array<QString, 4> timeNames{
                 QStringLiteral("创建时间"),
                 QStringLiteral("最后访问时间"),
                 QStringLiteral("最后写入时间"),
                 QStringLiteral("元数据变更时间（ChangeTime）")
             };
-            for (std::size_t timeIndex = 0; timeIndex < request.updateTime.size(); ++timeIndex)
+            std::array<bool, 4> updateTime{};
+            std::array<LARGE_INTEGER, 4> timeValues{};
+            bool hasTimeChange = false;
+            for (std::size_t timeIndex = 0; timeIndex < updateTime.size(); ++timeIndex)
             {
                 if (m_metadataTimeChecks[timeIndex] == nullptr ||
                     m_metadataTimeEdits[timeIndex] == nullptr ||
@@ -8346,136 +8589,498 @@ namespace
                             .arg(ks::i18n::sourceText(timeNames[timeIndex])));
                     return;
                 }
-                request.updateTime[timeIndex] = true;
-                request.timeValue[timeIndex] = localDateTimeToFileMetadataTime(editedDateTime);
-                changeSummaryList.push_back(
-                    ks::i18n::sourceText(QStringLiteral("- %1：%2"))
-                        .arg(
-                            ks::i18n::sourceText(timeNames[timeIndex]),
-                            editedDateTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))));
+                updateTime[timeIndex] = true;
+                timeValues[timeIndex] = localDateTimeToFileMetadataTime(editedDateTime);
+                hasTimeChange = true;
             }
 
             const auto& attributeMasks = editableFileAttributeMasks();
-            for (std::size_t attributeIndex = 0;
-                 attributeIndex < attributeMasks.size();
-                 ++attributeIndex)
-            {
-                if (m_metadataAttributeChecks[attributeIndex] != nullptr &&
-                    m_metadataAttributeChecks[attributeIndex]->isChecked())
-                {
-                    request.editableAttributes |= attributeMasks[attributeIndex];
-                }
-            }
-            const DWORD originalEditableAttributes =
-                m_metadataSnapshot.basicInfo.FileAttributes & editableFileAttributeMask();
-            request.updateAttributes =
-                originalEditableAttributes != request.editableAttributes;
-            if (request.updateAttributes)
-            {
-                changeSummaryList.push_back(
-                    ks::i18n::sourceText(QStringLiteral("- 可编辑属性：%1 → %2"))
-                        .arg(formatHexValue(originalEditableAttributes, 8))
-                        .arg(formatHexValue(request.editableAttributes, 8)));
-            }
-
-            if (changeSummaryList.isEmpty())
+            const bool hasAttributeChange = std::any_of(
+                m_metadataAttributeTouched.cbegin(),
+                m_metadataAttributeTouched.cend(),
+                [](const bool touched) { return touched; });
+            if (!hasTimeChange && !hasAttributeChange)
             {
                 QMessageBox::information(
                     this,
                     ks::i18n::sourceText(QStringLiteral("元数据编辑")),
-                    ks::i18n::sourceText(QStringLiteral("没有需要应用的元数据改动。")));
+                    ks::i18n::sourceText(QStringLiteral("没有需要暂存的基础元数据改动。")));
                 return;
             }
 
-            const QString confirmationText =
-                ks::i18n::sourceText(QStringLiteral(
-                    "将写入以下文件元数据：\n%1\n\n目标：%2\n\n"))
-                    .arg(changeSummaryList.join(QLatin1Char('\n')),
-                        QDir::toNativeSeparators(m_filePath)) +
-                ks::i18n::sourceText(QStringLiteral(
-                    "写入前会在同一文件句柄上重新读取并合并最新值；写入后会立即回读实际结果。是否继续？"));
-            const QMessageBox::StandardButton userChoice = QMessageBox::question(
-                this,
-                ks::i18n::sourceText(QStringLiteral("确认修改文件元数据")),
-                confirmationText,
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::No);
-            if (userChoice != QMessageBox::Yes)
+            for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
             {
-                return;
+                patch.basic.updateTime = updateTime;
+                patch.basic.timeValue = timeValues;
+                patch.basic.updateAttributes = hasAttributeChange;
+                DWORD editableAttributes =
+                    patch.snapshot.basicInfo.FileAttributes & editableFileAttributeMask();
+                for (std::size_t attributeIndex = 0;
+                     attributeIndex < attributeMasks.size();
+                     ++attributeIndex)
+                {
+                    if (!m_metadataAttributeTouched[attributeIndex] ||
+                        m_metadataAttributeChecks[attributeIndex] == nullptr)
+                    {
+                        continue;
+                    }
+                    if (m_metadataAttributeChecks[attributeIndex]->checkState() == Qt::Checked)
+                    {
+                        editableAttributes |= attributeMasks[attributeIndex];
+                    }
+                    else
+                    {
+                        editableAttributes &= ~attributeMasks[attributeIndex];
+                    }
+                }
+                patch.basic.editableAttributes = editableAttributes;
             }
 
-            setMetadataEditorBusy(true);
             if (m_metadataStatusLabel != nullptr)
             {
                 m_metadataStatusLabel->setText(
-                    ks::i18n::sourceText(QStringLiteral("● 正在写入并回读文件元数据...")));
+                    ks::i18n::sourceText(QStringLiteral(
+                        "● 基础元数据已暂存。点击窗口底部“保存全部修改”后才会写入文件。")));
             }
-            const std::uint64_t operationGeneration = ++m_metadataOperationGeneration;
-            const QString filePathSnapshot = m_filePath;
-            QPointer<FileDetailDialog> guardThis(this);
-            auto* task = QRunnable::create(
-                [guardThis, filePathSnapshot, request, operationGeneration]()
+            updatePendingSaveUi();
+        }
+
+        int pendingTargetCount() const
+        {
+            return static_cast<int>(std::count_if(
+                m_pendingPatches.cbegin(),
+                m_pendingPatches.cend(),
+                [](const ks::file::metadata::TargetPatch& patch)
                 {
-                    const FileMetadataUpdateResult result =
-                        FileDetailDialog::writeFileMetadata(filePathSnapshot, request);
-                    FileDetailDialog* targetDialog = guardThis.data();
-                    if (targetDialog == nullptr)
+                    return !patch.empty();
+                }));
+        }
+
+        bool ensurePendingPatchesForStaging()
+        {
+            if (!m_pendingPatches.isEmpty())
+            {
+                return true;
+            }
+            QList<ks::file::metadata::TargetPatch> patches;
+            for (const QString& path : m_filePaths)
+            {
+                const ks::file::metadata::FileSnapshot snapshot =
+                    ks::file::metadata::readFileSnapshot(path);
+                if (!snapshot.ok)
+                {
+                    QMessageBox::warning(
+                        this,
+                        ks::i18n::sourceText(QStringLiteral("元数据编辑")),
+                        ks::i18n::sourceText(QStringLiteral("无法读取目标快照：%1\n%2"))
+                            .arg(QDir::toNativeSeparators(path))
+                            .arg(formatWin32ErrorText(snapshot.win32Error)));
+                    return false;
+                }
+                ks::file::metadata::TargetPatch patch;
+                patch.originalPath = path;
+                patch.snapshot = snapshot;
+                patches.push_back(patch);
+            }
+            m_pendingPatches = patches;
+            return !m_pendingPatches.isEmpty();
+        }
+
+        int pendingOperationCount() const
+        {
+            int count = 0;
+            for (const ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+            {
+                if (patch.empty()) continue;
+                if (patch.basic.updateAttributes ||
+                    std::any_of(patch.basic.updateTime.cbegin(), patch.basic.updateTime.cend(),
+                        [](const bool value) { return value; })) ++count;
+                if (patch.rename) ++count;
+                if (patch.setShortName) ++count;
+                if (patch.caseSensitive != ks::file::metadata::ChangeState::Unchanged) ++count;
+                if (!patch.shellProperties.empty()) ++count;
+                count += patch.streams.size();
+                count += patch.extendedAttributes.size();
+                if (!patch.security.empty()) ++count;
+                if (patch.compression != ks::file::metadata::ChangeState::Unchanged) ++count;
+                if (patch.sparse != ks::file::metadata::ChangeState::Unchanged) ++count;
+                if (patch.encryption != ks::file::metadata::ChangeState::Unchanged) ++count;
+                if (patch.integrityStream != ks::file::metadata::ChangeState::Unchanged) ++count;
+                if (patch.objectId.update) ++count;
+                count += patch.hardLinkPaths.size();
+                if (patch.reparse.update) ++count;
+                count += patch.peResources.size();
+                if (patch.signatureDisposition ==
+                    ks::file::metadata::SignatureDisposition::RemoveEmbedded) ++count;
+            }
+            return count;
+        }
+
+        void updatePendingSaveUi()
+        {
+            const int targetCount = pendingTargetCount();
+            const int operationCount = pendingOperationCount();
+            if (m_pendingChangesLabel != nullptr)
+            {
+                m_pendingChangesLabel->setText(targetCount > 0
+                    ? ks::i18n::sourceText(QStringLiteral(
+                        "● 已暂存：%1 个目标，%2 类操作。文件尚未发生变化。"))
+                        .arg(targetCount)
+                        .arg(operationCount)
+                    : ks::i18n::sourceText(QStringLiteral("● 暂无待保存修改")));
+            }
+            if (m_saveAllButton != nullptr)
+            {
+                m_saveAllButton->setEnabled(targetCount > 0 && !m_transactionBusy);
+            }
+            if (m_discardPendingButton != nullptr)
+            {
+                m_discardPendingButton->setEnabled(targetCount > 0 && !m_transactionBusy);
+            }
+        }
+
+        void resetPatchKeepingSnapshot(ks::file::metadata::TargetPatch& patch)
+        {
+            const QString originalPath = patch.originalPath;
+            const ks::file::metadata::FileSnapshot snapshot = patch.snapshot;
+            patch = {};
+            patch.originalPath = originalPath;
+            patch.snapshot = snapshot;
+        }
+
+        void discardPendingChanges()
+        {
+            if (m_transactionBusy)
+            {
+                return;
+            }
+            for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+            {
+                resetPatchKeepingSnapshot(patch);
+            }
+            m_metadataApplyingSnapshot = true;
+            for (QCheckBox* const timeCheck : m_metadataTimeChecks)
+            {
+                if (timeCheck != nullptr) timeCheck->setChecked(false);
+            }
+            m_metadataApplyingSnapshot = false;
+            m_metadataAttributeTouched.fill(false);
+            if (m_metadataStatusLabel != nullptr)
+            {
+                m_metadataStatusLabel->setText(
+                    ks::i18n::sourceText(QStringLiteral("● 已放弃全部暂存修改，文件未发生变化。")));
+            }
+            updatePendingSaveUi();
+            if (m_metadataHasSnapshot)
+            {
+                QList<ks::file::metadata::FileSnapshot> snapshots;
+                for (const ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                {
+                    if (patch.snapshot.ok) snapshots.push_back(patch.snapshot);
+                }
+                applyBatchMetadataSnapshotsToEditor(snapshots);
+            }
+        }
+
+        static QString transactionOperationText(const QString& operation)
+        {
+            if (operation == QStringLiteral("identity")) return QStringLiteral("身份复核");
+            if (operation == QStringLiteral("backup")) return QStringLiteral("创建备份");
+            if (operation == QStringLiteral("backup-required")) return QStringLiteral("备份要求");
+            if (operation == QStringLiteral("basic")) return QStringLiteral("基础属性与时间");
+            if (operation == QStringLiteral("rename")) return QStringLiteral("重命名");
+            if (operation == QStringLiteral("short-name")) return QStringLiteral("8.3 短文件名");
+            if (operation == QStringLiteral("case-sensitive")) return QStringLiteral("目录大小写敏感");
+            if (operation == QStringLiteral("shell-properties")) return QStringLiteral("Shell 属性");
+            if (operation.startsWith(QStringLiteral("ads:"))) return QStringLiteral("ADS：%1").arg(operation.mid(4));
+            if (operation.startsWith(QStringLiteral("ea:"))) return QStringLiteral("EA：%1").arg(operation.mid(3));
+            if (operation == QStringLiteral("security-sddl")) return QStringLiteral("安全描述符 SDDL");
+            if (operation == QStringLiteral("security-ace")) return QStringLiteral("新增或修改 ACE");
+            if (operation == QStringLiteral("security-remove-ace")) return QStringLiteral("删除 ACE");
+            if (operation == QStringLiteral("compression")) return QStringLiteral("NTFS 压缩");
+            if (operation == QStringLiteral("sparse")) return QStringLiteral("稀疏文件");
+            if (operation == QStringLiteral("encryption")) return QStringLiteral("EFS 加密");
+            if (operation == QStringLiteral("integrity-stream")) return QStringLiteral("Integrity Stream");
+            if (operation == QStringLiteral("object-id")) return QStringLiteral("Object ID");
+            if (operation.startsWith(QStringLiteral("hard-link:"))) return QStringLiteral("硬链接：%1").arg(operation.mid(10));
+            if (operation == QStringLiteral("reparse")) return QStringLiteral("重解析点原始数据");
+            if (operation == QStringLiteral("pe-resources")) return QStringLiteral("PE 资源");
+            if (operation == QStringLiteral("signature-remove")) return QStringLiteral("清除嵌入式签名");
+            if (operation == QStringLiteral("rollback")) return QStringLiteral("失败回滚");
+            if (operation == QStringLiteral("readback")) return QStringLiteral("写后回读");
+            return operation;
+        }
+
+        void showTransactionResults(const ks::file::metadata::TransactionResult& result)
+        {
+            QDialog* dialog = new QDialog(this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+            dialog->setWindowTitle(ks::i18n::sourceText(QStringLiteral("文件元数据保存结果")));
+            dialog->resize(1080, 560);
+            QVBoxLayout* layout = new QVBoxLayout(dialog);
+
+            QLabel* summaryLabel = new QLabel(result.ok
+                ? ks::i18n::sourceText(QStringLiteral("● 全部目标保存并回读完成。"))
+                : ks::i18n::sourceText(QStringLiteral(
+                    "● 部分目标保存失败。失败目标已尽可能回滚，请查看逐操作结果。")),
+                dialog);
+            summaryLabel->setWordWrap(true);
+            layout->addWidget(summaryLabel);
+
+            QTableWidget* table = new ks::ui::VisibleTableWidget(dialog);
+            table->setColumnCount(6);
+            table->setHorizontalHeaderLabels(QStringList{
+                QStringLiteral("目标"),
+                QStringLiteral("操作"),
+                QStringLiteral("结果"),
+                QStringLiteral("错误"),
+                QStringLiteral("详情"),
+                QStringLiteral("备份") });
+            table->setSelectionBehavior(QAbstractItemView::SelectRows);
+            table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+            table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            table->setAlternatingRowColors(true);
+            int rowCount = 0;
+            for (const ks::file::metadata::TargetResult& target : result.targets)
+            {
+                rowCount += target.operations.size();
+            }
+            table->setRowCount(rowCount);
+            int row = 0;
+            for (const ks::file::metadata::TargetResult& target : result.targets)
+            {
+                for (const ks::file::metadata::OperationResult& operation : target.operations)
+                {
+                    table->setItem(row, 0, new QTableWidgetItem(QDir::toNativeSeparators(target.originalPath)));
+                    table->setItem(row, 1, new QTableWidgetItem(transactionOperationText(operation.operation)));
+                    table->setItem(row, 2, new QTableWidgetItem(operation.ok
+                        ? (operation.verified ? QStringLiteral("成功并验证") : QStringLiteral("成功，未验证"))
+                        : QStringLiteral("失败")));
+                    table->setItem(row, 3, new QTableWidgetItem(operation.ok
+                        ? QStringLiteral("0")
+                        : QStringLiteral("%1 · %2")
+                            .arg(operation.win32Error)
+                            .arg(formatWin32ErrorText(operation.win32Error))));
+                    table->setItem(row, 4, new QTableWidgetItem(operation.detail));
+                    table->setItem(row, 5, new QTableWidgetItem(QDir::toNativeSeparators(target.backupPath)));
+                    ++row;
+                }
+            }
+            installFileTableCopyMenu(table);
+            if (table->horizontalHeader() != nullptr)
+            {
+                table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+                table->horizontalHeader()->setStretchLastSection(true);
+            }
+            layout->addWidget(table, 1);
+            QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+            connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+            layout->addWidget(buttons);
+            dialog->show();
+        }
+
+        void setTransactionBusy(const bool busy)
+        {
+            m_transactionBusy = busy;
+            if (m_backupBeforeSaveCheck != nullptr) m_backupBeforeSaveCheck->setEnabled(!busy);
+            if (m_tabNavigation != nullptr) m_tabNavigation->setEnabled(!busy);
+            if (m_tabWidget != nullptr) m_tabWidget->setEnabled(!busy);
+            setMetadataEditorBusy(busy);
+            updatePendingSaveUi();
+        }
+
+        void saveAllPendingChanges()
+        {
+            if (m_transactionBusy)
+            {
+                return;
+            }
+            QList<ks::file::metadata::TargetPatch> patches;
+            for (const ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+            {
+                if (!patch.empty()) patches.push_back(patch);
+            }
+            if (patches.isEmpty())
+            {
+                return;
+            }
+
+            bool requiresBackup = false;
+            bool signedTargetWillChange = false;
+            bool hasCatalogSignature = false;
+            for (const ks::file::metadata::TargetPatch& patch : patches)
+            {
+                requiresBackup = requiresBackup || patch.highRisk();
+                if (!patch.snapshot.directory)
+                {
+                    const ks::file::metadata::SignatureInspection signature =
+                        ks::file::metadata::inspectSignature(patch.originalPath);
+                    signedTargetWillChange = signedTargetWillChange ||
+                        signature.embedded || signature.catalog;
+                    hasCatalogSignature = hasCatalogSignature || signature.catalog;
+                }
+            }
+            if (requiresBackup &&
+                (m_backupBeforeSaveCheck == nullptr || !m_backupBeforeSaveCheck->isChecked()))
+            {
+                QMessageBox::warning(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("必须创建备份")),
+                    ks::i18n::sourceText(QStringLiteral(
+                        "暂存内容包含高风险操作。EA 原始数据、Object ID、重解析点、PE 资源和签名清除必须勾选“创建备份再修改”。")));
+                return;
+            }
+
+            if (signedTargetWillChange)
+            {
+                QMessageBox signaturePrompt(this);
+                signaturePrompt.setIcon(QMessageBox::Warning);
+                signaturePrompt.setWindowTitle(
+                    ks::i18n::sourceText(QStringLiteral("已签名文件将被修改")));
+                signaturePrompt.setText(
+                    ks::i18n::sourceText(QStringLiteral(
+                        "修改已签名文件后，Authenticode 验证可能失效。请选择签名数据处理方式。")) +
+                    (hasCatalogSignature
+                        ? QLatin1Char('\n') + ks::i18n::sourceText(QStringLiteral(
+                            "检测到 Catalog 签名。Catalog 只能显示失效状态，无法从文件本身删除。"))
+                        : QString()));
+                QPushButton* removeButton = signaturePrompt.addButton(
+                    ks::i18n::sourceText(QStringLiteral("清除嵌入式签名并继续")),
+                    QMessageBox::AcceptRole);
+                QPushButton* preserveButton = signaturePrompt.addButton(
+                    ks::i18n::sourceText(QStringLiteral("保留签名数据并继续")),
+                    QMessageBox::DestructiveRole);
+                QPushButton* cancelButton = signaturePrompt.addButton(
+                    QMessageBox::Cancel);
+                signaturePrompt.setDefaultButton(cancelButton);
+                signaturePrompt.exec();
+                if (signaturePrompt.clickedButton() == cancelButton)
+                {
+                    return;
+                }
+                if (signaturePrompt.clickedButton() == removeButton)
+                {
+                    for (ks::file::metadata::TargetPatch& patch : patches)
                     {
-                        return;
-                    }
-                    QMetaObject::invokeMethod(
-                        targetDialog,
-                        [guardThis, result, operationGeneration]()
+                        if (patch.snapshot.embeddedSignature)
                         {
-                            if (guardThis == nullptr ||
-                                guardThis->m_metadataOperationGeneration != operationGeneration)
+                            patch.signatureDisposition =
+                                ks::file::metadata::SignatureDisposition::RemoveEmbedded;
+                        }
+                    }
+                }
+                else if (signaturePrompt.clickedButton() != preserveButton)
+                {
+                    return;
+                }
+            }
+
+            requiresBackup = std::any_of(
+                patches.cbegin(),
+                patches.cend(),
+                [](const ks::file::metadata::TargetPatch& patch) { return patch.highRisk(); });
+            if (requiresBackup &&
+                (m_backupBeforeSaveCheck == nullptr || !m_backupBeforeSaveCheck->isChecked()))
+            {
+                QMessageBox::warning(
+                    this,
+                    ks::i18n::sourceText(QStringLiteral("必须创建备份")),
+                    ks::i18n::sourceText(QStringLiteral(
+                        "当前签名处理或高风险修改要求先创建备份。请勾选“创建备份再修改”。")));
+                return;
+            }
+
+            const QMessageBox::StandardButton confirmation = QMessageBox::question(
+                this,
+                ks::i18n::sourceText(QStringLiteral("确认保存全部修改")),
+                ks::i18n::sourceText(QStringLiteral(
+                    "将保存 %1 个目标、%2 类暂存操作。保存前会重新校验文件身份，随后备份、写入并回读。是否继续？"))
+                    .arg(patches.size())
+                    .arg(pendingOperationCount()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (confirmation != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            setTransactionBusy(true);
+            if (m_pendingChangesLabel != nullptr)
+            {
+                m_pendingChangesLabel->setText(
+                    ks::i18n::sourceText(QStringLiteral("● 正在后台保存、回读并生成逐操作结果...")));
+            }
+            ks::file::metadata::TransactionOptions options;
+            options.createBackup = m_backupBeforeSaveCheck != nullptr &&
+                m_backupBeforeSaveCheck->isChecked();
+            QPointer<FileDetailDialog> guardThis(this);
+            auto* task = QRunnable::create([guardThis, patches, options]()
+                {
+                    const ks::file::metadata::TransactionResult result =
+                        ks::file::metadata::executeTransaction(patches, options);
+                    if (guardThis == nullptr) return;
+                    QMetaObject::invokeMethod(
+                        guardThis.data(),
+                        [guardThis, result]()
+                        {
+                            if (guardThis == nullptr) return;
+                            QStringList updatedPaths = guardThis->m_filePaths;
+                            for (ks::file::metadata::TargetPatch& pendingPatch : guardThis->m_pendingPatches)
                             {
-                                return;
+                                const auto resultIterator = std::find_if(
+                                    result.targets.cbegin(),
+                                    result.targets.cend(),
+                                    [&pendingPatch](const ks::file::metadata::TargetResult& target)
+                                    {
+                                        return QDir::cleanPath(target.originalPath).compare(
+                                            QDir::cleanPath(pendingPatch.originalPath),
+                                            Qt::CaseInsensitive) == 0;
+                                    });
+                                if (resultIterator == result.targets.cend() || !resultIterator->ok)
+                                {
+                                    continue;
+                                }
+                                for (QString& path : updatedPaths)
+                                {
+                                    if (QDir::cleanPath(path).compare(
+                                        QDir::cleanPath(pendingPatch.originalPath),
+                                        Qt::CaseInsensitive) == 0)
+                                    {
+                                        path = resultIterator->finalPath;
+                                    }
+                                }
+                                pendingPatch = {};
+                                pendingPatch.originalPath = resultIterator->finalPath;
+                                pendingPatch.snapshot = resultIterator->finalSnapshot;
                             }
-                            if (!result.ok)
+                            guardThis->m_filePaths = updatedPaths;
+                            guardThis->m_filePath = updatedPaths.value(0);
+                            guardThis->setTransactionBusy(false);
+                            guardThis->showTransactionResults(result);
+                            guardThis->updatePendingSaveUi();
+                            if (result.ok)
                             {
-                                guardThis->setMetadataEditorBusy(false);
-                                const QString errorText =
-                                    ks::i18n::displayText(QStringLiteral("元数据写入失败：%1"))
-                                        .arg(formatWin32ErrorText(result.win32Error));
+                                guardThis->setWindowTitle(guardThis->m_batchMode
+                                    ? ks::i18n::sourceText(QStringLiteral("批量文件属性 - %1 项"))
+                                        .arg(guardThis->m_filePaths.size())
+                                    : ks::i18n::displayText(QStringLiteral("文件属性 - %1"))
+                                        .arg(QFileInfo(guardThis->m_filePath).fileName()));
                                 if (guardThis->m_metadataStatusLabel != nullptr)
                                 {
                                     guardThis->m_metadataStatusLabel->setText(
-                                        QStringLiteral("● %1").arg(errorText));
+                                        ks::i18n::sourceText(QStringLiteral(
+                                            "● 所有暂存修改已保存并完成写后回读。")));
                                 }
-                                const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-                                    guardThis.data(),
-                                    ks::i18n::sourceText(QStringLiteral("编辑文件元数据")),
-                                    result.win32Error);
-                                if (!privilegePromptHandled)
+                                guardThis->m_generalR0Loaded = false;
+                                if (!guardThis->m_batchMode)
                                 {
-                                    QMessageBox::warning(
-                                        guardThis.data(),
-                                        ks::i18n::sourceText(QStringLiteral("元数据编辑")),
-                                        errorText);
+                                    guardThis->refreshGeneralTab();
+                                    const QFileInfo refreshedInfo(guardThis->m_filePath);
+                                    guardThis->startR0FileInfoLoad(
+                                        refreshedInfo,
+                                        guardThis->m_generalNtPathText);
                                 }
-                                return;
                             }
-
-                            guardThis->applyMetadataSnapshotToEditor(result.snapshot);
-                            if (guardThis->m_metadataStatusLabel != nullptr)
-                            {
-                                guardThis->m_metadataStatusLabel->setText(
-                                    result.verificationMatched
-                                        ? ks::i18n::sourceText(QStringLiteral(
-                                            "● 元数据已写入并通过回读验证。"))
-                                        : ks::i18n::sourceText(QStringLiteral(
-                                            "● 写入调用成功，但文件系统回读值与请求不同；界面已显示实际值。")));
-                            }
-
-                            // 常规页与 R0 视图同步刷新；生成号会淘汰写入前尚未完成的旧 R0 查询。
-                            guardThis->m_generalR0Loaded = false;
-                            guardThis->refreshGeneralTab();
-                            const QFileInfo refreshedInfo(guardThis->m_filePath);
-                            guardThis->startR0FileInfoLoad(
-                                refreshedInfo,
-                                guardThis->m_generalNtPathText);
                         },
                         Qt::QueuedConnection);
                 });
@@ -8615,6 +9220,81 @@ namespace
 
         QWidget* buildGeneralTab()
         {
+            if (m_batchMode)
+            {
+                QWidget* page = new QWidget(this);
+                QVBoxLayout* layout = new QVBoxLayout(page);
+                quint64 totalSize = 0U;
+                int fileCount = 0;
+                int directoryCount = 0;
+                QTableWidget* table = new ks::ui::VisibleTableWidget(page);
+                table->setColumnCount(6);
+                table->setHorizontalHeaderLabels(QStringList{
+                    QStringLiteral("路径"),
+                    QStringLiteral("类型"),
+                    QStringLiteral("大小"),
+                    QStringLiteral("属性"),
+                    QStringLiteral("最后修改"),
+                    QStringLiteral("状态") });
+                table->setRowCount(m_filePaths.size());
+                table->setSelectionBehavior(QAbstractItemView::SelectRows);
+                table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+                table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                table->setAlternatingRowColors(true);
+                for (qsizetype row = 0; row < m_filePaths.size(); ++row)
+                {
+                    const QString path = m_filePaths.at(row);
+                    const QFileInfo info(path);
+                    const bool exists = info.exists();
+                    if (exists && info.isDir()) ++directoryCount;
+                    if (exists && info.isFile())
+                    {
+                        ++fileCount;
+                        totalSize += static_cast<quint64>(std::max<qint64>(0, info.size()));
+                    }
+                    const std::wstring nativePathText = QDir::toNativeSeparators(path).toStdWString();
+                    const DWORD attributes = ::GetFileAttributesW(nativePathText.c_str());
+                    table->setItem(static_cast<int>(row), 0,
+                        new QTableWidgetItem(QDir::toNativeSeparators(path)));
+                    table->setItem(static_cast<int>(row), 1,
+                        new QTableWidgetItem(info.isDir()
+                            ? QStringLiteral("目录")
+                            : (info.isFile() ? QStringLiteral("文件") : QStringLiteral("其它"))));
+                    table->setItem(static_cast<int>(row), 2,
+                        new QTableWidgetItem(info.isFile()
+                            ? formatFileSizeText(static_cast<qulonglong>(std::max<qint64>(0, info.size())))
+                            : QStringLiteral("-")));
+                    table->setItem(static_cast<int>(row), 3,
+                        new QTableWidgetItem(attributes == INVALID_FILE_ATTRIBUTES
+                            ? QStringLiteral("-")
+                            : fileAttributesToText(attributes)));
+                    table->setItem(static_cast<int>(row), 4,
+                        new QTableWidgetItem(info.lastModified().isValid()
+                            ? info.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                            : QStringLiteral("-")));
+                    table->setItem(static_cast<int>(row), 5,
+                        new QTableWidgetItem(exists ? QStringLiteral("可访问") : QStringLiteral("不存在或不可访问")));
+                }
+                QLabel* summary = new QLabel(
+                    ks::i18n::sourceText(QStringLiteral(
+                        "已选择 %1 项：文件 %2，目录 %3，文件总大小 %4。"))
+                        .arg(m_filePaths.size())
+                        .arg(fileCount)
+                        .arg(directoryCount)
+                        .arg(formatFileSizeText(totalSize)),
+                    page);
+                summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                layout->addWidget(summary);
+                installFileTableCopyMenu(table);
+                if (table->horizontalHeader() != nullptr)
+                {
+                    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+                    table->horizontalHeader()->setStretchLastSection(true);
+                }
+                layout->addWidget(table, 1);
+                return page;
+            }
+
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
 
@@ -8639,6 +9319,968 @@ namespace
             return page;
         }
 
+        static QComboBox* buildChangeStateCombo(QWidget* parent)
+        {
+            QComboBox* combo = new QComboBox(parent);
+            combo->addItem(QStringLiteral("不修改"),
+                static_cast<int>(ks::file::metadata::ChangeState::Unchanged));
+            combo->addItem(QStringLiteral("启用"),
+                static_cast<int>(ks::file::metadata::ChangeState::Enabled));
+            combo->addItem(QStringLiteral("禁用"),
+                static_cast<int>(ks::file::metadata::ChangeState::Disabled));
+            return combo;
+        }
+
+        static ks::file::metadata::ChangeState changeStateFromCombo(const QComboBox* combo)
+        {
+            return combo == nullptr
+                ? ks::file::metadata::ChangeState::Unchanged
+                : static_cast<ks::file::metadata::ChangeState>(combo->currentData().toInt());
+        }
+
+        static QByteArray parseMetadataHexText(const QString& text, bool* okOut)
+        {
+            QString normalized = text;
+            normalized.remove(QRegularExpression(QStringLiteral("[^0-9A-Fa-f]")));
+            const bool valid = (normalized.size() % 2) == 0;
+            if (okOut != nullptr) *okOut = valid;
+            return valid ? QByteArray::fromHex(normalized.toLatin1()) : QByteArray();
+        }
+
+        static QByteArray metadataEditorBytes(
+            const QPlainTextEdit* editor,
+            const QComboBox* formatCombo,
+            bool* okOut)
+        {
+            if (editor == nullptr)
+            {
+                if (okOut != nullptr) *okOut = false;
+                return {};
+            }
+            if (formatCombo != nullptr && formatCombo->currentIndex() == 1)
+            {
+                return parseMetadataHexText(editor->toPlainText(), okOut);
+            }
+            if (okOut != nullptr) *okOut = true;
+            return editor->toPlainText().toUtf8();
+        }
+
+        void refreshMetadataStreamTable(QTableWidget* table)
+        {
+            if (table == nullptr) return;
+            table->setRowCount(0);
+            const QStringList paths = m_filePaths;
+            QPointer<QTableWidget> tableGuard(table);
+            auto* task = QRunnable::create([tableGuard, paths]()
+                {
+                    QList<QStringList> rows;
+                    for (const QString& path : paths)
+                    {
+                        DWORD error = ERROR_SUCCESS;
+                        const QList<ks::file::metadata::StreamEntry> streams =
+                            ks::file::metadata::enumerateStreams(path, &error);
+                        if (error != ERROR_SUCCESS)
+                        {
+                            rows.push_back(QStringList{
+                                path,
+                                QStringLiteral("<读取失败>"),
+                                QString::number(error) });
+                            continue;
+                        }
+                        for (const ks::file::metadata::StreamEntry& stream : streams)
+                        {
+                            rows.push_back(QStringList{
+                                path,
+                                stream.name,
+                                QString::number(stream.size) });
+                        }
+                    }
+                    if (tableGuard == nullptr) return;
+                    QMetaObject::invokeMethod(tableGuard.data(), [tableGuard, rows]()
+                        {
+                            if (tableGuard == nullptr) return;
+                            tableGuard->setRowCount(rows.size());
+                            for (qsizetype row = 0; row < rows.size(); ++row)
+                            {
+                                const QStringList values = rows.at(row);
+                                for (int column = 0; column < values.size(); ++column)
+                                {
+                                    tableGuard->setItem(static_cast<int>(row), column,
+                                        new QTableWidgetItem(values.at(column)));
+                                }
+                            }
+                        }, Qt::QueuedConnection);
+                });
+            task->setAutoDelete(true);
+            QThreadPool::globalInstance()->start(task);
+        }
+
+        void refreshMetadataEaTable(QTableWidget* table)
+        {
+            if (table == nullptr) return;
+            table->setRowCount(0);
+            const QStringList paths = m_filePaths;
+            QPointer<QTableWidget> tableGuard(table);
+            auto* task = QRunnable::create([tableGuard, paths]()
+                {
+                    QList<QStringList> rows;
+                    for (const QString& path : paths)
+                    {
+                        DWORD error = ERROR_SUCCESS;
+                        const QList<ks::file::metadata::ExtendedAttributeEntry> entries =
+                            ks::file::metadata::enumerateExtendedAttributes(path, &error);
+                        if (error != ERROR_SUCCESS)
+                        {
+                            rows.push_back(QStringList{
+                                path,
+                                QStringLiteral("<读取失败>"),
+                                QString::number(error),
+                                QString() });
+                            continue;
+                        }
+                        for (const ks::file::metadata::ExtendedAttributeEntry& entry : entries)
+                        {
+                            rows.push_back(QStringList{
+                                path,
+                                entry.name,
+                                QString::number(entry.value.size()),
+                                QString::fromLatin1(entry.value.left(64).toHex(' ').toUpper()) });
+                        }
+                    }
+                    if (tableGuard == nullptr) return;
+                    QMetaObject::invokeMethod(tableGuard.data(), [tableGuard, rows]()
+                        {
+                            if (tableGuard == nullptr) return;
+                            tableGuard->setRowCount(rows.size());
+                            for (qsizetype row = 0; row < rows.size(); ++row)
+                            {
+                                const QStringList values = rows.at(row);
+                                for (int column = 0; column < values.size(); ++column)
+                                {
+                                    tableGuard->setItem(static_cast<int>(row), column,
+                                        new QTableWidgetItem(values.at(column)));
+                                }
+                            }
+                        }, Qt::QueuedConnection);
+                });
+            task->setAutoDelete(true);
+            QThreadPool::globalInstance()->start(task);
+        }
+
+        QWidget* buildMetadataNameAndFilesystemPage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QFormLayout* form = new QFormLayout();
+
+            QCheckBox* renameCheck = new QCheckBox(QStringLiteral("暂存重命名"), page);
+            QLineEdit* renameEdit = new QLineEdit(page);
+            renameEdit->setText(m_batchMode ? QString() : QFileInfo(m_filePath).fileName());
+            renameEdit->setEnabled(!m_batchMode);
+            renameCheck->setEnabled(!m_batchMode);
+            form->addRow(renameCheck, renameEdit);
+
+            QCheckBox* shortNameCheck = new QCheckBox(QStringLiteral("设置 8.3 短文件名"), page);
+            QLineEdit* shortNameEdit = new QLineEdit(page);
+            shortNameEdit->setPlaceholderText(QStringLiteral("例如 SAMPLE~1.TXT；留空可清除短名"));
+            shortNameEdit->setEnabled(!m_batchMode);
+            shortNameCheck->setEnabled(!m_batchMode);
+            form->addRow(shortNameCheck, shortNameEdit);
+
+            QComboBox* caseSensitiveCombo = buildChangeStateCombo(page);
+            form->addRow(QStringLiteral("目录大小写敏感"), caseSensitiveCombo);
+            QComboBox* compressionCombo = buildChangeStateCombo(page);
+            form->addRow(QStringLiteral("NTFS 压缩"), compressionCombo);
+            QComboBox* sparseCombo = buildChangeStateCombo(page);
+            form->addRow(QStringLiteral("稀疏文件"), sparseCombo);
+            QComboBox* encryptionCombo = buildChangeStateCombo(page);
+            form->addRow(QStringLiteral("EFS 加密"), encryptionCombo);
+            QComboBox* integrityCombo = buildChangeStateCombo(page);
+            form->addRow(QStringLiteral("Integrity Stream"), integrityCombo);
+
+            QComboBox* objectIdAction = new QComboBox(page);
+            objectIdAction->addItems(QStringList{
+                QStringLiteral("不修改"),
+                QStringLiteral("设置 Object ID"),
+                QStringLiteral("删除 Object ID") });
+            QLineEdit* objectIdEdit = new QLineEdit(page);
+            objectIdEdit->setPlaceholderText(QStringLiteral("16 字节或完整 64 字节十六进制"));
+            QHBoxLayout* objectIdLayout = new QHBoxLayout();
+            objectIdLayout->addWidget(objectIdAction);
+            objectIdLayout->addWidget(objectIdEdit, 1);
+            form->addRow(QStringLiteral("Object ID"), objectIdLayout);
+
+            QPlainTextEdit* hardLinksEdit = new QPlainTextEdit(page);
+            hardLinksEdit->setPlaceholderText(QStringLiteral("每行一个要创建的硬链接完整路径；仅单文件模式可用"));
+            hardLinksEdit->setMaximumHeight(70);
+            hardLinksEdit->setEnabled(!m_batchMode);
+            form->addRow(QStringLiteral("新增硬链接"), hardLinksEdit);
+            layout->addLayout(form);
+
+            QHBoxLayout* hardLinkQueryLayout = new QHBoxLayout();
+            QPushButton* queryHardLinksButton = new QPushButton(QStringLiteral("枚举现有硬链接"), page);
+            QLabel* hardLinkQueryResult = new QLabel(QStringLiteral("-"), page);
+            hardLinkQueryResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            hardLinkQueryResult->setWordWrap(true);
+            queryHardLinksButton->setEnabled(!m_batchMode);
+            hardLinkQueryLayout->addWidget(queryHardLinksButton);
+            hardLinkQueryLayout->addWidget(hardLinkQueryResult, 1);
+            layout->addLayout(hardLinkQueryLayout);
+
+            QLabel* hint = new QLabel(QStringLiteral(
+                "压缩、稀疏、EFS、Integrity Stream、Object ID 均通过公开 Win32/FSCTL 在 R3 完成。"
+                "文件长度、有效数据长度、分配大小仍保持只读。"), page);
+            hint->setWordWrap(true);
+            layout->addWidget(hint);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存名称与文件系统修改"), page);
+            layout->addWidget(stageButton, 0, Qt::AlignRight);
+            layout->addStretch(1);
+
+            connect(queryHardLinksButton, &QPushButton::clicked, this,
+                [this, hardLinkQueryResult]()
+                {
+                    DWORD error = ERROR_SUCCESS;
+                    const QStringList links = ks::file::metadata::enumerateHardLinks(m_filePath, &error);
+                    hardLinkQueryResult->setText(error == ERROR_SUCCESS
+                        ? links.join(QStringLiteral(" | "))
+                        : QStringLiteral("枚举失败：%1").arg(formatWin32ErrorText(error)));
+                });
+
+            connect(stageButton, &QPushButton::clicked, this,
+                [this, renameCheck, renameEdit, shortNameCheck, shortNameEdit,
+                 caseSensitiveCombo, compressionCombo, sparseCombo, encryptionCombo,
+                 integrityCombo, objectIdAction, objectIdEdit, hardLinksEdit]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    QByteArray objectIdBytes;
+                    if (objectIdAction->currentIndex() == 1)
+                    {
+                        bool objectIdOk = false;
+                        objectIdBytes = parseMetadataHexText(objectIdEdit->text(), &objectIdOk);
+                        if (!objectIdOk || (objectIdBytes.size() != 16 && objectIdBytes.size() != 64))
+                        {
+                            QMessageBox::warning(this, QStringLiteral("Object ID"),
+                                QStringLiteral("Object ID 必须是 16 字节或完整 64 字节十六进制。"));
+                            return;
+                        }
+                    }
+                    const QStringList hardLinkPaths = hardLinksEdit->toPlainText()
+                        .split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        patch.rename = !m_batchMode && renameCheck->isChecked();
+                        patch.newName = renameEdit->text().trimmed();
+                        patch.setShortName = !m_batchMode && shortNameCheck->isChecked();
+                        patch.shortName = shortNameEdit->text().trimmed();
+                        patch.caseSensitive = patch.snapshot.directory
+                            ? changeStateFromCombo(caseSensitiveCombo)
+                            : ks::file::metadata::ChangeState::Unchanged;
+                        patch.compression = changeStateFromCombo(compressionCombo);
+                        patch.sparse = patch.snapshot.directory
+                            ? ks::file::metadata::ChangeState::Unchanged
+                            : changeStateFromCombo(sparseCombo);
+                        patch.encryption = changeStateFromCombo(encryptionCombo);
+                        patch.integrityStream = changeStateFromCombo(integrityCombo);
+                        patch.objectId.update = objectIdAction->currentIndex() != 0;
+                        patch.objectId.remove = objectIdAction->currentIndex() == 2;
+                        patch.objectId.objectId = objectIdBytes;
+                        patch.hardLinkPaths = m_batchMode ? QStringList() : hardLinkPaths;
+                    }
+                    updatePendingSaveUi();
+                });
+            return page;
+        }
+
+        QWidget* buildMetadataShellPropertyPage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QGridLayout* grid = new QGridLayout();
+            struct ShellRow
+            {
+                QCheckBox* update = nullptr;
+                QLineEdit* editor = nullptr;
+            };
+            const QStringList labels{
+                QStringLiteral("标题"),
+                QStringLiteral("主题"),
+                QStringLiteral("作者（分号分隔）"),
+                QStringLiteral("标签 / 关键字（分号分隔）"),
+                QStringLiteral("注释"),
+                QStringLiteral("版权") };
+            std::array<ShellRow, 6> rows{};
+            for (int index = 0; index < static_cast<int>(rows.size()); ++index)
+            {
+                rows[static_cast<std::size_t>(index)].update =
+                    new QCheckBox(QStringLiteral("修改"), page);
+                rows[static_cast<std::size_t>(index)].editor = new QLineEdit(page);
+                grid->addWidget(rows[static_cast<std::size_t>(index)].update, index, 0);
+                grid->addWidget(new QLabel(labels.at(index), page), index, 1);
+                grid->addWidget(rows[static_cast<std::size_t>(index)].editor, index, 2);
+            }
+            QCheckBox* ratingCheck = new QCheckBox(QStringLiteral("修改"), page);
+            QSpinBox* ratingSpin = new QSpinBox(page);
+            ratingSpin->setRange(0, 99);
+            grid->addWidget(ratingCheck, 6, 0);
+            grid->addWidget(new QLabel(QStringLiteral("评分（0-99）"), page), 6, 1);
+            grid->addWidget(ratingSpin, 6, 2);
+            grid->setColumnStretch(2, 1);
+            layout->addLayout(grid);
+
+            QLabel* status = new QLabel(QStringLiteral("可从第一个目标读取当前 Shell 属性。"), page);
+            status->setWordWrap(true);
+            QHBoxLayout* actions = new QHBoxLayout();
+            QPushButton* loadButton = new QPushButton(QStringLiteral("读取当前值"), page);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存 Shell 属性"), page);
+            actions->addWidget(loadButton);
+            actions->addStretch(1);
+            actions->addWidget(stageButton);
+            layout->addWidget(status);
+            layout->addLayout(actions);
+            layout->addStretch(1);
+
+            connect(loadButton, &QPushButton::clicked, this, [this, rows, ratingSpin, status]()
+                {
+                    status->setText(QStringLiteral("● 正在后台读取 Shell 属性..."));
+                    const QString path = m_filePath;
+                    QPointer<FileDetailDialog> dialogGuard(this);
+                    QPointer<QLabel> statusGuard(status);
+                    auto* task = QRunnable::create([dialogGuard, statusGuard, path, rows, ratingSpin]()
+                        {
+                            const ks::file::metadata::ShellProperties properties =
+                                ks::file::metadata::readShellProperties(path);
+                            if (dialogGuard == nullptr) return;
+                            QMetaObject::invokeMethod(dialogGuard.data(),
+                                [dialogGuard, statusGuard, properties, rows, ratingSpin]()
+                                {
+                                    if (dialogGuard == nullptr || statusGuard == nullptr) return;
+                                    if (!properties.ok)
+                                    {
+                                        statusGuard->setText(QStringLiteral("● Shell 属性读取失败：%1")
+                                            .arg(formatWin32ErrorText(properties.win32Error)));
+                                        return;
+                                    }
+                                    const QStringList values{
+                                        properties.title,
+                                        properties.subject,
+                                        properties.authors.join(QStringLiteral("; ")),
+                                        properties.keywords.join(QStringLiteral("; ")),
+                                        properties.comment,
+                                        properties.copyright };
+                                    for (int index = 0; index < values.size(); ++index)
+                                    {
+                                        if (rows[static_cast<std::size_t>(index)].editor != nullptr)
+                                        {
+                                            rows[static_cast<std::size_t>(index)].editor->setText(values.at(index));
+                                        }
+                                    }
+                                    ratingSpin->setValue(static_cast<int>(properties.rating));
+                                    statusGuard->setText(QStringLiteral("● 已读取第一个目标的当前值。"));
+                                }, Qt::QueuedConnection);
+                        });
+                    task->setAutoDelete(true);
+                    QThreadPool::globalInstance()->start(task);
+                });
+            connect(stageButton, &QPushButton::clicked, this, [this, rows, ratingCheck, ratingSpin, status]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        auto& shell = patch.shellProperties;
+                        shell.updateTitle = rows[0].update->isChecked();
+                        shell.title = rows[0].editor->text();
+                        shell.updateSubject = rows[1].update->isChecked();
+                        shell.subject = rows[1].editor->text();
+                        shell.updateAuthors = rows[2].update->isChecked();
+                        shell.authors = rows[2].editor->text().split(QLatin1Char(';'), Qt::SkipEmptyParts);
+                        shell.updateKeywords = rows[3].update->isChecked();
+                        shell.keywords = rows[3].editor->text().split(QLatin1Char(';'), Qt::SkipEmptyParts);
+                        shell.updateComment = rows[4].update->isChecked();
+                        shell.comment = rows[4].editor->text();
+                        shell.updateCopyright = rows[5].update->isChecked();
+                        shell.copyright = rows[5].editor->text();
+                        shell.updateRating = ratingCheck->isChecked();
+                        shell.rating = static_cast<quint32>(ratingSpin->value());
+                    }
+                    status->setText(QStringLiteral("● Shell 属性已暂存。"));
+                    updatePendingSaveUi();
+                });
+            return page;
+        }
+
+        QWidget* buildMetadataAdsPage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QTableWidget* table = new ks::ui::VisibleTableWidget(page);
+            table->setColumnCount(3);
+            table->setHorizontalHeaderLabels(QStringList{
+                QStringLiteral("目标"), QStringLiteral("数据流"), QStringLiteral("字节数") });
+            table->setSelectionBehavior(QAbstractItemView::SelectRows);
+            table->setSelectionMode(QAbstractItemView::SingleSelection);
+            table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            installFileTableCopyMenu(table);
+            layout->addWidget(table, 1);
+
+            QGridLayout* editorLayout = new QGridLayout();
+            QLineEdit* nameEdit = new QLineEdit(page);
+            nameEdit->setPlaceholderText(QStringLiteral("例如 Zone.Identifier"));
+            QComboBox* formatCombo = new QComboBox(page);
+            formatCombo->addItems(QStringList{ QStringLiteral("文本 UTF-8"), QStringLiteral("十六进制") });
+            QCheckBox* removeCheck = new QCheckBox(QStringLiteral("删除该数据流"), page);
+            QPlainTextEdit* dataEdit = new QPlainTextEdit(page);
+            dataEdit->setMaximumHeight(120);
+            editorLayout->addWidget(new QLabel(QStringLiteral("流名称"), page), 0, 0);
+            editorLayout->addWidget(nameEdit, 0, 1);
+            editorLayout->addWidget(formatCombo, 0, 2);
+            editorLayout->addWidget(removeCheck, 0, 3);
+            editorLayout->addWidget(dataEdit, 1, 0, 1, 4);
+            layout->addLayout(editorLayout);
+
+            QGroupBox* zoneGroup = new QGroupBox(QStringLiteral("Zone.Identifier 结构化编辑"), page);
+            QFormLayout* zoneLayout = new QFormLayout(zoneGroup);
+            QSpinBox* zoneIdSpin = new QSpinBox(zoneGroup);
+            zoneIdSpin->setRange(0, 4);
+            zoneIdSpin->setValue(3);
+            QLineEdit* referrerEdit = new QLineEdit(zoneGroup);
+            QLineEdit* hostEdit = new QLineEdit(zoneGroup);
+            QPushButton* buildZoneButton = new QPushButton(QStringLiteral("生成结构化内容"), zoneGroup);
+            zoneLayout->addRow(QStringLiteral("ZoneId"), zoneIdSpin);
+            zoneLayout->addRow(QStringLiteral("ReferrerUrl"), referrerEdit);
+            zoneLayout->addRow(QStringLiteral("HostUrl"), hostEdit);
+            zoneLayout->addRow(QString(), buildZoneButton);
+            layout->addWidget(zoneGroup);
+
+            QHBoxLayout* actions = new QHBoxLayout();
+            QPushButton* refreshButton = new QPushButton(QStringLiteral("刷新数据流"), page);
+            QPushButton* loadButton = new QPushButton(QStringLiteral("读取选中流"), page);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存 ADS 操作"), page);
+            actions->addWidget(refreshButton);
+            actions->addWidget(loadButton);
+            actions->addStretch(1);
+            actions->addWidget(stageButton);
+            layout->addLayout(actions);
+
+            connect(refreshButton, &QPushButton::clicked, this,
+                [this, table]() { refreshMetadataStreamTable(table); });
+            connect(buildZoneButton, &QPushButton::clicked, this,
+                [nameEdit, formatCombo, dataEdit, zoneIdSpin, referrerEdit, hostEdit]()
+                {
+                    nameEdit->setText(QStringLiteral("Zone.Identifier"));
+                    formatCombo->setCurrentIndex(0);
+                    QString content = QStringLiteral("[ZoneTransfer]\r\nZoneId=%1\r\n")
+                        .arg(zoneIdSpin->value());
+                    if (!referrerEdit->text().trimmed().isEmpty())
+                        content += QStringLiteral("ReferrerUrl=%1\r\n").arg(referrerEdit->text().trimmed());
+                    if (!hostEdit->text().trimmed().isEmpty())
+                        content += QStringLiteral("HostUrl=%1\r\n").arg(hostEdit->text().trimmed());
+                    dataEdit->setPlainText(content);
+                });
+            connect(loadButton, &QPushButton::clicked, this, [this, table, nameEdit, formatCombo, dataEdit]()
+                {
+                    const int row = table->currentRow();
+                    if (row < 0 || table->item(row, 0) == nullptr || table->item(row, 1) == nullptr) return;
+                    const QString path = table->item(row, 0)->text();
+                    const QString name = table->item(row, 1)->text();
+                    nameEdit->setText(name);
+                    DWORD error = ERROR_SUCCESS;
+                    const QByteArray data = ks::file::metadata::readStream(path, name, &error);
+                    if (error != ERROR_SUCCESS)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("ADS"),
+                            QStringLiteral("读取数据流失败：%1").arg(formatWin32ErrorText(error)));
+                        return;
+                    }
+                    const bool printable = std::all_of(data.cbegin(), data.cend(), [](const char value)
+                        {
+                            const unsigned char byte = static_cast<unsigned char>(value);
+                            return byte == '\r' || byte == '\n' || byte == '\t' || byte >= 0x20U;
+                        });
+                    formatCombo->setCurrentIndex(printable ? 0 : 1);
+                    dataEdit->setPlainText(printable
+                        ? QString::fromUtf8(data)
+                        : QString::fromLatin1(data.toHex(' ').toUpper()));
+                });
+            connect(stageButton, &QPushButton::clicked, this,
+                [this, nameEdit, formatCombo, removeCheck, dataEdit]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    QString name = nameEdit->text().trimmed();
+                    if (name.startsWith(QLatin1Char(':'))) name.remove(0, 1);
+                    if (name.endsWith(QStringLiteral(":$DATA"), Qt::CaseInsensitive)) name.chop(6);
+                    if (name.isEmpty() || name.compare(QStringLiteral("$DATA"), Qt::CaseInsensitive) == 0)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("ADS"),
+                            QStringLiteral("默认数据流保持只读。请输入命名数据流名称。"));
+                        return;
+                    }
+                    bool dataOk = true;
+                    const QByteArray data = removeCheck->isChecked()
+                        ? QByteArray()
+                        : metadataEditorBytes(dataEdit, formatCombo, &dataOk);
+                    if (!dataOk)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("ADS"), QStringLiteral("十六进制数据格式无效。"));
+                        return;
+                    }
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        patch.streams.erase(std::remove_if(patch.streams.begin(), patch.streams.end(),
+                            [&name](const ks::file::metadata::NamedBinaryPatch& item)
+                            {
+                                return item.name.compare(name, Qt::CaseInsensitive) == 0;
+                            }), patch.streams.end());
+                        ks::file::metadata::NamedBinaryPatch stream;
+                        stream.name = name;
+                        stream.action = removeCheck->isChecked()
+                            ? ks::file::metadata::BinaryPatchAction::Remove
+                            : ks::file::metadata::BinaryPatchAction::Replace;
+                        stream.data = data;
+                        patch.streams.push_back(stream);
+                    }
+                    updatePendingSaveUi();
+                });
+            QMetaObject::invokeMethod(page, [this, table]() { refreshMetadataStreamTable(table); },
+                Qt::QueuedConnection);
+            return page;
+        }
+
+        QWidget* buildMetadataEaPage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QTableWidget* table = new ks::ui::VisibleTableWidget(page);
+            table->setColumnCount(4);
+            table->setHorizontalHeaderLabels(QStringList{
+                QStringLiteral("目标"), QStringLiteral("EA 名称"),
+                QStringLiteral("字节数"), QStringLiteral("值预览") });
+            table->setSelectionBehavior(QAbstractItemView::SelectRows);
+            table->setSelectionMode(QAbstractItemView::SingleSelection);
+            table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            installFileTableCopyMenu(table);
+            layout->addWidget(table, 1);
+
+            QLineEdit* nameEdit = new QLineEdit(page);
+            nameEdit->setPlaceholderText(QStringLiteral("EA 名称，最长 255 字节"));
+            QComboBox* formatCombo = new QComboBox(page);
+            formatCombo->addItems(QStringList{ QStringLiteral("文本 UTF-8"), QStringLiteral("十六进制") });
+            QCheckBox* needEaCheck = new QCheckBox(QStringLiteral("FILE_NEED_EA"), page);
+            QCheckBox* removeCheck = new QCheckBox(QStringLiteral("删除该 EA"), page);
+            QPlainTextEdit* dataEdit = new QPlainTextEdit(page);
+            dataEdit->setMaximumHeight(120);
+            QHBoxLayout* header = new QHBoxLayout();
+            header->addWidget(nameEdit, 1);
+            header->addWidget(formatCombo);
+            header->addWidget(needEaCheck);
+            header->addWidget(removeCheck);
+            layout->addLayout(header);
+            layout->addWidget(dataEdit);
+
+            QHBoxLayout* actions = new QHBoxLayout();
+            QPushButton* refreshButton = new QPushButton(QStringLiteral("刷新 EA"), page);
+            QPushButton* loadButton = new QPushButton(QStringLiteral("读取选中 EA"), page);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存 EA 操作"), page);
+            actions->addWidget(refreshButton);
+            actions->addWidget(loadButton);
+            actions->addStretch(1);
+            actions->addWidget(stageButton);
+            layout->addLayout(actions);
+            connect(refreshButton, &QPushButton::clicked, this,
+                [this, table]() { refreshMetadataEaTable(table); });
+            connect(loadButton, &QPushButton::clicked, this,
+                [this, table, nameEdit, formatCombo, dataEdit, needEaCheck]()
+                {
+                    const int row = table->currentRow();
+                    if (row < 0 || table->item(row, 0) == nullptr || table->item(row, 1) == nullptr) return;
+                    DWORD error = ERROR_SUCCESS;
+                    const auto entries = ks::file::metadata::enumerateExtendedAttributes(
+                        table->item(row, 0)->text(), &error);
+                    const QString name = table->item(row, 1)->text();
+                    const auto iterator = std::find_if(entries.cbegin(), entries.cend(),
+                        [&name](const ks::file::metadata::ExtendedAttributeEntry& item)
+                        {
+                            return item.name == name;
+                        });
+                    if (error != ERROR_SUCCESS || iterator == entries.cend())
+                    {
+                        QMessageBox::warning(this, QStringLiteral("EA"),
+                            QStringLiteral("读取 EA 失败：%1").arg(formatWin32ErrorText(error)));
+                        return;
+                    }
+                    nameEdit->setText(iterator->name);
+                    needEaCheck->setChecked(iterator->needEa);
+                    formatCombo->setCurrentIndex(1);
+                    dataEdit->setPlainText(QString::fromLatin1(iterator->value.toHex(' ').toUpper()));
+                });
+            connect(stageButton, &QPushButton::clicked, this,
+                [this, nameEdit, formatCombo, dataEdit, needEaCheck, removeCheck]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    const QString name = nameEdit->text().trimmed();
+                    if (name.isEmpty() || name.toUtf8().size() > 255)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("EA"), QStringLiteral("EA 名称无效。"));
+                        return;
+                    }
+                    bool dataOk = true;
+                    const QByteArray data = removeCheck->isChecked()
+                        ? QByteArray()
+                        : metadataEditorBytes(dataEdit, formatCombo, &dataOk);
+                    if (!dataOk || data.size() > 65535)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("EA"),
+                            QStringLiteral("EA 值必须是不超过 65535 字节的有效数据。"));
+                        return;
+                    }
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        patch.extendedAttributes.erase(
+                            std::remove_if(patch.extendedAttributes.begin(), patch.extendedAttributes.end(),
+                                [&name](const ks::file::metadata::NamedBinaryPatch& item)
+                                {
+                                    return item.name.compare(name, Qt::CaseInsensitive) == 0;
+                                }),
+                            patch.extendedAttributes.end());
+                        ks::file::metadata::NamedBinaryPatch ea;
+                        ea.name = name;
+                        ea.needEa = needEaCheck->isChecked();
+                        ea.action = removeCheck->isChecked()
+                            ? ks::file::metadata::BinaryPatchAction::Remove
+                            : ks::file::metadata::BinaryPatchAction::Replace;
+                        ea.data = data;
+                        patch.extendedAttributes.push_back(ea);
+                    }
+                    updatePendingSaveUi();
+                });
+            QMetaObject::invokeMethod(page, [this, table]() { refreshMetadataEaTable(table); },
+                Qt::QueuedConnection);
+            return page;
+        }
+
+        QWidget* buildMetadataSecurityPage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QLabel* hint = new QLabel(QStringLiteral(
+                "可编辑 Owner、Primary Group、DACL、SACL、Mandatory Integrity 与继承保护。"
+                "SDDL 会在保存事务中通过 Windows 安全 API 写入。"), page);
+            hint->setWordWrap(true);
+            layout->addWidget(hint);
+            QPlainTextEdit* sddlEdit = new QPlainTextEdit(page);
+            sddlEdit->setPlaceholderText(QStringLiteral("例如 O:...G:...D:...S:..."));
+            layout->addWidget(sddlEdit, 1);
+            QHBoxLayout* scopes = new QHBoxLayout();
+            QCheckBox* ownerCheck = new QCheckBox(QStringLiteral("Owner"), page);
+            QCheckBox* groupCheck = new QCheckBox(QStringLiteral("Primary Group"), page);
+            QCheckBox* daclCheck = new QCheckBox(QStringLiteral("DACL"), page);
+            QCheckBox* saclCheck = new QCheckBox(QStringLiteral("SACL / Mandatory Label"), page);
+            QCheckBox* protectDaclCheck = new QCheckBox(QStringLiteral("保护 DACL 继承"), page);
+            QCheckBox* protectSaclCheck = new QCheckBox(QStringLiteral("保护 SACL 继承"), page);
+            daclCheck->setChecked(true);
+            scopes->addWidget(ownerCheck);
+            scopes->addWidget(groupCheck);
+            scopes->addWidget(daclCheck);
+            scopes->addWidget(saclCheck);
+            scopes->addWidget(protectDaclCheck);
+            scopes->addWidget(protectSaclCheck);
+            scopes->addStretch(1);
+            layout->addLayout(scopes);
+            QHBoxLayout* effectiveLayout = new QHBoxLayout();
+            QLineEdit* effectiveTrusteeEdit = new QLineEdit(page);
+            effectiveTrusteeEdit->setPlaceholderText(QStringLiteral(
+                "账户或 SID，例如 BUILTIN\\Users / Everyone / S-1-5-32-545"));
+            QPushButton* effectiveButton = new QPushButton(QStringLiteral("检查有效权限"), page);
+            QLabel* effectiveResult = new QLabel(QStringLiteral("Mask: -"), page);
+            effectiveResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            effectiveLayout->addWidget(effectiveTrusteeEdit, 1);
+            effectiveLayout->addWidget(effectiveButton);
+            effectiveLayout->addWidget(effectiveResult);
+            layout->addLayout(effectiveLayout);
+            QLabel* status = new QLabel(QStringLiteral("可从第一个目标读取 Owner、Group 与 DACL SDDL。"), page);
+            status->setWordWrap(true);
+            layout->addWidget(status);
+            QHBoxLayout* actions = new QHBoxLayout();
+            QPushButton* loadButton = new QPushButton(QStringLiteral("读取当前 SDDL"), page);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存安全描述符"), page);
+            actions->addWidget(loadButton);
+            actions->addStretch(1);
+            actions->addWidget(stageButton);
+            layout->addLayout(actions);
+            connect(loadButton, &QPushButton::clicked, this, [this, sddlEdit, status]()
+                {
+                    status->setText(QStringLiteral("● 正在后台读取安全描述符..."));
+                    const QString path = m_filePath;
+                    QPointer<QPlainTextEdit> editorGuard(sddlEdit);
+                    QPointer<QLabel> statusGuard(status);
+                    auto* task = QRunnable::create([path, editorGuard, statusGuard]()
+                        {
+                            DWORD error = ERROR_SUCCESS;
+                            const QString sddl =
+                                ks::file::metadata::readSecurityDescriptorSddl(path, &error);
+                            if (editorGuard == nullptr || statusGuard == nullptr) return;
+                            QMetaObject::invokeMethod(editorGuard.data(),
+                                [editorGuard, statusGuard, sddl, error]()
+                                {
+                                    if (editorGuard == nullptr || statusGuard == nullptr) return;
+                                    if (error != ERROR_SUCCESS)
+                                    {
+                                        statusGuard->setText(QStringLiteral("● SDDL 读取失败：%1")
+                                            .arg(formatWin32ErrorText(error)));
+                                        return;
+                                    }
+                                    editorGuard->setPlainText(sddl);
+                                    statusGuard->setText(QStringLiteral("● 当前 SDDL 已读取。"));
+                                }, Qt::QueuedConnection);
+                        });
+                    task->setAutoDelete(true);
+                    QThreadPool::globalInstance()->start(task);
+                });
+            connect(effectiveButton, &QPushButton::clicked, this,
+                [this, effectiveTrusteeEdit, effectiveResult]()
+                {
+                    DWORD accessMask = 0U;
+                    const DWORD error = ks::file::metadata::queryEffectiveAccessMask(
+                        m_filePath,
+                        effectiveTrusteeEdit->text(),
+                        &accessMask);
+                    effectiveResult->setText(error == ERROR_SUCCESS
+                        ? QStringLiteral("Mask: 0x%1 · %2")
+                            .arg(accessMask, 8, 16, QLatin1Char('0'))
+                            .arg(accessMaskToText(accessMask))
+                        : QStringLiteral("检查失败：%1").arg(formatWin32ErrorText(error)));
+                });
+            connect(stageButton, &QPushButton::clicked, this,
+                [this, sddlEdit, ownerCheck, groupCheck, daclCheck, saclCheck,
+                 protectDaclCheck, protectSaclCheck, status]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    SECURITY_INFORMATION information = 0U;
+                    if (ownerCheck->isChecked()) information |= OWNER_SECURITY_INFORMATION;
+                    if (groupCheck->isChecked()) information |= GROUP_SECURITY_INFORMATION;
+                    if (daclCheck->isChecked()) information |= DACL_SECURITY_INFORMATION;
+                    if (saclCheck->isChecked()) information |= SACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+                    if (protectDaclCheck->isChecked())
+                        information |= DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+                    if (protectSaclCheck->isChecked())
+                        information |= SACL_SECURITY_INFORMATION | PROTECTED_SACL_SECURITY_INFORMATION;
+                    if (information == 0U || sddlEdit->toPlainText().trimmed().isEmpty())
+                    {
+                        QMessageBox::warning(this, QStringLiteral("安全描述符"),
+                            QStringLiteral("请填写 SDDL 并至少选择一个写入范围。"));
+                        return;
+                    }
+                    PSECURITY_DESCRIPTOR descriptor = nullptr;
+                    if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        sddlEdit->toPlainText().trimmed().toStdWString().c_str(),
+                        SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("安全描述符"),
+                            QStringLiteral("SDDL 格式无效：%1")
+                                .arg(formatWin32ErrorText(::GetLastError())));
+                        return;
+                    }
+                    ::LocalFree(descriptor);
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        patch.security.replaceSddl = true;
+                        patch.security.sddl = sddlEdit->toPlainText().trimmed();
+                        patch.security.securityInformation = information;
+                    }
+                    status->setText(QStringLiteral("● 安全描述符已暂存。"));
+                    updatePendingSaveUi();
+                });
+            return page;
+        }
+
+        QWidget* buildMetadataPeAndReparsePage(QWidget* parent)
+        {
+            QWidget* page = new QWidget(parent);
+            QVBoxLayout* layout = new QVBoxLayout(page);
+            QGroupBox* reparseGroup = new QGroupBox(QStringLiteral("重解析点原始缓冲"), page);
+            QVBoxLayout* reparseLayout = new QVBoxLayout(reparseGroup);
+            QHBoxLayout* reparseActions = new QHBoxLayout();
+            QComboBox* reparseAction = new QComboBox(reparseGroup);
+            reparseAction->addItems(QStringList{
+                QStringLiteral("不修改"),
+                QStringLiteral("写入原始缓冲"),
+                QStringLiteral("删除重解析点") });
+            QPushButton* loadReparseButton = new QPushButton(QStringLiteral("读取当前原始缓冲"), reparseGroup);
+            reparseActions->addWidget(reparseAction);
+            reparseActions->addWidget(loadReparseButton);
+            reparseActions->addStretch(1);
+            QPlainTextEdit* reparseEdit = new QPlainTextEdit(reparseGroup);
+            reparseEdit->setPlaceholderText(QStringLiteral("完整 REPARSE_DATA_BUFFER 十六进制，包含 Tag/Length/Reserved"));
+            reparseEdit->setMaximumHeight(100);
+            reparseLayout->addLayout(reparseActions);
+            reparseLayout->addWidget(reparseEdit);
+            layout->addWidget(reparseGroup);
+
+            QGroupBox* resourceGroup = new QGroupBox(QStringLiteral("PE 资源编辑"), page);
+            QGridLayout* resourceLayout = new QGridLayout(resourceGroup);
+            QComboBox* resourcePreset = new QComboBox(resourceGroup);
+            resourcePreset->addItems(QStringList{
+                QStringLiteral("VERSIONINFO（RT_VERSION #16）"),
+                QStringLiteral("Manifest（RT_MANIFEST #24）"),
+                QStringLiteral("其它资源") });
+            QLineEdit* resourceTypeEdit = new QLineEdit(QStringLiteral("#16"), resourceGroup);
+            QLineEdit* resourceNameEdit = new QLineEdit(QStringLiteral("#1"), resourceGroup);
+            QSpinBox* resourceLanguageSpin = new QSpinBox(resourceGroup);
+            resourceLanguageSpin->setRange(0, 65535);
+            QComboBox* resourceFormatCombo = new QComboBox(resourceGroup);
+            resourceFormatCombo->addItems(QStringList{ QStringLiteral("文本 UTF-8"), QStringLiteral("十六进制") });
+            resourceFormatCombo->setCurrentIndex(1);
+            QCheckBox* removeResourceCheck = new QCheckBox(QStringLiteral("删除该资源"), resourceGroup);
+            QPushButton* loadResourceButton = new QPushButton(QStringLiteral("读取当前资源"), resourceGroup);
+            QPlainTextEdit* resourceDataEdit = new QPlainTextEdit(resourceGroup);
+            resourceDataEdit->setMaximumHeight(110);
+            resourceLayout->addWidget(resourcePreset, 0, 0);
+            resourceLayout->addWidget(new QLabel(QStringLiteral("类型"), resourceGroup), 0, 1);
+            resourceLayout->addWidget(resourceTypeEdit, 0, 2);
+            resourceLayout->addWidget(new QLabel(QStringLiteral("名称 / ID"), resourceGroup), 0, 3);
+            resourceLayout->addWidget(resourceNameEdit, 0, 4);
+            resourceLayout->addWidget(new QLabel(QStringLiteral("语言 ID"), resourceGroup), 1, 0);
+            resourceLayout->addWidget(resourceLanguageSpin, 1, 1);
+            resourceLayout->addWidget(resourceFormatCombo, 1, 2);
+            resourceLayout->addWidget(removeResourceCheck, 1, 3);
+            resourceLayout->addWidget(loadResourceButton, 1, 4);
+            resourceLayout->addWidget(resourceDataEdit, 2, 0, 1, 5);
+            layout->addWidget(resourceGroup);
+
+            QCheckBox* clearSignatureCheck = new QCheckBox(
+                QStringLiteral("保存时清除嵌入式 Authenticode 签名（Catalog 签名不会被删除）"), page);
+            layout->addWidget(clearSignatureCheck);
+            QLabel* warning = new QLabel(QStringLiteral(
+                "原始重解析点、PE 资源和签名清除属于高风险操作，必须启用底部备份选项。"
+                "VERSIONINFO 可用原始十六进制编辑，Manifest 可用 UTF-8 文本编辑，其它资源支持原始字节。"), page);
+            warning->setWordWrap(true);
+            layout->addWidget(warning);
+            QPushButton* stageButton = new QPushButton(QStringLiteral("暂存重解析点 / PE / 签名操作"), page);
+            layout->addWidget(stageButton, 0, Qt::AlignRight);
+            layout->addStretch(1);
+
+            connect(resourcePreset, &QComboBox::currentIndexChanged, this,
+                [resourceTypeEdit, resourceNameEdit, resourceFormatCombo](const int index)
+                {
+                    if (index == 0)
+                    {
+                        resourceTypeEdit->setText(QStringLiteral("#16"));
+                        resourceNameEdit->setText(QStringLiteral("#1"));
+                        resourceFormatCombo->setCurrentIndex(1);
+                    }
+                    else if (index == 1)
+                    {
+                        resourceTypeEdit->setText(QStringLiteral("#24"));
+                        resourceNameEdit->setText(QStringLiteral("#1"));
+                        resourceFormatCombo->setCurrentIndex(0);
+                    }
+                });
+            connect(loadReparseButton, &QPushButton::clicked, this, [this, reparseEdit]()
+                {
+                    DWORD error = ERROR_SUCCESS;
+                    const QByteArray data = ks::file::metadata::readRawReparseData(m_filePath, &error);
+                    if (error != ERROR_SUCCESS)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("重解析点"),
+                            QStringLiteral("读取原始缓冲失败：%1").arg(formatWin32ErrorText(error)));
+                        return;
+                    }
+                    reparseEdit->setPlainText(QString::fromLatin1(data.toHex(' ').toUpper()));
+                });
+            connect(loadResourceButton, &QPushButton::clicked, this,
+                [this, resourceTypeEdit, resourceNameEdit, resourceLanguageSpin,
+                 resourceFormatCombo, resourceDataEdit]()
+                {
+                    DWORD error = ERROR_SUCCESS;
+                    const QByteArray data = ks::file::metadata::readPeResource(
+                        m_filePath,
+                        resourceTypeEdit->text(),
+                        resourceNameEdit->text(),
+                        static_cast<WORD>(resourceLanguageSpin->value()),
+                        &error);
+                    if (error != ERROR_SUCCESS)
+                    {
+                        QMessageBox::warning(this, QStringLiteral("PE 资源"),
+                            QStringLiteral("读取资源失败：%1").arg(formatWin32ErrorText(error)));
+                        return;
+                    }
+                    resourceDataEdit->setPlainText(resourceFormatCombo->currentIndex() == 0
+                        ? QString::fromUtf8(data)
+                        : QString::fromLatin1(data.toHex(' ').toUpper()));
+                });
+            connect(stageButton, &QPushButton::clicked, this,
+                [this, reparseAction, reparseEdit, resourceTypeEdit, resourceNameEdit,
+                 resourceLanguageSpin, resourceFormatCombo, removeResourceCheck,
+                 resourceDataEdit, clearSignatureCheck]()
+                {
+                    if (!ensurePendingPatchesForStaging()) return;
+                    QByteArray reparseBytes;
+                    if (reparseAction->currentIndex() == 1)
+                    {
+                        bool reparseOk = false;
+                        reparseBytes = parseMetadataHexText(reparseEdit->toPlainText(), &reparseOk);
+                        if (!reparseOk || reparseBytes.size() < 8 ||
+                            reparseBytes.size() > MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+                        {
+                            QMessageBox::warning(this, QStringLiteral("重解析点"),
+                                QStringLiteral("原始重解析缓冲必须是 8 到 16384 字节的有效十六进制。"));
+                            return;
+                        }
+                    }
+                    const bool hasResourceInput =
+                        !resourceTypeEdit->text().trimmed().isEmpty() &&
+                        !resourceNameEdit->text().trimmed().isEmpty() &&
+                        (removeResourceCheck->isChecked() || !resourceDataEdit->toPlainText().isEmpty());
+                    QByteArray resourceBytes;
+                    if (hasResourceInput && !removeResourceCheck->isChecked())
+                    {
+                        bool resourceOk = false;
+                        resourceBytes = metadataEditorBytes(
+                            resourceDataEdit, resourceFormatCombo, &resourceOk);
+                        if (!resourceOk)
+                        {
+                            QMessageBox::warning(this, QStringLiteral("PE 资源"),
+                                QStringLiteral("资源十六进制格式无效。"));
+                            return;
+                        }
+                    }
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        patch.reparse.update = reparseAction->currentIndex() != 0;
+                        patch.reparse.remove = reparseAction->currentIndex() == 2;
+                        patch.reparse.rawBuffer = reparseBytes;
+                        patch.signatureDisposition = clearSignatureCheck->isChecked()
+                            ? ks::file::metadata::SignatureDisposition::RemoveEmbedded
+                            : ks::file::metadata::SignatureDisposition::Preserve;
+                        if (hasResourceInput)
+                        {
+                            ks::file::metadata::PeResourcePatch resource;
+                            resource.type = resourceTypeEdit->text().trimmed();
+                            resource.name = resourceNameEdit->text().trimmed();
+                            resource.language = static_cast<WORD>(resourceLanguageSpin->value());
+                            resource.action = removeResourceCheck->isChecked()
+                                ? ks::file::metadata::BinaryPatchAction::Remove
+                                : ks::file::metadata::BinaryPatchAction::Replace;
+                            resource.data = resourceBytes;
+                            patch.peResources.push_back(resource);
+                        }
+                    }
+                    updatePendingSaveUi();
+                });
+            return page;
+        }
+
+        QTabWidget* buildMetadataAdvancedTabs(QWidget* parent)
+        {
+            QTabWidget* tabs = new QTabWidget(parent);
+            tabs->addTab(buildMetadataNameAndFilesystemPage(tabs), QStringLiteral("名称与文件系统"));
+            tabs->addTab(buildMetadataShellPropertyPage(tabs), QStringLiteral("Shell 属性"));
+            tabs->addTab(buildMetadataAdsPage(tabs), QStringLiteral("ADS"));
+            tabs->addTab(buildMetadataEaPage(tabs), QStringLiteral("EA"));
+            tabs->addTab(buildMetadataSecurityPage(tabs), QStringLiteral("安全描述符"));
+            tabs->addTab(buildMetadataPeAndReparsePage(tabs), QStringLiteral("重解析点 / PE / 签名"));
+            return tabs;
+        }
+
         QWidget* buildMetadataTab()
         {
             QWidget* page = new QWidget(this);
@@ -8646,8 +10288,11 @@ namespace
             layout->setSpacing(10);
 
             QLabel* targetLabel = new QLabel(
-                ks::i18n::sourceText(QStringLiteral("目标：%1"))
-                    .arg(QDir::toNativeSeparators(m_filePath)),
+                m_batchMode
+                    ? ks::i18n::sourceText(QStringLiteral("批量目标：%1 项"))
+                        .arg(m_filePaths.size())
+                    : ks::i18n::sourceText(QStringLiteral("目标：%1"))
+                        .arg(QDir::toNativeSeparators(m_filePath)),
                 page);
             targetLabel->setWordWrap(true);
             targetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -8658,7 +10303,10 @@ namespace
                     "时间按本地时区显示，精确到毫秒；只有勾选“修改”的时间字段才会写入。")) +
                 QLatin1Char('\n') +
                 ks::i18n::sourceText(QStringLiteral(
-                    "属性编辑只开放可直接切换的位，目录、重解析点、压缩、加密、稀疏等结构性属性始终保留。")),
+                    "属性编辑只开放可直接切换的位，目录、重解析点、压缩、加密、稀疏等结构性属性始终保留。")) +
+                QLatin1Char('\n') +
+                ks::i18n::sourceText(QStringLiteral(
+                    "本页按钮只会暂存修改。窗口底部“保存全部修改”是唯一写入入口。")),
                 page);
             hintLabel->setWordWrap(true);
             layout->addWidget(hintLabel);
@@ -8727,13 +10375,22 @@ namespace
                     attributeCheck,
                     static_cast<int>(attributeIndex / 2),
                     static_cast<int>(attributeIndex % 2));
+                connect(attributeCheck, &QCheckBox::checkStateChanged, this,
+                    [this, attributeIndex](const Qt::CheckState state)
+                    {
+                        if (!m_metadataApplyingSnapshot && state != Qt::PartiallyChecked)
+                        {
+                            m_metadataAttributeTouched[attributeIndex] = true;
+                        }
+                    });
             }
             layout->addWidget(attributeGroup);
 
+            layout->addWidget(buildMetadataAdvancedTabs(page), 1);
+
             QHBoxLayout* actionLayout = new QHBoxLayout();
             m_metadataRefreshButton = new QPushButton(QStringLiteral("重新读取"), page);
-            m_metadataApplyButton = new QPushButton(QStringLiteral("应用更改"), page);
-            m_metadataApplyButton->setDefault(true);
+            m_metadataApplyButton = new QPushButton(QStringLiteral("暂存基础修改"), page);
             actionLayout->addStretch(1);
             actionLayout->addWidget(m_metadataRefreshButton);
             actionLayout->addWidget(m_metadataApplyButton);
@@ -8742,7 +10399,6 @@ namespace
             m_metadataStatusLabel = new QLabel(QStringLiteral("● 等待读取文件元数据。"), page);
             m_metadataStatusLabel->setWordWrap(true);
             layout->addWidget(m_metadataStatusLabel);
-            layout->addStretch(1);
 
             connect(m_metadataRefreshButton, &QPushButton::clicked, this,
                 [this]() { refreshMetadataEditor(); });
@@ -8956,9 +10612,9 @@ namespace
                 deleteCheck,
                 writeDacCheck,
                 writeOwnerCheck,
-                statusLabel,
-                refreshSecurityUi]()
+                statusLabel]()
                 {
+                    if (!ensurePendingPatchesForStaging()) return;
                     DWORD accessMask = maskFromSecurityChecks(
                         readCheck,
                         writeCheck,
@@ -8979,71 +10635,72 @@ namespace
                         accessMask = static_cast<DWORD>(parsedMask);
                     }
 
-                    QString detailText;
-                    const ACCESS_MODE accessMode = static_cast<ACCESS_MODE>(accessModeCombo->currentData().toInt());
-                    const DWORD result = applySecurityAceChange(
-                        accountEdit->text(),
-                        accessMask,
-                        accessMode,
-                        inheritanceFlagsFromCombo(inheritanceCombo->currentIndex()),
-                        detailText);
-                    if (statusLabel != nullptr)
+                    if (accountEdit->text().trimmed().isEmpty() || accessMask == 0U)
                     {
-                        statusLabel->setText(result == ERROR_SUCCESS
-                            ? QStringLiteral("● %1").arg(detailText)
-                            : QStringLiteral("● %1").arg(detailText));
-                    }
-                    if (result != ERROR_SUCCESS)
-                    {
-                        // privilegePromptHandled：记录权限恢复提示是否已经解释当前编辑失败。
-                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-                            this,
-                            QStringLiteral("编辑文件权限"),
-                            detailText);
-                        if (!privilegePromptHandled)
-                        {
-                            QMessageBox::warning(this, QStringLiteral("权限编辑"), detailText);
-                        }
-                        refreshSecurityUi();
+                        QMessageBox::warning(this, QStringLiteral("权限编辑"),
+                            QStringLiteral("请填写主体，并选择至少一个权限位。"));
                         return;
                     }
-                    refreshSecurityUi();
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        ks::file::metadata::SecurityAcePatch ace;
+                        ace.trustee = accountEdit->text().trimmed();
+                        ace.accessMask = accessMask;
+                        ace.accessMode = static_cast<DWORD>(accessModeCombo->currentData().toInt());
+                        ace.inheritance = inheritanceFlagsFromCombo(inheritanceCombo->currentIndex());
+                        patch.security.aceChanges.push_back(ace);
+                    }
+                    if (statusLabel != nullptr)
+                        statusLabel->setText(QStringLiteral("● ACE 修改已暂存，尚未写入文件。"));
+                    updatePendingSaveUi();
                 });
 
-            connect(deleteAceButton, &QPushButton::clicked, this, [this, aceTable, statusLabel, refreshSecurityUi]()
+            connect(deleteAceButton, &QPushButton::clicked, this, [this, aceTable, statusLabel]()
                 {
-                    const QMessageBox::StandardButton userChoice = QMessageBox::question(
-                        this,
-                        QStringLiteral("删除 ACE"),
-                        QStringLiteral("将删除当前选中的非继承 DACL ACE。\n继承 ACE 需要到来源目录修改。是否继续？"),
-                        QMessageBox::Yes | QMessageBox::No,
-                        QMessageBox::No);
-                    if (userChoice != QMessageBox::Yes)
+                    if (!ensurePendingPatchesForStaging()) return;
+                    const int row = aceTable != nullptr ? aceTable->currentRow() : -1;
+                    if (row < 0 || aceTable->item(row, 0) == nullptr)
+                    {
+                        QMessageBox::information(this, QStringLiteral("删除 ACE"),
+                            QStringLiteral("请先选择一条可编辑的非继承 DACL ACE。"));
+                        return;
+                    }
+                    QTableWidgetItem* const item = aceTable->item(row, 0);
+                    if (!item->data(Qt::UserRole + 6).toBool())
+                    {
+                        QMessageBox::information(this, QStringLiteral("删除 ACE"),
+                            QStringLiteral("继承 ACE、SACL 与对象 ACE保持只读，不能在此直接删除。"));
+                        return;
+                    }
+                    const QString typeText = item->data(Qt::UserRole + 4).toString();
+                    BYTE aceType = 0xFFU;
+                    if (typeText == QStringLiteral("ACCESS_ALLOWED")) aceType = ACCESS_ALLOWED_ACE_TYPE;
+                    if (typeText == QStringLiteral("ACCESS_DENIED")) aceType = ACCESS_DENIED_ACE_TYPE;
+                    if (aceType == 0xFFU)
                     {
                         return;
                     }
-
-                    QString detailText;
-                    const DWORD result = deleteSelectedDaclAce(aceTable, detailText);
+                    BYTE aceFlags = 0U;
+                    const QString flagsText = aceTable->item(row, 7) != nullptr
+                        ? aceTable->item(row, 7)->text()
+                        : QString();
+                    if (flagsText.contains(QStringLiteral("OBJECT_INHERIT"))) aceFlags |= OBJECT_INHERIT_ACE;
+                    if (flagsText.contains(QStringLiteral("CONTAINER_INHERIT"))) aceFlags |= CONTAINER_INHERIT_ACE;
+                    if (flagsText.contains(QStringLiteral("NO_PROPAGATE"))) aceFlags |= NO_PROPAGATE_INHERIT_ACE;
+                    if (flagsText.contains(QStringLiteral("INHERIT_ONLY"))) aceFlags |= INHERIT_ONLY_ACE;
+                    for (ks::file::metadata::TargetPatch& patch : m_pendingPatches)
+                    {
+                        ks::file::metadata::SecurityAceRemoval removal;
+                        removal.aceType = aceType;
+                        removal.aceFlags = aceFlags;
+                        removal.accessMask = static_cast<DWORD>(
+                            item->data(Qt::UserRole + 5).toULongLong());
+                        removal.sid = item->data(Qt::UserRole + 3).toString();
+                        patch.security.aceRemovals.push_back(removal);
+                    }
                     if (statusLabel != nullptr)
-                    {
-                        statusLabel->setText(QStringLiteral("● %1").arg(detailText));
-                    }
-                    if (result != ERROR_SUCCESS)
-                    {
-                        // privilegePromptHandled：记录权限恢复提示是否已经解释当前删除失败。
-                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-                            this,
-                            QStringLiteral("删除文件权限项"),
-                            detailText);
-                        if (!privilegePromptHandled)
-                        {
-                            QMessageBox::warning(this, QStringLiteral("删除 ACE"), detailText);
-                        }
-                        refreshSecurityUi();
-                        return;
-                    }
-                    refreshSecurityUi();
+                        statusLabel->setText(QStringLiteral("● 删除 ACE 操作已暂存，尚未写入文件。"));
+                    updatePendingSaveUi();
                 });
 
             QMetaObject::invokeMethod(page, refreshSecurityUi, Qt::QueuedConnection);
@@ -9052,6 +10709,149 @@ namespace
 
         QWidget* buildHashTab()
         {
+            if (m_batchMode)
+            {
+                QWidget* page = new QWidget(this);
+                QVBoxLayout* layout = new QVBoxLayout(page);
+                QHBoxLayout* toolbar = new QHBoxLayout();
+                QPushButton* startButton = new QPushButton(QStringLiteral("批量计算 SHA256"), page);
+                QPushButton* cancelButton = new QPushButton(QStringLiteral("取消"), page);
+                cancelButton->setEnabled(false);
+                QLabel* statusLabel = new QLabel(QStringLiteral("● 等待开始批量哈希"), page);
+                toolbar->addWidget(startButton);
+                toolbar->addWidget(cancelButton);
+                toolbar->addWidget(statusLabel, 1);
+                layout->addLayout(toolbar);
+                QProgressBar* progress = new QProgressBar(page);
+                progress->setRange(0, m_filePaths.size());
+                progress->setValue(0);
+                layout->addWidget(progress);
+                QTableWidget* table = new ks::ui::VisibleTableWidget(page);
+                table->setColumnCount(4);
+                table->setHorizontalHeaderLabels(QStringList{
+                    QStringLiteral("目标"), QStringLiteral("状态"),
+                    QStringLiteral("SHA256"), QStringLiteral("错误") });
+                table->setRowCount(m_filePaths.size());
+                table->setSelectionBehavior(QAbstractItemView::SelectRows);
+                table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+                table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                table->setAlternatingRowColors(true);
+                for (qsizetype row = 0; row < m_filePaths.size(); ++row)
+                {
+                    table->setItem(static_cast<int>(row), 0,
+                        new QTableWidgetItem(QDir::toNativeSeparators(m_filePaths.at(row))));
+                    table->setItem(static_cast<int>(row), 1,
+                        new QTableWidgetItem(QStringLiteral("等待")));
+                    table->setItem(static_cast<int>(row), 2, new QTableWidgetItem());
+                    table->setItem(static_cast<int>(row), 3, new QTableWidgetItem());
+                }
+                installFileTableCopyMenu(table);
+                if (table->horizontalHeader() != nullptr)
+                    table->horizontalHeader()->setStretchLastSection(true);
+                layout->addWidget(table, 1);
+                connect(cancelButton, &QPushButton::clicked, this, [this, cancelButton]()
+                    {
+                        if (m_hashCancelRequested != nullptr)
+                            m_hashCancelRequested->store(true);
+                        cancelButton->setEnabled(false);
+                    });
+                connect(startButton, &QPushButton::clicked, this,
+                    [this, table, progress, statusLabel, startButton, cancelButton]()
+                    {
+                        m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
+                        const auto cancelRequested = m_hashCancelRequested;
+                        const QStringList paths = m_filePaths;
+                        startButton->setEnabled(false);
+                        cancelButton->setEnabled(true);
+                        progress->setValue(0);
+                        statusLabel->setText(QStringLiteral("● 正在后台计算批量 SHA256..."));
+                        QPointer<QTableWidget> tableGuard(table);
+                        QPointer<QProgressBar> progressGuard(progress);
+                        QPointer<QLabel> statusGuard(statusLabel);
+                        QPointer<QPushButton> startGuard(startButton);
+                        QPointer<QPushButton> cancelGuard(cancelButton);
+                        auto* task = QRunnable::create(
+                            [tableGuard, progressGuard, statusGuard, startGuard, cancelGuard,
+                             cancelRequested, paths]()
+                            {
+                                int completed = 0;
+                                for (qsizetype row = 0; row < paths.size(); ++row)
+                                {
+                                    if (cancelRequested->load()) break;
+                                    QString stateText;
+                                    QString hashText;
+                                    QString errorText;
+                                    const QFileInfo info(paths.at(row));
+                                    if (!info.isFile())
+                                    {
+                                        stateText = QStringLiteral("已跳过");
+                                        errorText = QStringLiteral("不是普通文件");
+                                    }
+                                    else
+                                    {
+                                        QFile file(paths.at(row));
+                                        if (!file.open(QIODevice::ReadOnly))
+                                        {
+                                            stateText = QStringLiteral("失败");
+                                            errorText = file.errorString();
+                                        }
+                                        else
+                                        {
+                                            QCryptographicHash hash(QCryptographicHash::Sha256);
+                                            while (!file.atEnd() && !cancelRequested->load())
+                                            {
+                                                const QByteArray block = file.read(1024 * 1024);
+                                                if (block.isEmpty() && file.error() != QFileDevice::NoError) break;
+                                                hash.addData(block);
+                                            }
+                                            if (cancelRequested->load())
+                                            {
+                                                stateText = QStringLiteral("已取消");
+                                            }
+                                            else if (file.error() != QFileDevice::NoError)
+                                            {
+                                                stateText = QStringLiteral("失败");
+                                                errorText = file.errorString();
+                                            }
+                                            else
+                                            {
+                                                stateText = QStringLiteral("完成");
+                                                hashText = QString::fromLatin1(hash.result().toHex().toUpper());
+                                            }
+                                        }
+                                    }
+                                    ++completed;
+                                    if (tableGuard == nullptr) return;
+                                    QMetaObject::invokeMethod(tableGuard.data(),
+                                        [tableGuard, progressGuard, row, completed, stateText, hashText, errorText]()
+                                        {
+                                            if (tableGuard == nullptr) return;
+                                            tableGuard->item(static_cast<int>(row), 1)->setText(stateText);
+                                            tableGuard->item(static_cast<int>(row), 2)->setText(hashText);
+                                            tableGuard->item(static_cast<int>(row), 3)->setText(errorText);
+                                            if (progressGuard != nullptr) progressGuard->setValue(completed);
+                                        }, Qt::QueuedConnection);
+                                }
+                                if (statusGuard == nullptr) return;
+                                QMetaObject::invokeMethod(statusGuard.data(),
+                                    [statusGuard, startGuard, cancelGuard, cancelRequested, completed, paths]()
+                                    {
+                                        if (statusGuard == nullptr) return;
+                                        statusGuard->setText(cancelRequested->load()
+                                            ? QStringLiteral("● 批量哈希已取消，完成 %1 / %2。")
+                                                .arg(completed).arg(paths.size())
+                                            : QStringLiteral("● 批量哈希完成，共处理 %1 项。")
+                                                .arg(completed));
+                                        if (startGuard != nullptr) startGuard->setEnabled(true);
+                                        if (cancelGuard != nullptr) cancelGuard->setEnabled(false);
+                                    }, Qt::QueuedConnection);
+                            });
+                        task->setAutoDelete(true);
+                        QThreadPool::globalInstance()->start(task);
+                    });
+                return page;
+            }
+
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
 
@@ -9660,7 +11460,9 @@ namespace
         }
 
     private:
-        QString m_filePath;   // 当前详情窗口对应的文件路径。
+        QStringList m_filePaths; // 当前详情窗口对应的全部目标；单文件模式仅一项。
+        QString m_filePath;   // 单文件目标或批量模式第一项，供现有只读分析页复用。
+        bool m_batchMode = false; // 多目标时只开放常规汇总、批量哈希与元数据编辑。
         QString m_initialTabKey; // 外部入口指定的初始页；usage 入口会自动扫描。
         QWidget* m_tabNavigation = nullptr; // 文件属性左侧导航容器。
         QTabWidget* m_tabWidget = nullptr; // 继续承载现有的页面与懒加载机制。
@@ -9675,13 +11477,21 @@ namespace
         std::array<QCheckBox*, 4> m_metadataTimeChecks{}; // 四个时间字段的逐项写入开关。
         std::array<QDateTimeEdit*, 4> m_metadataTimeEdits{}; // 四个本地时间编辑器。
         std::array<QCheckBox*, 6> m_metadataAttributeChecks{}; // 六个可直接切换的属性位。
+        std::array<bool, 6> m_metadataAttributeTouched{}; // 批量混合状态下只写入用户实际切换的属性。
+        bool m_metadataApplyingSnapshot = false; // 回填混合状态时不把程序赋值误判为用户修改。
         QPushButton* m_metadataRefreshButton = nullptr; // 重新读取最新 FileBasicInfo。
-        QPushButton* m_metadataApplyButton = nullptr; // 确认后后台写入 FileBasicInfo。
+        QPushButton* m_metadataApplyButton = nullptr; // 把基础元数据改动加入统一暂存事务。
         QLabel* m_metadataStatusLabel = nullptr; // 读取、写入与回读验证状态。
         FileMetadataSnapshot m_metadataSnapshot{}; // 编辑器当前展示的属性快照。
         bool m_metadataHasSnapshot = false; // 防止读取失败后使用未初始化值写入。
         bool m_metadataEditorBusy = false; // 防止重复读取或重复应用。
         std::uint64_t m_metadataOperationGeneration = 0U; // 淘汰关闭/刷新后迟到的后台结果。
+        QList<ks::file::metadata::TargetPatch> m_pendingPatches; // 各目标的统一 R3 暂存补丁。
+        QCheckBox* m_backupBeforeSaveCheck = nullptr; // 保存前复制目标或生成目录元数据清单。
+        QLabel* m_pendingChangesLabel = nullptr; // 底部统一保存栏的待处理摘要。
+        QPushButton* m_discardPendingButton = nullptr; // 放弃全部未写入补丁。
+        QPushButton* m_saveAllButton = nullptr; // 唯一会触发文件写入的入口。
+        bool m_transactionBusy = false; // 保存事务运行期间锁定编辑和重复提交。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
         std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
         QProgressBar* m_usageScanProgressBar = nullptr; // 属性页文件占用扫描的阶段进度条。
@@ -13976,44 +15786,15 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     }
     if (selectedAction == detailAction)
     {
-        // 属性窗口支持多选批量打开；数量过大时做一次确认，避免窗口风暴。
-        constexpr std::size_t kMaxAutoOpenDetailCount = 8;
-        std::size_t openCount = menuPaths.size();
-        if (openCount > kMaxAutoOpenDetailCount)
-        {
-            const QMessageBox::StandardButton userChoice = QMessageBox::question(
-                this,
-                QStringLiteral("批量属性"),
-                QStringLiteral("已选择 %1 项，最多建议打开 %2 个属性窗口。\n是否仅打开前 %2 项？")
-                    .arg(menuPaths.size())
-                    .arg(kMaxAutoOpenDetailCount),
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::Yes);
-            if (userChoice != QMessageBox::Yes)
-            {
-                kLogEvent detailCancelEvent;
-                info << detailCancelEvent
-                    << "[FileDock] 批量属性打开取消, panel="
-                    << panel.panelNameText.toStdString()
-                    << ", selectedCount="
-                    << menuPaths.size()
-                    << eol;
-                return;
-            }
-            openCount = kMaxAutoOpenDetailCount;
-        }
-
-        for (std::size_t i = 0; i < openCount; ++i)
-        {
-            showFileDetailDialog(menuPaths[i]);
-        }
+        QStringList detailPaths;
+        detailPaths.reserve(static_cast<qsizetype>(menuPaths.size()));
+        for (const QString& path : menuPaths) detailPaths.push_back(path);
+        showFileDetailDialog(detailPaths);
 
         kLogEvent detailEvent;
         info << detailEvent
-            << "[FileDock] 批量属性打开完成, panel="
+            << "[FileDock] 属性窗口打开完成, panel="
             << panel.panelNameText.toStdString()
-            << ", openedCount="
-            << openCount
             << ", selectedCount="
             << menuPaths.size()
             << eol;
@@ -16823,19 +18604,33 @@ void FileDock::showColumnManagerDialog(FilePanelWidgets& panel)
 
 void FileDock::showFileDetailDialog(const QString& filePath, const QString& initialTabKey)
 {
-    QFileInfo fileInfo(filePath);
-    if (!fileInfo.exists())
+    showFileDetailDialog(QStringList{ filePath }, initialTabKey);
+}
+
+void FileDock::showFileDetailDialog(const QStringList& filePaths, const QString& initialTabKey)
+{
+    QStringList existingPaths;
+    QSet<QString> seenPaths;
+    for (const QString& candidatePath : filePaths)
+    {
+        const QString normalizedPath = QDir::cleanPath(
+            QDir::toNativeSeparators(candidatePath.trimmed()));
+        const QString identityKey = normalizedPath.toLower();
+        if (!normalizedPath.isEmpty() && !seenPaths.contains(identityKey) &&
+            QFileInfo::exists(normalizedPath))
+        {
+            seenPaths.insert(identityKey);
+            existingPaths.push_back(normalizedPath);
+        }
+    }
+    if (existingPaths.isEmpty())
     {
         kLogEvent event;
-        warn << event
-            << "[FileDock] 打开文件详情失败：目标不存在, filePath="
-            << QDir::toNativeSeparators(filePath).toStdString()
-            << eol;
+        warn << event << "[FileDock] 打开文件详情失败：没有可访问目标" << eol;
         return;
     }
 
-    // 非模态详情窗：允许同时打开多个属性页做对比。
-    FileDetailDialog* dialog = new FileDetailDialog(filePath, this, initialTabKey);
+    FileDetailDialog* dialog = new FileDetailDialog(existingPaths, this, initialTabKey);
     dialog->setWindowFlag(Qt::WindowStaysOnTopHint, false);
     dialog->show();
     dialog->raise();
@@ -16843,8 +18638,8 @@ void FileDock::showFileDetailDialog(const QString& filePath, const QString& init
 
     kLogEvent event;
     info << event
-        << "[FileDock] 打开文件详情窗口, filePath="
-        << QDir::toNativeSeparators(filePath).toStdString()
+        << "[FileDock] 打开文件详情窗口, targetCount="
+        << existingPaths.size()
         << eol;
 }
 
