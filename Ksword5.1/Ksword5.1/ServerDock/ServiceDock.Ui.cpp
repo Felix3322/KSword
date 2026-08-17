@@ -147,26 +147,27 @@ void ServiceDock::initializeToolbar()
     m_continueButton->setToolTip(QStringLiteral("继续当前服务"));
 
     // 快捷筛选按钮组：
+    // - 使用短文本筛选片，避免把“启动/停止服务”的动作图标复用成筛选含义；
     // - checkable 形式可直观看到过滤状态。
     m_runningOnlyButton = new QToolButton(m_toolbarWidget);
     m_runningOnlyButton->setCheckable(true);
-    m_runningOnlyButton->setIcon(createBlueIcon(":/Icon/process_start.svg", kToolbarIconSize));
-    m_runningOnlyButton->setIconSize(kToolbarIconSize);
-    m_runningOnlyButton->setFixedSize(28, 28);
+    m_runningOnlyButton->setText(QStringLiteral("运行中"));
+    m_runningOnlyButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_runningOnlyButton->setFixedHeight(28);
     m_runningOnlyButton->setToolTip(QStringLiteral("仅显示运行中服务"));
 
     m_autoStartOnlyButton = new QToolButton(m_toolbarWidget);
     m_autoStartOnlyButton->setCheckable(true);
-    m_autoStartOnlyButton->setIcon(createBlueIcon(":/Icon/process_main.svg", kToolbarIconSize));
-    m_autoStartOnlyButton->setIconSize(kToolbarIconSize);
-    m_autoStartOnlyButton->setFixedSize(28, 28);
+    m_autoStartOnlyButton->setText(QStringLiteral("自动启动"));
+    m_autoStartOnlyButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_autoStartOnlyButton->setFixedHeight(28);
     m_autoStartOnlyButton->setToolTip(QStringLiteral("仅显示自动启动服务"));
 
     m_riskOnlyButton = new QToolButton(m_toolbarWidget);
     m_riskOnlyButton->setCheckable(true);
-    m_riskOnlyButton->setIcon(createBlueIcon(":/Icon/process_terminate.svg", kToolbarIconSize));
-    m_riskOnlyButton->setIconSize(kToolbarIconSize);
-    m_riskOnlyButton->setFixedSize(28, 28);
+    m_riskOnlyButton->setText(QStringLiteral("风险"));
+    m_riskOnlyButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_riskOnlyButton->setFixedHeight(28);
     m_riskOnlyButton->setToolTip(QStringLiteral("仅显示带风险标签的服务"));
 
     // 文本过滤与排序：
@@ -201,7 +202,7 @@ void ServiceDock::initializeToolbar()
     m_startTypeCombo->setItemData(3, false, Qt::UserRole + 1);
 
     m_applyStartTypeButton = new QToolButton(m_toolbarWidget);
-    m_applyStartTypeButton->setIcon(createBlueIcon(":/Icon/process_start.svg", kToolbarIconSize));
+    m_applyStartTypeButton->setIcon(createBlueIcon(":/Icon/service_apply.svg", kToolbarIconSize));
     m_applyStartTypeButton->setIconSize(kToolbarIconSize);
     m_applyStartTypeButton->setFixedSize(28, 28);
     m_applyStartTypeButton->setToolTip(QStringLiteral("应用当前启动类型修改"));
