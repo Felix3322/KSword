@@ -96,12 +96,6 @@ public:
     void setProcessDetailMemoryScope();
 
 protected:
-    // eventFilter：
-    // - 作用：监听顶部进程下拉框弹层窗口的隐藏事件；
-    // - 弹层展开期间被推迟的进程列表提交在这里回投，避免重建正在展开的下拉框；
-    // - 返回：始终交回 QWidget 默认处理，不吞事件。
-    bool eventFilter(QObject* watchedObject, QEvent* eventObject) override;
-
     // changeEvent：
     // - 作用：在应用调色板变化时重新下发使用语义色的样式；
     // - 参数 eventObject：Qt 传入的事件对象；
@@ -408,18 +402,11 @@ private:
     // - 返回：无。
     void updateProcessComboFromCache();
 
-    // installComboPopupWatch：
-    // - 作用：给下拉框的弹层窗口安装事件过滤器；
-    // - 参数 comboBox：需要在展开期间保护的下拉框；
-    // - 说明：QComboBox 弹层是独立顶层窗口，只能靠 Hide 事件感知收起；
-    // - 返回：无，重复调用安全。
-    void installComboPopupWatch(QComboBox* comboBox);
-
     // isComboPopupVisible：
-    // - 作用：判断单个下拉框的弹层窗口当前是否可见；
+    // - 作用：判断单个下拉框是否处在弹层生命周期中；
     // - 参数 comboBox：待检查的下拉框，可为空；
-    // - 返回：true 表示弹层正展开。
-    static bool isComboPopupVisible(QComboBox* comboBox);
+    // - 返回：true 表示弹层正在显示、动画过渡或尚未完成收尾。
+    bool isComboPopupVisible(QComboBox* comboBox) const;
 
     // isProcessComboPopupOpen：
     // - 作用：判断任一“按进程缓存重建”的下拉框弹层是否正在展开；
@@ -1002,6 +989,7 @@ private:
     QLabel* m_dockTitleLabel = nullptr;       // 页面标题标签（顶部三段头第一段）。
     QLabel* m_dockHeaderStatusLabel = nullptr; // 顶部附加状态摘要（顶部三段头第二段）。
     QComboBox* m_processCombo = nullptr;      // 进程选择下拉框。
+    bool m_processComboPopupLifecycleActive = false; // 包含 Qt 弹层动画在内的完整展开生命周期。
     // 弹层展开期间缓存的最新进程列表提交；收起后回投，避免重建正在展开的下拉框。
     std::function<void()> m_processComboDeferredCommit;
     QTimer* m_processComboChangeTimer = nullptr;      // 进程下拉框切换去抖定时器。
@@ -1097,6 +1085,8 @@ private:
 
     QWidget* m_tabDriverMemoryRw = nullptr;   // Tab6 页面容器。
     QComboBox* m_driverMemoryBaseCombo = nullptr; // 可选偏移基址或 R0 目标进程选择框。
+    bool m_driverMemoryBaseComboPopupLifecycleActive = false; // 目标框弹层/动画生命周期。
+    bool m_driverMemoryBaseComboRefreshPending = false; // 弹层收起后待补一次模型重建。
     QLineEdit* m_driverMemoryAddressEdit = nullptr; // 驱动读写目标中心地址。
     QSpinBox* m_driverMemoryBeforeSpin = nullptr;   // 向前读取字节数。
     QSpinBox* m_driverMemoryAfterSpin = nullptr;    // 向后读取字节数。

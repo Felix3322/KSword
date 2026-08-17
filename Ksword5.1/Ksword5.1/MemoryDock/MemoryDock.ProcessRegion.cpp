@@ -563,64 +563,27 @@ namespace
     }
 }
 
-bool MemoryDock::eventFilter(QObject* watchedObject, QEvent* eventObject)
-{
-    // 只关心受保护下拉框弹层窗口的隐藏：Qt 没有公开的“弹层已收起”信号，
-    // 这里靠弹层顶层窗口的 Hide 事件把被推迟的进程列表提交放回事件循环。
-    if (eventObject != nullptr && eventObject->type() == QEvent::Hide)
-    {
-        const bool isWatchedPopup =
-            (m_processCombo != nullptr && m_processCombo->view() != nullptr &&
-                watchedObject == m_processCombo->view()->window()) ||
-            (m_driverMemoryBaseCombo != nullptr && m_driverMemoryBaseCombo->view() != nullptr &&
-                watchedObject == m_driverMemoryBaseCombo->view()->window());
-        if (isWatchedPopup)
-        {
-            // Hide 事件发生在 QComboBox 收尾之前，回投到外层事件循环再重建控件。
-            QTimer::singleShot(0, this, [this]() {
-                flushProcessComboDeferredCommit();
-                });
-        }
-    }
-    return QWidget::eventFilter(watchedObject, eventObject);
-}
-
-void MemoryDock::installComboPopupWatch(QComboBox* const comboBox)
-{
-    if (comboBox == nullptr)
-    {
-        return;
-    }
-
-    // view() 会惰性创建弹层容器；这里主动创建一次，后续复用同一个顶层窗口。
-    QAbstractItemView* const popupView = comboBox->view();
-    if (popupView == nullptr)
-    {
-        return;
-    }
-    QWidget* const popupWindow = popupView->window();
-    if (popupWindow == nullptr || popupWindow == comboBox->window())
-    {
-        return;
-    }
-    popupWindow->installEventFilter(this);
-}
-
-bool MemoryDock::isComboPopupVisible(QComboBox* const comboBox)
+bool MemoryDock::isComboPopupVisible(QComboBox* const comboBox) const
 {
     if (comboBox == nullptr)
     {
         return false;
     }
-    QAbstractItemView* const popupView = comboBox->view();
-    if (popupView == nullptr)
+    // 两个会被异步结果整体重建的组合框都从 showPopup() 进入前置位，
+    // 所以 qScrollEffect 暂时隐藏 QComboBoxPrivateContainer 时也不会误放行。
+    if (comboBox == m_processCombo)
     {
-        return false;
+        return m_processComboPopupLifecycleActive;
     }
-    QWidget* const popupWindow = popupView->window();
-    return popupWindow != nullptr &&
-        popupWindow != comboBox->window() &&
-        popupWindow->isVisible();
+    if (comboBox == m_driverMemoryBaseCombo)
+    {
+        return m_driverMemoryBaseComboPopupLifecycleActive;
+    }
+
+    // 为非受保护子类保留无副作用兜底；不要调用 view()，它会惰性创建私有弹层。
+    QWidget* const activePopupWidget = QApplication::activePopupWidget();
+    return activePopupWidget != nullptr &&
+        (activePopupWidget == comboBox || comboBox->isAncestorOf(activePopupWidget));
 }
 
 bool MemoryDock::isProcessComboPopupOpen()
@@ -653,13 +616,21 @@ bool MemoryDock::deferCommitWhileProcessComboPopupOpen(std::function<void()> com
 
 void MemoryDock::flushProcessComboDeferredCommit()
 {
-    if (!m_processComboDeferredCommit)
-    {
-        return;
-    }
     if (isProcessComboPopupOpen())
     {
         // 弹层又被打开，继续等待下一次收起。
+        return;
+    }
+
+    const bool driverBaseRefreshPending = m_driverMemoryBaseComboRefreshPending;
+    m_driverMemoryBaseComboRefreshPending = false;
+
+    if (!m_processComboDeferredCommit)
+    {
+        if (driverBaseRefreshPending)
+        {
+            updateDriverMemoryBaseComboFromProcessCache();
+        }
         return;
     }
 
@@ -670,6 +641,7 @@ void MemoryDock::flushProcessComboDeferredCommit()
     info << flushCommitEvent
         << "[MemoryDock] 进程下拉框已收起，回投被推迟的进程列表提交。"
         << eol;
+    // 完整进程快照提交本身会重建驱动目标下拉框，因此也覆盖待补的单框刷新。
     commitAction();
 }
 

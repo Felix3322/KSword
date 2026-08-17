@@ -3,6 +3,9 @@
 #include "../UI/VisibleTableWidget.h"
 #include "../Internationalization/LanguageManager.h"
 
+#include <functional>
+#include <utility>
+
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
 
@@ -20,6 +23,64 @@ using namespace ksword::memory_dock_internal;
 
 namespace
 {
+    // PopupLifecycleGuardedComboBox 作用：
+    // - 在 QComboBox::showPopup() 进入前登记弹层生命周期，避开 Qt 滚动动画把
+    //   真实弹层暂时隐藏、isVisible() 错报 false 的窗口；
+    // - 在 hidePopup() 完成后的下一轮事件循环解除登记并回投延迟提交；
+    // - generation 防止“刚关闭又立刻重开”时旧回调错误解除新弹层的登记。
+    class PopupLifecycleGuardedComboBox final : public QComboBox
+    {
+    public:
+        PopupLifecycleGuardedComboBox(
+            QWidget* const parentWidget,
+            std::function<void(bool)> popupStateChangedAction)
+            : QComboBox(parentWidget),
+              m_popupStateChangedAction(std::move(popupStateChangedAction))
+        {
+        }
+
+    protected:
+        void showPopup() override
+        {
+            // 空模型不会产生弹层，也就没有需要保护的模型/动画生命周期。
+            if (count() <= 0)
+            {
+                QComboBox::showPopup();
+                return;
+            }
+
+            ++m_popupGeneration;
+            if (m_popupStateChangedAction)
+            {
+                m_popupStateChangedAction(true);
+            }
+            QComboBox::showPopup();
+        }
+
+        void hidePopup() override
+        {
+            const quint64 closingGeneration = m_popupGeneration;
+            QComboBox::hidePopup();
+
+            // QComboBox 的 Hide 收尾尚在当前调用栈内；下一轮再允许清空/重建模型。
+            QTimer::singleShot(0, this, [this, closingGeneration]() {
+                if (closingGeneration != m_popupGeneration)
+                {
+                    return;
+                }
+
+                if (m_popupStateChangedAction)
+                {
+                    m_popupStateChangedAction(false);
+                }
+                });
+        }
+
+    private:
+        std::function<void(bool)> m_popupStateChangedAction;
+        quint64 m_popupGeneration = 0ULL;
+    };
+
     // copyMemoryUtilityCurrentRow 作用：
     // - 复制 MemoryDock 辅助表格当前行；
     // - 输入 table：断点表、书签表等 QTableWidget；
@@ -232,12 +293,17 @@ void MemoryDock::initializeToolbar()
     m_toolbarLayout->setContentsMargins(0, 0, 0, 0);
     m_toolbarLayout->setSpacing(6);
 
-    m_processCombo = new QComboBox(toolbarContainer);
+    m_processCombo = new PopupLifecycleGuardedComboBox(
+        toolbarContainer,
+        [this](const bool active) {
+            m_processComboPopupLifecycleActive = active;
+            if (!active)
+            {
+                flushProcessComboDeferredCommit();
+            }
+            });
     m_processCombo->setMinimumWidth(280);
     m_processCombo->setToolTip("选择目标进程（进程名 + PID）。");
-
-    // 弹层展开期间必须禁止重建下拉框，这里先建立对弹层窗口的监听。
-    installComboPopupWatch(m_processCombo);
 
     // 按项目规范：动作按钮优先用图标库里的图标，并且每个按钮都要有 tooltip。
     m_attachButton = new QPushButton(
@@ -871,7 +937,15 @@ void MemoryDock::initializeDriverMemoryRwTab()
         "选择读写通道：进程虚拟内存按 PID 定位；内核虚拟内存直接使用内核地址；"
         "物理内存绕过页表，单次读上限 64 KB、写上限 4 KB。");
 
-    m_driverMemoryBaseCombo = new QComboBox(requestGroup);
+    m_driverMemoryBaseCombo = new PopupLifecycleGuardedComboBox(
+        requestGroup,
+        [this](const bool active) {
+            m_driverMemoryBaseComboPopupLifecycleActive = active;
+            if (!active)
+            {
+                flushProcessComboDeferredCommit();
+            }
+            });
     m_driverMemoryBaseCombo->setEditable(true);
     m_driverMemoryBaseCombo->setMinimumWidth(260);
     m_driverMemoryBaseCombo->setToolTip(
@@ -880,9 +954,6 @@ void MemoryDock::initializeDriverMemoryRwTab()
         "内核模块取自“刷新内核模块”得到的列表。中心地址为 0xFFFF... 高半区时自动按内核虚拟地址读取。");
     m_driverMemoryBaseCombo->addItem("0", QVariant::fromValue(static_cast<uint>(0U)));
     m_driverMemoryBaseCombo->setItemData(0, QString(), Qt::UserRole + 1);
-
-    // 该框同样按进程缓存整体重建，展开期间必须一起受保护。
-    installComboPopupWatch(m_driverMemoryBaseCombo);
 
     if (m_driverMemoryBaseCombo->lineEdit() != nullptr)
     {

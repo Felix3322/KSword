@@ -125,6 +125,14 @@ void MemoryDock::updateDriverMemoryBaseComboFromProcessCache()
         return;
     }
 
+    // 内核模块异步回填也会重建此模型；弹层生命周期结束前只登记一次待刷新。
+    if (isComboPopupVisible(m_driverMemoryBaseCombo))
+    {
+        m_driverMemoryBaseComboRefreshPending = true;
+        return;
+    }
+    m_driverMemoryBaseComboRefreshPending = false;
+
     // 刷新前保存用户输入文本和当前 PID，避免进程列表刷新破坏正在编辑的基址。
     const QString previousText = m_driverMemoryBaseCombo->currentText().trimmed();
     const int previousIndex = m_driverMemoryBaseCombo->currentIndex();
