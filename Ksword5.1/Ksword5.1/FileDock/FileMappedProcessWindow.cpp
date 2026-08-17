@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/UI_All.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
@@ -288,7 +289,11 @@ void FileMappedProcessWindow::initializeUi()
     setAutoFillBackground(true);
     setStyleSheet(buildOpaqueDialogStyle(objectName()));
     setWindowTitle(QStringLiteral("文件映射进程(R0 Section/ControlArea)"));
-    setMinimumSize(1120, 680);
+    ks::ui::applyResponsiveWindowGeometry(
+        this,
+        parentWidget(),
+        QSize(1120, 680),
+        QSize(720, 480));
 
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(8, 8, 8, 8);

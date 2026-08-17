@@ -1,12 +1,18 @@
 #include "UI_All.h"
 #include "../theme.h"
 
+#include <QApplication>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QPointer>
+#include <QScreen>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWindow>
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 QWidget* createBasicPlaceholder(const QString& tipText/* = "Placeholder panel"*/)
@@ -41,6 +47,93 @@ QWidget* createBasicPlaceholder(const QString& tipText/* = "Placeholder panel"*/
     layout->setContentsMargins(0, 0, 0, 0);
 
     return placeholder;
+}
+
+void ks::ui::applyResponsiveWindowGeometry(
+    QWidget* window,
+    QWidget* candidateParent,
+    const QSize& preferredSize,
+    const QSize& minimumSize,
+    const double maxAvailableRatio)
+{
+    if (window == nullptr)
+    {
+        return;
+    }
+
+    const auto screenForWidget = [](QWidget* widget) -> QScreen*
+    {
+        if (widget == nullptr)
+        {
+            return nullptr;
+        }
+        if (QWindow* handle = widget->windowHandle(); handle != nullptr && handle->screen() != nullptr)
+        {
+            return handle->screen();
+        }
+        if (QWidget* topLevel = widget->window(); topLevel != nullptr && topLevel != widget)
+        {
+            if (QWindow* handle = topLevel->windowHandle(); handle != nullptr && handle->screen() != nullptr)
+            {
+                return handle->screen();
+            }
+        }
+        if (widget->isVisible())
+        {
+            return QGuiApplication::screenAt(widget->mapToGlobal(widget->rect().center()));
+        }
+        return nullptr;
+    };
+
+    QScreen* targetScreen = screenForWidget(candidateParent);
+    if (targetScreen == nullptr)
+    {
+        targetScreen = screenForWidget(window);
+    }
+    if (targetScreen == nullptr)
+    {
+        targetScreen = screenForWidget(QApplication::activeWindow());
+    }
+    if (targetScreen == nullptr)
+    {
+        targetScreen = QApplication::primaryScreen();
+    }
+
+    const QSize normalizedPreferred(
+        std::max(1, preferredSize.width()),
+        std::max(1, preferredSize.height()));
+    const QSize normalizedMinimum(
+        std::max(1, minimumSize.width()),
+        std::max(1, minimumSize.height()));
+    const double boundedRatio = maxAvailableRatio > 0.0
+        ? std::min(1.0, maxAvailableRatio)
+        : 0.9;
+    QSize availableSize = targetScreen != nullptr
+        ? targetScreen->availableGeometry().size()
+        : normalizedPreferred.expandedTo(normalizedMinimum);
+    if (availableSize.width() <= 0 || availableSize.height() <= 0)
+    {
+        availableSize = normalizedPreferred.expandedTo(normalizedMinimum);
+    }
+
+    const QSize maximumInitialSize(
+        std::max(1, static_cast<int>(std::floor(availableSize.width() * boundedRatio))),
+        std::max(1, static_cast<int>(std::floor(availableSize.height() * boundedRatio))));
+    const QSize effectiveMinimumSize(
+        std::min(normalizedMinimum.width(), maximumInitialSize.width()),
+        std::min(normalizedMinimum.height(), maximumInitialSize.height()));
+    const QSize effectiveInitialSize(
+        std::clamp(
+            normalizedPreferred.width(),
+            effectiveMinimumSize.width(),
+            maximumInitialSize.width()),
+        std::clamp(
+            normalizedPreferred.height(),
+            effectiveMinimumSize.height(),
+            maximumInitialSize.height()));
+
+    window->setMinimumSize(effectiveMinimumSize);
+    window->resize(effectiveInitialSize);
 }
 
 void ks::ui::scheduleDeferredTabActivation(

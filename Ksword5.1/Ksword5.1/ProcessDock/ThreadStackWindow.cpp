@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../UI/UI_All.h"
 #include "../UI/TableInteractionSupport.h"
 
 #include <QAbstractItemView>
@@ -480,7 +481,11 @@ void ThreadStackWindow::initializeUi()
     setAutoFillBackground(true);
     setStyleSheet(buildOpaqueDialogStyle(objectName()));
     setWindowTitle(QStringLiteral("线程调用栈 - TID %1").arg(m_target.threadId));
-    setMinimumSize(980, 620);
+    ks::ui::applyResponsiveWindowGeometry(
+        this,
+        parentWidget(),
+        QSize(980, 620),
+        QSize(720, 480));
 
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(8, 8, 8, 8);

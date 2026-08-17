@@ -2,6 +2,7 @@
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/UI_All.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -308,8 +309,11 @@ void ProcessMessageHookWindow::initializeUi()
         this,
         QStringLiteral("process.message_hook.title"),
         QStringLiteral("进程消息 Hook"));
-    resize(1180, 680);
-    setMinimumSize(880, 520);
+    ks::ui::applyResponsiveWindowGeometry(
+        this,
+        parentWidget(),
+        QSize(1180, 680),
+        QSize(720, 480));
 
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(10, 10, 10, 10);

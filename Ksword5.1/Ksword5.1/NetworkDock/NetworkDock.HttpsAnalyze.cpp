@@ -1,4 +1,5 @@
 #include "NetworkDock.InternalCommon.h"
+#include "../UI/UI_All.h"
 #include "../UI/VisibleTableWidget.h"
 #include "HttpsProxyService.h"
 #include "../theme.h"
@@ -171,9 +172,11 @@ namespace
             setWindowTitle(QStringLiteral("HTTPS详情 - #%1 %2")
                 .arg(parsedEntry.sessionId)
                 .arg(parsedEntry.eventTypeText));
-            resize(1376, 720);
-            setMinimumWidth(1024);
-            setMaximumWidth(1568);
+            ks::ui::applyResponsiveWindowGeometry(
+                this,
+                parent,
+                QSize(1376, 720),
+                QSize(720, 480));
             setStyleSheet(buildHttpsDetailWindowStyle());
 
             QVBoxLayout* rootLayout = new QVBoxLayout(this);
