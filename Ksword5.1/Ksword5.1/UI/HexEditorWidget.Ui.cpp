@@ -154,6 +154,7 @@ void HexEditorWidget::initializeUi()
 
     // HEX 页面主表：地址列 + 字节列 + ASCII 列。
     m_hexTable = new ks::ui::VisibleTableWidget(m_hexViewPage);
+    ks::ui::SetPreserveCustomTableHeaderStyle(m_hexTable, true);
     m_hexTable->setColumnCount(m_bytesPerRow + 2);
     m_hexTable->setRowCount(1);
     // 使用 ExtendedSelection：

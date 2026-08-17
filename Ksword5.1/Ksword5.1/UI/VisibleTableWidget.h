@@ -31,6 +31,22 @@ namespace ks::ui
 
     inline constexpr char TableActionBarModeProperty[] =
         "KSWORD_TABLE_INTERACTION_ACTION_BAR_MODE";
+    inline constexpr char PreserveCustomTableHeaderStyleProperty[] =
+        "KSWORD_TABLE_INTERACTION_PRESERVE_CUSTOM_HEADER_STYLE";
+
+    inline void SetPreserveCustomTableHeaderStyle(QTableView* tableView, const bool preserve)
+    {
+        if (tableView != nullptr)
+        {
+            tableView->setProperty(PreserveCustomTableHeaderStyleProperty, preserve);
+        }
+    }
+
+    inline bool PreservesCustomTableHeaderStyle(const QTableView* tableView)
+    {
+        return tableView != nullptr
+            && tableView->property(PreserveCustomTableHeaderStyleProperty).toBool();
+    }
 
     // Implemented by table subclasses that can reserve a strip immediately above the column
     // header. The action widget remains owned by its caller; this interface only manages the

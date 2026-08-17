@@ -84,6 +84,47 @@ namespace
     constexpr TableSnapshotComparisonLimits kSnapshotComparisonLimits{};
     constexpr TableSnapshotRetentionLimits kSnapshotRetentionLimits{};
 
+    const QString& standardTableHeaderStyle()
+    {
+        static const QString style = QStringLiteral(
+            "QHeaderView{"
+            "  background-color:transparent;"
+            "  border:none;"
+            "}"
+            "QHeaderView::section{"
+            "  background-color:palette(alternate-base);"
+            "  color:palette(text);"
+            "  border:none;"
+            "  border-right:1px solid palette(mid);"
+            "  border-bottom:1px solid palette(midlight);"
+            "  padding:3px 6px;"
+            "  font-weight:400;"
+            "}"
+            "QHeaderView::section:hover{"
+            "  background-color:palette(button);"
+            "}");
+        return style;
+    }
+
+    void applyStandardTableHeaderStyle(QTableView* tableView)
+    {
+        if (tableView == nullptr || ks::ui::PreservesCustomTableHeaderStyle(tableView))
+        {
+            return;
+        }
+
+        const QString& style = standardTableHeaderStyle();
+        const auto applyToHeader = [&style](QHeaderView* header)
+        {
+            if (header != nullptr && header->styleSheet() != style)
+            {
+                header->setStyleSheet(style);
+            }
+        };
+        applyToHeader(tableView->horizontalHeader());
+        applyToHeader(tableView->verticalHeader());
+    }
+
     // DeferredTableUiCommit：
     // - 保存右键菜单打开期间被覆盖合并的 UI 提交；
     // - owner/key 共同标识一类刷新，itemViewList 决定何时可以安全回投。
@@ -2593,6 +2634,7 @@ namespace
             return;
         }
 
+        applyStandardTableHeaderStyle(tableView);
         ks::ui::InstallTableHeaderClickSorting(
             qobject_cast<QTableWidget*>(tableView));
         installActionBar(tableView);
