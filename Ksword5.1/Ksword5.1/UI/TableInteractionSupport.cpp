@@ -729,8 +729,8 @@ namespace
             QStringLiteral("table_selected_export_"));
     }
 
-    // ComparisonTableView 同时用于比对视图和停止刷新视图。它继承表格外框宿主，
-    // 因此停止刷新期间同样能像实时表一样预留冻结窗格所需的视口空间。
+    // ComparisonTableView 同时用于比对视图和冻结视图。它继承表格外框宿主，
+    // 因此冻结视图期间同样能像实时表一样预留冻结窗格所需的视口空间。
     class ComparisonTableView final
         : public ks::ui::visible_table_detail::TableChromeHostView<QTableView>
     {
@@ -859,7 +859,7 @@ namespace
             m_freezePaneButton = createButton("冻结行列");
             m_freezePaneButton->setToolTip(localizedSourceText(
                 "冻结选中的行或列：行会钉在列标题正下方，列会固定在行表头右侧；支持一次冻结多选行"));
-            m_pauseRefreshButton = createButton("停止刷新");
+            m_pauseRefreshButton = createButton("冻结视图");
             m_pauseRefreshButton->setCheckable(true);
             layout->addWidget(m_copyAllButton);
             layout->addWidget(m_exportButton);
@@ -1325,7 +1325,7 @@ namespace
             updateControls();
             const TableSnapshot snapshot = TableSnapshotCompareEngine::capture(
                 m_table.data(),
-                localizedSourceText("刷新已停止"),
+                localizedSourceText("视图已冻结"),
                 0,
                 kSnapshotCaptureLimits);
             if (actionBarGuard.isNull())
@@ -1339,7 +1339,7 @@ namespace
             {
                 QMessageBox::warning(
                     this,
-                    localizedSourceText("停止刷新失败"),
+                    localizedSourceText("冻结视图失败"),
                     localizedSourceText("表格在捕获期间已重建，请重试。"));
                 updateControls();
                 return false;
@@ -1349,9 +1349,9 @@ namespace
             {
                 QMessageBox::warning(
                     this,
-                    localizedSourceText("停止刷新视图已截断"),
+                    localizedSourceText("冻结视图已截断"),
                     localizedSourceText(
-                        "表格规模超过停止刷新快照的安全上限，当前固定视图保留 %1/%2 行和 %3/%4 列；恢复刷新后可回到完整实时表格。")
+                        "表格规模超过冻结视图快照的安全上限，当前冻结视图保留 %1/%2 行和 %3/%4 列；恢复实时视图后可回到完整实时表格。")
                         .arg(snapshot.rows.size())
                         .arg(snapshot.sourceRowCount)
                         .arg(snapshot.visibleColumns.size())
@@ -2305,12 +2305,12 @@ namespace
                 activeTable->model() != nullptr);
             m_pauseRefreshButton->setText(localizedSourceText(
                 m_pauseCaptureInProgress
-                    ? "正在停止…"
-                    : (m_refreshPaused ? "恢复刷新" : "停止刷新")));
+                    ? "正在冻结…"
+                    : (m_refreshPaused ? "恢复实时视图" : "冻结视图")));
             m_pauseRefreshButton->setToolTip(localizedSourceText(
                 m_refreshPaused
-                    ? "恢复实时表格并显示后台更新后的最新结果"
-                    : "固定当前表格内容；后台采集继续运行，恢复后显示最新结果"));
+                    ? "恢复实时视图并显示后台更新后的最新结果"
+                    : "冻结当前表格内容；后台采集继续运行，恢复后显示最新结果"));
             {
                 const QSignalBlocker blocker(m_pauseRefreshButton);
                 m_pauseRefreshButton->setChecked(
