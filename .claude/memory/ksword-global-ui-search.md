@@ -10,7 +10,7 @@
   分片间让出事件循环保持 UI 响应；`m_searchGeneration` 代数自增实现取消（新输入/Esc/切模式/收起弹层
   都会作废在途分片）。扫描中弹层显示进度行（ksGlobalUiSearchProgressRow：QLabel“正在搜索：%1（%2/%3）”
   + 6px QProgressBar，chunk 用 PrimaryAccent），完成后 stable_sort 命中并切回结果列表。
-  索引 QLabel/按钮/GroupBox 标题/QTabWidget 页签/下拉项/占位符/表头（不索引表格单元格数据）。
+  索引 QLabel/按钮/GroupBox 标题/QTabWidget 页签/下拉项/占位符/表头和表格可见列单元格。
   进度模板文本用 ks::i18n::sourceText 先翻模板再 .arg 拼接（整串运行时组合查不到词条）。
   结果弹层是 MainWindow 子控件（非顶层窗口，避免无边框窗口焦点问题），每条显示“匹配文本 + 页面路径
   （Dock › 内部页签 › 分组框，› 分隔）”。激活结果：ensureDockContentInitialized → withTemporaryNonTopMost
@@ -19,6 +19,9 @@
 - MainWindow：`initGlobalUiSearchController`（initCustomTitleBar 末尾）注入 dock 列表
   （collectSearchableDockWidgets：18 主 Dock + 日志/监视/任务辅助 Dock）与激活回调
   （activateDockForSearchNavigation：isClosed 先 toggleView(true) 再 raise）。
+
+通用表格搜索入口只保留搜索框和空间不足时的搜索按钮。输入内容会同步到标题栏并切换到“当前表格”范围，
+命中仍展示在搜索结果弹层中；搜索过程不修改表格原有行可见状态。
 
 可揭示性判定：向上遍历到 CDockWidget，途中显式隐藏且父不是 QStackedWidget 的控件视为不可揭示（不收录）。
 非当前 Tab 页被 QStackedWidget 显式 hide 属于导航性隐藏，必须放行，否则搜不到其他页签内容。

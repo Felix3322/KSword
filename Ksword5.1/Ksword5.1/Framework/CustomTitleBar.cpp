@@ -5,7 +5,6 @@
 
 #include <QAction>
 #include <QApplication>
-#include <QCheckBox>
 #include <QCoreApplication>
 #include <QDate>
 #include <QDateTime>
@@ -23,7 +22,6 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
-#include <QSignalBlocker>
 #include <QStringList>
 #include <QTimer>
 #include <QToolButton>
@@ -640,16 +638,8 @@ namespace ks::ui
         m_commandLineEdit->setClearButtonEnabled(true);
         m_commandLineEdit->setFixedHeight(20);
 
-        // 顶部结果专显仅属于新通用搜索；CMD 模式会隐藏该控件。
-        m_searchResultsOnlyCheck = new QCheckBox(m_centerInputGroup);
-        m_searchResultsOnlyCheck->setObjectName(
-            QStringLiteral("ksTitleSearchResultsOnlyCheck"));
-        m_searchResultsOnlyCheck->setFixedHeight(20);
-        m_searchResultsOnlyCheck->setFocusPolicy(Qt::NoFocus);
-
         m_centerInputLayout->addWidget(m_inputModeButton, 0);
         m_centerInputLayout->addWidget(m_commandLineEdit, 1);
-        m_centerInputLayout->addWidget(m_searchResultsOnlyCheck, 0);
 
         // 右侧控制区：系统版本 + 当前时间/运行时长 + 截屏屏蔽 + 图钉 + 窗口按钮。
         m_rightWidget = new QWidget(this);
@@ -759,13 +749,6 @@ namespace ks::ui
                 emit searchTextEdited(changedText);
             }
         });
-        connect(
-            m_searchResultsOnlyCheck,
-            &QCheckBox::toggled,
-            this,
-            [this](const bool checked) {
-                emit searchResultsOnlyChanged(checked);
-            });
         connect(m_searchModeAction, &QAction::triggered, this, [this]() {
             setTitleInputMode(true);
         });
@@ -833,14 +816,6 @@ namespace ks::ui
             "  color:%5;"
             "  border:none;"
             "  padding:0 6px;"
-            "}"
-            "#ksCustomTitleBar QCheckBox#ksTitleSearchResultsOnlyCheck{"
-            "  background:transparent;"
-            "  color:%5;"
-            "  border:none;"
-            "  border-left:1px solid %6;"
-            "  padding:0 6px;"
-            "  spacing:4px;"
             "}"
             "#ksCustomTitleBar QToolButton#ksTitleInputModeButton{"
             "  background:transparent;"
@@ -1009,17 +984,6 @@ namespace ks::ui
         updateTitleInputModeVisuals();
     }
 
-    void CustomTitleBar::setSearchResultsOnlyChecked(const bool checked)
-    {
-        if (m_searchResultsOnlyCheck == nullptr)
-        {
-            return;
-        }
-
-        const QSignalBlocker signalBlocker(m_searchResultsOnlyCheck);
-        m_searchResultsOnlyCheck->setChecked(checked);
-    }
-
     void CustomTitleBar::setTitleInputMode(
         const bool searchModeActive,
         const bool focusInput)
@@ -1053,7 +1017,6 @@ namespace ks::ui
     {
         if (m_inputModeButton == nullptr
             || m_commandLineEdit == nullptr
-            || m_searchResultsOnlyCheck == nullptr
             || m_searchModeAction == nullptr
             || m_commandModeAction == nullptr)
         {
@@ -1064,12 +1027,6 @@ namespace ks::ui
         m_commandModeAction->setChecked(!m_searchInputModeActive);
         if (m_searchInputModeActive)
         {
-            m_searchResultsOnlyCheck->setVisible(true);
-            m_searchResultsOnlyCheck->setText(
-                ks::i18n::sourceText(QStringLiteral("仅显示搜索结果")));
-            m_searchResultsOnlyCheck->setToolTip(
-                ks::i18n::sourceText(QStringLiteral(
-                    "勾选后隐藏通用表格中不匹配的行；取消勾选后恢复原有可见状态")));
             m_inputModeButton->setText(m_searchScopeDisplayText + QStringLiteral(" ▾"));
             m_inputModeButton->setToolTip(
                 ks::i18n::sourceText(QStringLiteral("搜索范围：%1。聚焦输入框后按 Tab 切换范围。"))
@@ -1081,7 +1038,6 @@ namespace ks::ui
         }
         else
         {
-            m_searchResultsOnlyCheck->setVisible(false);
             m_inputModeButton->setText(QStringLiteral("CMD ▾"));
             m_commandLineEdit->setPlaceholderText(
                 QStringLiteral("输入命令后回车：将使用 cmd /K 在新控制台执行"));

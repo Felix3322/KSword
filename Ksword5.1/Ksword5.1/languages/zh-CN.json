@@ -30499,9 +30499,6 @@
     "OpenProcess(for token query) failed: ": "OpenProcess（令牌查询）失败：",
     "OpenProcessToken(TOKEN_QUERY) failed: ": "OpenProcessToken(TOKEN_QUERY) 失败：",
     "OpenProcessToken(for adjustment) failed: ": "OpenProcessToken（令牌调整）失败：",
-    "verified crash restart predecessor exited, skipping single-instance check": "已确认崩溃前实例退出，跳过单实例检查",
-    "ksTitleSearchResultsOnlyCheck": "ksTitleSearchResultsOnlyCheck",
-    "仅显示搜索结果": "仅显示搜索结果",
-    "勾选后隐藏通用表格中不匹配的行；取消勾选后恢复原有可见状态": "勾选后隐藏通用表格中不匹配的行；取消勾选后恢复原有可见状态"
+    "verified crash restart predecessor exited, skipping single-instance check": "已确认崩溃前实例退出，跳过单实例检查"
   }
 }

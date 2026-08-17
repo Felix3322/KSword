@@ -30499,9 +30499,6 @@
     "OpenProcess(for token query) failed: ": "OpenProcess(for token query) failed: ",
     "OpenProcessToken(TOKEN_QUERY) failed: ": "OpenProcessToken(TOKEN_QUERY) failed: ",
     "OpenProcessToken(for adjustment) failed: ": "OpenProcessToken(for adjustment) failed: ",
-    "verified crash restart predecessor exited, skipping single-instance check": "verified crash restart predecessor exited, skipping single-instance check",
-    "ksTitleSearchResultsOnlyCheck": "ksTitleSearchResultsOnlyCheck",
-    "仅显示搜索结果": "Show search results only",
-    "勾选后隐藏通用表格中不匹配的行；取消勾选后恢复原有可见状态": "Hide nonmatching rows in generic tables; clear to restore their previous visibility"
+    "verified crash restart predecessor exited, skipping single-instance check": "verified crash restart predecessor exited, skipping single-instance check"
   }
 }
