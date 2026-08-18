@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_bugcheck.h"
 
 VOID
 KswordArkLoadImageNotify(
@@ -30,7 +31,7 @@ KswordArkLoadImageNotify(
     WCHAR targetPathBuffer[KSWORD_ARK_CALLBACK_EVENT_MAX_TARGET_CHARS] = { 0 };
     NTSTATUS matchStatus = STATUS_SUCCESS;
 
-    UNREFERENCED_PARAMETER(ImageInfo);
+    KswordARKBugcheckTrackLoadedImage(FullImageName, ProcessId, ImageInfo);
 
     (VOID)KswordArkResolveProcessImagePath(
         PsGetCurrentProcess(),

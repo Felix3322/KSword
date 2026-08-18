@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_bugcheck.h"
 #include "ark/ark_process_protect.h"
 
 VOID
@@ -32,6 +33,8 @@ KswordArkProcessCreateNotifyEx(
     BOOLEAN initiatorPathUnavailable = TRUE;
     ULONG operationType = KSWORD_ARK_PROCESS_OP_CREATE;
     NTSTATUS matchStatus = STATUS_SUCCESS;
+
+    KswordARKBugcheckTrackProcess(Process, ProcessId, CreateInfo);
 
     if (CreateInfo == NULL) {
         // 退出通知：把进程移出 PP 自愈台账，避免死 PID 占位。

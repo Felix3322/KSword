@@ -13,6 +13,7 @@ Abstract:
 --*/
 
 #include "bugcheck_layout.h"
+#include "bugcheck_decode.h"
 
 #include <ntstrsafe.h>
 #include <stdarg.h>
@@ -260,6 +261,52 @@ KswordARKBugcheckLayoutModuleText(
     return Diagnostics->CandidateModule;
 }
 
+static BOOLEAN
+KswordARKBugcheckLayoutHasProcess(
+    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics
+    )
+{
+    return Diagnostics->ProcessObject != 0 &&
+        Diagnostics->ProcessName[0] != '\0';
+}
+
+static PCSTR
+KswordARKBugcheckLayoutCriticalObjectText(
+    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics
+    )
+{
+    if (Diagnostics->Parameter2 == 0) {
+        return "PROCESS";
+    }
+    if (Diagnostics->Parameter2 == 1) {
+        return "THREAD";
+    }
+    return "UNKNOWN";
+}
+
+static VOID
+KswordARKBugcheckLayoutWriteRawParameter(
+    _Inout_ KSWORD_ARK_BUGCHECK_LAYOUT_WRITER* Writer,
+    _In_ LONG X,
+    _In_ LONG Y,
+    _In_ ULONG MaximumCharacters,
+    _In_ const KSWORD_ARK_BUGCHECK_DIAGNOSTICS* Diagnostics,
+    _In_ ULONG ParameterIndex,
+    _In_ ULONG_PTR Value
+    )
+{
+    KswordARKBugcheckLayoutWriteFormatted(
+        Writer,
+        X,
+        Y,
+        KswordArkBugcheckLayoutColorText,
+        MaximumCharacters,
+        "PARAM%lu %-18s 0x%p",
+        ParameterIndex,
+        KswordARKBugcheckDecodeParameterRole(Diagnostics, ParameterIndex),
+        (PVOID)Value);
+}
+
 static PCSTR
 KswordARKBugcheckLayoutSummaryText(
     _In_ ULONG Classification
@@ -432,7 +479,7 @@ KswordARKBugcheckLayoutDrawCompact(
         "FAULT IP  0x%p", (PVOID)Diagnostics->FaultAddress);
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 340L, 370L, KswordArkBugcheckLayoutColorText, 29UL,
-        "MODULE OFFSET  0x%p",
+        "OFFSET  0x%p",
         (PVOID)Diagnostics->CandidateModuleOffset);
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 340L, 386L, KswordArkBugcheckLayoutColorWarning, 29UL,
@@ -485,34 +532,80 @@ KswordARKBugcheckLayoutDrawFull(
         "CRASH CPU / IRQL  %lu / %lu",
         Diagnostics->Cpu,
         Diagnostics->Irql);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 290L, KswordArkBugcheckLayoutColorMuted, 50UL,
-        "WINDOWS STOPPED TO PROTECT SYSTEM DATA.");
+    if (KswordARKBugcheckLayoutHasProcess(Diagnostics)) {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 28L, 290L, KswordArkBugcheckLayoutColorMuted, 50UL,
+            Diagnostics->BugCheckCode == 0x000000EF
+                ? "CRITICAL PROCESS  %s / PID %Iu"
+                : "CRASH CONTEXT     %s / PID %Iu",
+            Diagnostics->ProcessName,
+            Diagnostics->ProcessId);
+    } else {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 28L, 290L, KswordArkBugcheckLayoutColorMuted, 50UL,
+            "WINDOWS STOPPED TO PROTECT SYSTEM DATA.");
+    }
 
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 520L, 168L, KswordArkBugcheckLayoutColorMuted, 52UL,
         "LIKELY CAUSE");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 520L, 190L, KswordArkBugcheckLayoutColorAccent, 52UL,
-        "%s", usefulModuleText);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 520L, 210L, KswordArkBugcheckLayoutColorText, 52UL,
-        "CLASS / CONFIDENCE  %s / %s",
-        KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass),
-        KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 520L, 236L, KswordArkBugcheckLayoutColorText, 52UL,
-        "FAULT ADDRESS  0x%p", (PVOID)Diagnostics->FaultAddress);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 520L, 256L, KswordArkBugcheckLayoutColorText, 52UL,
-        "MODULE OFFSET  %s+0x%p",
-        usefulModuleText,
-        (PVOID)Diagnostics->CandidateModuleOffset);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 520L, 276L, KswordArkBugcheckLayoutColorText, 52UL,
-        "SOURCE PARAM%lu  %s",
-        Diagnostics->CandidateParameter,
-        Diagnostics->CandidateSource);
+    if (Diagnostics->CandidateClass != KSWORD_ARK_BUGCHECK_MODULE_UNKNOWN) {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 190L, KswordArkBugcheckLayoutColorAccent, 52UL,
+            "%s", usefulModuleText);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 210L, KswordArkBugcheckLayoutColorText, 52UL,
+            "CLASS / CONFIDENCE  %s / %s",
+            KswordARKBugcheckModuleClassText(Diagnostics->CandidateClass),
+            KswordARKBugcheckConfidenceText(Diagnostics->CandidateConfidence));
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 236L, KswordArkBugcheckLayoutColorText, 52UL,
+            "FAULT ADDRESS  0x%p", (PVOID)Diagnostics->FaultAddress);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 256L, KswordArkBugcheckLayoutColorText, 52UL,
+            "MODULE OFFSET  0x%p",
+            (PVOID)Diagnostics->CandidateModuleOffset);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 276L, KswordArkBugcheckLayoutColorText, 52UL,
+            "SOURCE  DOCUMENTED PARAM%lu CODE ADDRESS",
+            Diagnostics->CandidateParameter);
+    } else if (Diagnostics->BugCheckCode == 0x000000EF &&
+               KswordARKBugcheckLayoutHasProcess(Diagnostics)) {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 190L, KswordArkBugcheckLayoutColorAccent, 52UL,
+            "%s", Diagnostics->ProcessName);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 210L, KswordArkBugcheckLayoutColorText, 52UL,
+            "CRITICAL %s / PRE-CRASH CACHE",
+            KswordARKBugcheckLayoutCriticalObjectText(Diagnostics));
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 236L, KswordArkBugcheckLayoutColorText, 52UL,
+            "PROCESS OBJECT  0x%p",
+            (PVOID)Diagnostics->ProcessObject);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 256L, KswordArkBugcheckLayoutColorText, 52UL,
+            "PROCESS ID  %Iu",
+            Diagnostics->ProcessId);
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 276L, KswordArkBugcheckLayoutColorText, 52UL,
+            "TERMINATING CODE REQUIRES THE DUMP");
+    } else {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 190L, KswordArkBugcheckLayoutColorAccent, 52UL,
+            "NOT IDENTIFIED");
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 210L, KswordArkBugcheckLayoutColorText, 52UL,
+            "NO DOCUMENTED CODE ADDRESS IN PARAMETERS");
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 236L, KswordArkBugcheckLayoutColorText, 52UL,
+            "FAULT ADDRESS  NOT AVAILABLE");
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 256L, KswordArkBugcheckLayoutColorText, 52UL,
+            "MODULE OFFSET  NOT AVAILABLE");
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 520L, 276L, KswordArkBugcheckLayoutColorText, 52UL,
+            "USE THE SAVED STACK FOR ATTRIBUTION");
+    }
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 520L, 296L, KswordArkBugcheckLayoutColorMuted, 52UL,
         "THE DUMP PROVIDES THE FINAL ATTRIBUTION.");
@@ -520,23 +613,24 @@ KswordARKBugcheckLayoutDrawFull(
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 28L, 360L, KswordArkBugcheckLayoutColorMuted, 50UL,
         "RAW CRASH PARAMETERS");
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 384L, KswordArkBugcheckLayoutColorText, 50UL,
-        "PARAM1  0x%p", (PVOID)Diagnostics->Parameter1);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 404L, KswordArkBugcheckLayoutColorText, 50UL,
-        "PARAM2  0x%p", (PVOID)Diagnostics->Parameter2);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 424L, KswordArkBugcheckLayoutColorText, 50UL,
-        "PARAM3  0x%p", (PVOID)Diagnostics->Parameter3);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 444L, KswordArkBugcheckLayoutColorText, 50UL,
-        "PARAM4  0x%p", (PVOID)Diagnostics->Parameter4);
-    KswordARKBugcheckLayoutWriteFormatted(
-        Writer, 28L, 470L, KswordArkBugcheckLayoutColorMuted, 50UL,
-        "FAULT VALUE SOURCE  PARAM%lu  %s",
-        Diagnostics->FaultParameter,
-        Diagnostics->FaultMeaning);
+    KswordARKBugcheckLayoutWriteRawParameter(
+        Writer, 28L, 384L, 50UL, Diagnostics, 1UL, Diagnostics->Parameter1);
+    KswordARKBugcheckLayoutWriteRawParameter(
+        Writer, 28L, 404L, 50UL, Diagnostics, 2UL, Diagnostics->Parameter2);
+    KswordARKBugcheckLayoutWriteRawParameter(
+        Writer, 28L, 424L, 50UL, Diagnostics, 3UL, Diagnostics->Parameter3);
+    KswordARKBugcheckLayoutWriteRawParameter(
+        Writer, 28L, 444L, 50UL, Diagnostics, 4UL, Diagnostics->Parameter4);
+    if (Diagnostics->FaultParameter != 0) {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 28L, 470L, KswordArkBugcheckLayoutColorMuted, 50UL,
+            "DIRECT CODE ADDRESS  PARAM%lu",
+            Diagnostics->FaultParameter);
+    } else {
+        KswordARKBugcheckLayoutWriteFormatted(
+            Writer, 28L, 470L, KswordArkBugcheckLayoutColorMuted, 50UL,
+            "DIRECT CODE ADDRESS  NOT PROVIDED");
+    }
 
     KswordARKBugcheckLayoutWriteFormatted(
         Writer, 520L, 360L, KswordArkBugcheckLayoutColorMuted, 52UL,

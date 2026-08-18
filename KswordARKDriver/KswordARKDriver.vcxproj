@@ -138,6 +138,7 @@
     <ClCompile Include="src\features\log\log_channel.c" />
     <ClCompile Include="src\features\debug_output\debug_output_capture.c" />
     <ClCompile Include="src\features\debug_output\debug_output_ioctl.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_decode.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_runtime.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_bgp.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_bgp_lifecycle.c" />
@@ -302,6 +303,7 @@
     <ClInclude Include="..\shared\driver\KswordArkDebugOutputIoctl.h" />
     <ClInclude Include="include\ark\ark_bugcheck.h" />
     <ClInclude Include="..\shared\driver\KswordArkBugcheckIoctl.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_decode.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_internal.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_font.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_bgp.h" />

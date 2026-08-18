@@ -12,6 +12,7 @@ Abstract:
 --*/
 
 #include "bugcheck_internal.h"
+#include "bugcheck_decode.h"
 #include "bugcheck_bgp.h"
 #include "bugcheck_panel.h"
 #include "bugcheck_preparation_log.h"
@@ -22,6 +23,18 @@ Abstract:
 
 #define KSWORD_ARK_BUGCHECK_POOL_TAG 'cbSK'
 #define KSWORD_ARK_BUGCHECK_SECONDARY_SIGNATURE 0x4442534BUL /* 'KSBD' */
+
+NTSYSAPI
+PCHAR
+NTAPI
+PsGetProcessImageFileName(
+    _In_ PEPROCESS Process
+    );
+
+typedef PEPROCESS
+(NTAPI* KSWORD_ARK_BUGCHECK_PS_GET_NEXT_PROCESS)(
+    _In_opt_ PEPROCESS Process
+    );
 
 typedef struct _KSWORD_ARK_BUGCHECK_SECONDARY_DATA
 {
@@ -76,7 +89,7 @@ KswordARKBugcheckUpdateSecondaryData(
 {
     g_KswordArkBugcheckSecondaryData.Signature =
         KSWORD_ARK_BUGCHECK_SECONDARY_SIGNATURE;
-    g_KswordArkBugcheckSecondaryData.Version = 3UL;
+    g_KswordArkBugcheckSecondaryData.Version = 4UL;
     g_KswordArkBugcheckSecondaryData.Size =
         sizeof(g_KswordArkBugcheckSecondaryData);
     RtlCopyMemory(
@@ -201,6 +214,263 @@ KswordARKBugcheckClassifyModuleName(
     return KSWORD_ARK_BUGCHECK_MODULE_THIRD_PARTY;
 }
 
+static VOID
+KswordARKBugcheckPublishModule(
+    _In_ ULONG_PTR Base,
+    _In_ ULONG Size,
+    _In_z_ PCSTR Name
+    )
+{
+    KIRQL oldIrql;
+    ULONG index;
+    ULONG targetIndex;
+    PKSWORD_ARK_BUGCHECK_MODULE_ENTRY entry;
+
+    if (Base < 0x10000ULL || Size == 0 || Name == NULL || Name[0] == '\0' ||
+        InterlockedCompareExchange(
+            &g_KswordArkBugcheckState.TrackingReady,
+            1,
+            1) == 0) {
+        return;
+    }
+
+    KeAcquireSpinLock(&g_KswordArkBugcheckState.ModuleCacheLock, &oldIrql);
+    targetIndex = MAXULONG;
+    for (index = 0; index < KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT; ++index) {
+        ULONG_PTR existingBase;
+        ULONG_PTR existingEnd;
+        ULONG_PTR newEnd;
+
+        entry = &g_KswordArkBugcheckState.Modules[index];
+        existingBase = entry->Base;
+        if (existingBase == 0 || entry->Size == 0) {
+            if (targetIndex == MAXULONG) {
+                targetIndex = index;
+            }
+            continue;
+        }
+        existingEnd = existingBase + entry->Size;
+        newEnd = Base + Size;
+        if (existingBase == Base ||
+            (Base < existingEnd && existingBase < newEnd)) {
+            targetIndex = index;
+            break;
+        }
+    }
+    if (targetIndex == MAXULONG) {
+        targetIndex = g_KswordArkBugcheckState.ModuleNextSlot %
+            KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT;
+        ++g_KswordArkBugcheckState.ModuleNextSlot;
+    }
+
+    entry = &g_KswordArkBugcheckState.Modules[targetIndex];
+    if (entry->Base == 0 &&
+        g_KswordArkBugcheckState.ModuleCount <
+            KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT) {
+        ++g_KswordArkBugcheckState.ModuleCount;
+    }
+    (VOID)InterlockedIncrement(&entry->Sequence);
+    KeMemoryBarrier();
+    entry->Base = Base;
+    entry->Size = Size;
+    entry->Classification = KswordARKBugcheckClassifyModuleName(Name);
+    (VOID)RtlStringCbCopyA(entry->Name, sizeof(entry->Name), Name);
+    entry->Name[KSWORD_ARK_BUGCHECK_MODULE_NAME_CHARS - 1UL] = '\0';
+    KeMemoryBarrier();
+    (VOID)InterlockedIncrement(&entry->Sequence);
+    KeReleaseSpinLock(&g_KswordArkBugcheckState.ModuleCacheLock, oldIrql);
+}
+
+static BOOLEAN
+KswordARKBugcheckCopyUnicodeBaseNameA(
+    _In_opt_ PCUNICODE_STRING FullImageName,
+    _Out_writes_z_(Capacity) PCHAR Name,
+    _In_ ULONG Capacity
+    )
+{
+    USHORT characterCount;
+    USHORT start;
+    USHORT index;
+    ULONG copied;
+
+    if (Name == NULL || Capacity == 0) {
+        return FALSE;
+    }
+    Name[0] = '\0';
+    if (FullImageName == NULL || FullImageName->Buffer == NULL ||
+        FullImageName->Length < sizeof(WCHAR)) {
+        return FALSE;
+    }
+
+    characterCount = FullImageName->Length / sizeof(WCHAR);
+    start = 0;
+    for (index = 0; index < characterCount; ++index) {
+        if (FullImageName->Buffer[index] == L'\\' ||
+            FullImageName->Buffer[index] == L'/') {
+            start = (USHORT)(index + 1U);
+        }
+    }
+    copied = 0;
+    for (index = start;
+         index < characterCount && copied + 1UL < Capacity;
+         ++index) {
+        WCHAR value;
+
+        value = FullImageName->Buffer[index];
+        Name[copied++] = value >= 0x20 && value <= 0x7E
+            ? (CHAR)value
+            : '?';
+    }
+    Name[copied] = '\0';
+    return copied != 0 ? TRUE : FALSE;
+}
+
+VOID
+KswordARKBugcheckTrackLoadedImage(
+    _In_opt_ PUNICODE_STRING FullImageName,
+    _In_ HANDLE ProcessId,
+    _In_ PIMAGE_INFO ImageInfo
+    )
+{
+    CHAR name[KSWORD_ARK_BUGCHECK_MODULE_NAME_CHARS];
+
+    UNREFERENCED_PARAMETER(ProcessId);
+    if (ImageInfo == NULL || !ImageInfo->SystemModeImage ||
+        ImageInfo->ImageBase == NULL || ImageInfo->ImageSize == 0 ||
+        ImageInfo->ImageSize > MAXULONG ||
+        !KswordARKBugcheckCopyUnicodeBaseNameA(
+            FullImageName,
+            name,
+            (ULONG)RTL_NUMBER_OF(name))) {
+        return;
+    }
+    KswordARKBugcheckPublishModule(
+        (ULONG_PTR)ImageInfo->ImageBase,
+        (ULONG)ImageInfo->ImageSize,
+        name);
+}
+
+static VOID
+KswordARKBugcheckPublishProcess(
+    _In_ PEPROCESS Process,
+    _In_ HANDLE ProcessId,
+    _In_ BOOLEAN Exiting
+    )
+{
+    CHAR name[KSWORD_ARK_BUGCHECK_PROCESS_NAME_CHARS];
+    PCSTR imageName;
+    KIRQL oldIrql;
+    ULONG index;
+    ULONG targetIndex;
+    ULONG exitingIndex;
+    PKSWORD_ARK_BUGCHECK_PROCESS_ENTRY entry;
+
+    if (Process == NULL ||
+        InterlockedCompareExchange(
+            &g_KswordArkBugcheckState.TrackingReady,
+            1,
+            1) == 0) {
+        return;
+    }
+    RtlZeroMemory(name, sizeof(name));
+    imageName = PsGetProcessImageFileName(Process);
+    if (imageName != NULL) {
+        (VOID)RtlStringCbCopyA(name, sizeof(name), imageName);
+    }
+    name[KSWORD_ARK_BUGCHECK_PROCESS_NAME_CHARS - 1UL] = '\0';
+
+    KeAcquireSpinLock(&g_KswordArkBugcheckState.ProcessCacheLock, &oldIrql);
+    targetIndex = MAXULONG;
+    exitingIndex = MAXULONG;
+    for (index = 0; index < KSWORD_ARK_BUGCHECK_PROCESS_CACHE_COUNT; ++index) {
+        entry = &g_KswordArkBugcheckState.Processes[index];
+        if (entry->Object == Process) {
+            targetIndex = index;
+            break;
+        }
+        if (entry->Object == NULL && targetIndex == MAXULONG) {
+            targetIndex = index;
+        } else if (entry->Exiting && exitingIndex == MAXULONG) {
+            exitingIndex = index;
+        }
+    }
+    if (targetIndex == MAXULONG) {
+        targetIndex = exitingIndex != MAXULONG
+            ? exitingIndex
+            : g_KswordArkBugcheckState.ProcessNextSlot %
+                KSWORD_ARK_BUGCHECK_PROCESS_CACHE_COUNT;
+        ++g_KswordArkBugcheckState.ProcessNextSlot;
+    }
+
+    entry = &g_KswordArkBugcheckState.Processes[targetIndex];
+    if (entry->Object == NULL &&
+        g_KswordArkBugcheckState.ProcessCount <
+            KSWORD_ARK_BUGCHECK_PROCESS_CACHE_COUNT) {
+        ++g_KswordArkBugcheckState.ProcessCount;
+    }
+    (VOID)InterlockedIncrement(&entry->Sequence);
+    KeMemoryBarrier();
+    entry->Object = Process;
+    entry->ProcessId = (ULONG_PTR)ProcessId;
+    entry->Exiting = Exiting;
+    if (name[0] != '\0' || entry->Name[0] == '\0') {
+        (VOID)RtlStringCbCopyA(entry->Name, sizeof(entry->Name), name);
+    }
+    entry->Name[KSWORD_ARK_BUGCHECK_PROCESS_NAME_CHARS - 1UL] = '\0';
+    KeMemoryBarrier();
+    (VOID)InterlockedIncrement(&entry->Sequence);
+    KeReleaseSpinLock(&g_KswordArkBugcheckState.ProcessCacheLock, oldIrql);
+}
+
+VOID
+KswordARKBugcheckTrackProcess(
+    _In_ PEPROCESS Process,
+    _In_ HANDLE ProcessId,
+    _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo
+    )
+{
+    KswordARKBugcheckPublishProcess(
+        Process,
+        ProcessId,
+        CreateInfo == NULL ? TRUE : FALSE);
+}
+
+static VOID
+KswordARKBugcheckRefreshProcessCache(
+    VOID
+    )
+{
+    UNICODE_STRING routineName;
+    KSWORD_ARK_BUGCHECK_PS_GET_NEXT_PROCESS getNextProcess;
+    PEPROCESS process;
+    ULONG visited;
+
+    RtlInitUnicodeString(&routineName, L"PsGetNextProcess");
+    getNextProcess = (KSWORD_ARK_BUGCHECK_PS_GET_NEXT_PROCESS)
+        MmGetSystemRoutineAddress(&routineName);
+    if (getNextProcess == NULL) {
+        return;
+    }
+
+    visited = 0;
+    process = getNextProcess(NULL);
+    while (process != NULL && visited < 65536UL) {
+        PEPROCESS nextProcess;
+
+        nextProcess = getNextProcess(process);
+        KswordARKBugcheckPublishProcess(
+            process,
+            PsGetProcessId(process),
+            FALSE);
+        ObDereferenceObject(process);
+        process = nextProcess;
+        ++visited;
+    }
+    if (process != NULL) {
+        ObDereferenceObject(process);
+    }
+}
+
 PCSTR
 KswordARKBugcheckName(
     _In_ ULONG BugCheckCode
@@ -273,13 +543,13 @@ KswordARKBugcheckVerdictText(
 {
     switch (Classification) {
     case KSWORD_ARK_BUGCHECK_MODULE_OURS:
-        return "This is a KswordARK problem. We are very sorry. Send the MiniDump to the developers as soon as possible so it can be fixed.";
+        return "KswordARK may be involved. Capture this page and attach the crash dump when reporting the issue.";
     case KSWORD_ARK_BUGCHECK_MODULE_MICROSOFT:
-        return "This is not a KswordARK problem. Microsoft's spaghetti code struck again. Send the MiniDump or a photo of this page to technical support.";
+        return "The available crash parameters point to a known Microsoft kernel component.";
     case KSWORD_ARK_BUGCHECK_MODULE_THIRD_PARTY:
-        return "This is neither a KswordARK nor a Microsoft problem. A third-party driver is responsible. Send the MiniDump or a photo of this page to technical support.";
+        return "The available crash parameters point to another third-party kernel component.";
     default:
-        return "This is nobody's fault. Your computer just exploded. Restart it, reinstall it, or buy a new one.";
+        return "The faulting component is unknown. Capture this page and preserve the crash dump.";
     }
 }
 
@@ -323,13 +593,8 @@ KswordARKBugcheckRefreshModuleCache(
     ULONG bytes = 0;
     ULONG count;
     ULONG index;
-    ULONG stored = 0;
     PAUX_MODULE_EXTENDED_INFO modules;
     PCSTR name;
-
-    g_KswordArkBugcheckState.ModuleCount = 0;
-    RtlZeroMemory(g_KswordArkBugcheckState.Modules,
-                  sizeof(g_KswordArkBugcheckState.Modules));
 
     status = AuxKlibInitialize();
     if (!NT_SUCCESS(status)) {
@@ -362,52 +627,149 @@ KswordARKBugcheckRefreshModuleCache(
     }
 
     count = bytes / sizeof(AUX_MODULE_EXTENDED_INFO);
-    for (index = 0;
-         index < count && stored < KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT;
-         ++index) {
+    for (index = 0; index < count; ++index) {
         name = (PCSTR)modules[index].FullPathName;
         if (modules[index].FileNameOffset < AUX_KLIB_MODULE_PATH_LEN) {
             name = (PCSTR)&modules[index].FullPathName[modules[index].FileNameOffset];
         }
 
-        g_KswordArkBugcheckState.Modules[stored].Base =
-            (ULONG_PTR)modules[index].BasicInfo.ImageBase;
-        g_KswordArkBugcheckState.Modules[stored].Size = modules[index].ImageSize;
-        (VOID)RtlStringCbCopyA(
-            g_KswordArkBugcheckState.Modules[stored].Name,
-            sizeof(g_KswordArkBugcheckState.Modules[stored].Name),
+        KswordARKBugcheckPublishModule(
+            (ULONG_PTR)modules[index].BasicInfo.ImageBase,
+            modules[index].ImageSize,
             name);
-        g_KswordArkBugcheckState.Modules[stored]
-            .Name[KSWORD_ARK_BUGCHECK_MODULE_NAME_CHARS - 1] = '\0';
-        g_KswordArkBugcheckState.Modules[stored].Classification =
-            KswordARKBugcheckClassifyModuleName(
-                g_KswordArkBugcheckState.Modules[stored].Name);
-        ++stored;
     }
-
-    g_KswordArkBugcheckState.ModuleCount = stored;
     ExFreePoolWithTag(modules, KSWORD_ARK_BUGCHECK_POOL_TAG);
 }
 
-static PKSWORD_ARK_BUGCHECK_MODULE_ENTRY
+static BOOLEAN
 KswordARKBugcheckFindModuleForAddress(
-    _In_ ULONG_PTR Address
+    _In_ ULONG_PTR Address,
+    _Out_ PKSWORD_ARK_BUGCHECK_MODULE_ENTRY Module
+    )
+{
+    ULONG index;
+    ULONG moduleCount;
+
+    if (Address < 0x10000ULL || Module == NULL) {
+        return FALSE;
+    }
+    RtlZeroMemory(Module, sizeof(*Module));
+    moduleCount = g_KswordArkBugcheckState.ModuleCount;
+    if (moduleCount > KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT) {
+        moduleCount = KSWORD_ARK_BUGCHECK_MODULE_CACHE_COUNT;
+    }
+
+    for (index = 0; index < moduleCount; ++index) {
+        PKSWORD_ARK_BUGCHECK_MODULE_ENTRY entry;
+        LONG sequenceBefore;
+        LONG sequenceAfter;
+        ULONG_PTR base;
+        ULONG size;
+        ULONG classification;
+        CHAR name[KSWORD_ARK_BUGCHECK_MODULE_NAME_CHARS];
+
+        entry = &g_KswordArkBugcheckState.Modules[index];
+        sequenceBefore = InterlockedCompareExchange(&entry->Sequence, 0, 0);
+        if ((sequenceBefore & 1L) != 0) {
+            continue;
+        }
+        base = entry->Base;
+        size = entry->Size;
+        classification = entry->Classification;
+        RtlCopyMemory(name, entry->Name, sizeof(name));
+        name[KSWORD_ARK_BUGCHECK_MODULE_NAME_CHARS - 1UL] = '\0';
+        KeMemoryBarrier();
+        sequenceAfter = InterlockedCompareExchange(&entry->Sequence, 0, 0);
+        if (sequenceBefore != sequenceAfter || (sequenceAfter & 1L) != 0) {
+            continue;
+        }
+        if (base != 0 && size != 0 &&
+            Address >= base && Address - base < size) {
+            Module->Base = base;
+            Module->Size = size;
+            Module->Classification = classification;
+            (VOID)RtlStringCbCopyA(Module->Name, sizeof(Module->Name), name);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOLEAN
+KswordARKBugcheckFindProcessForObject(
+    _In_ PVOID ProcessObject,
+    _Out_ PULONG_PTR ProcessId,
+    _Out_writes_z_(NameCapacity) PCHAR Name,
+    _In_ ULONG NameCapacity
     )
 {
     ULONG index;
 
-    if (Address < 0x10000ULL) {
-        return NULL;
+    if (ProcessObject == NULL || ProcessId == NULL || Name == NULL ||
+        NameCapacity == 0) {
+        return FALSE;
     }
+    *ProcessId = 0;
+    Name[0] = '\0';
 
-    for (index = 0; index < g_KswordArkBugcheckState.ModuleCount; ++index) {
-        const ULONG_PTR base = g_KswordArkBugcheckState.Modules[index].Base;
-        const ULONG_PTR end = base + g_KswordArkBugcheckState.Modules[index].Size;
-        if (Address >= base && Address < end) {
-            return &g_KswordArkBugcheckState.Modules[index];
+    for (index = 0; index < KSWORD_ARK_BUGCHECK_PROCESS_CACHE_COUNT; ++index) {
+        PKSWORD_ARK_BUGCHECK_PROCESS_ENTRY entry;
+        LONG sequenceBefore;
+        LONG sequenceAfter;
+        PVOID object;
+        ULONG_PTR processId;
+        CHAR processName[KSWORD_ARK_BUGCHECK_PROCESS_NAME_CHARS];
+
+        entry = &g_KswordArkBugcheckState.Processes[index];
+        sequenceBefore = InterlockedCompareExchange(&entry->Sequence, 0, 0);
+        if ((sequenceBefore & 1L) != 0) {
+            continue;
         }
+        object = entry->Object;
+        processId = entry->ProcessId;
+        RtlCopyMemory(processName, entry->Name, sizeof(processName));
+        processName[KSWORD_ARK_BUGCHECK_PROCESS_NAME_CHARS - 1UL] = '\0';
+        KeMemoryBarrier();
+        sequenceAfter = InterlockedCompareExchange(&entry->Sequence, 0, 0);
+        if (sequenceBefore != sequenceAfter || (sequenceAfter & 1L) != 0 ||
+            object != ProcessObject) {
+            continue;
+        }
+
+        *ProcessId = processId;
+        (VOID)RtlStringCbCopyA(Name, NameCapacity, processName);
+        return processName[0] != '\0' ? TRUE : FALSE;
     }
-    return NULL;
+    return FALSE;
+}
+
+static VOID
+KswordARKBugcheckResolveProcessContext(
+    _Inout_ PKSWORD_ARK_BUGCHECK_DIAGNOSTICS Diagnostics
+    )
+{
+    PVOID processObject;
+
+    Diagnostics->ProcessObject = 0;
+    Diagnostics->ProcessId = 0;
+    Diagnostics->ProcessSource = KSWORD_ARK_BUGCHECK_PROCESS_SOURCE_NONE;
+    Diagnostics->ProcessName[0] = '\0';
+    if (Diagnostics->BugCheckCode == 0x000000EF &&
+        Diagnostics->Parameter1 != 0) {
+        processObject = (PVOID)Diagnostics->Parameter1;
+        Diagnostics->ProcessSource =
+            KSWORD_ARK_BUGCHECK_PROCESS_SOURCE_CRITICAL;
+    } else {
+        processObject = PsGetCurrentProcess();
+        Diagnostics->ProcessSource =
+            KSWORD_ARK_BUGCHECK_PROCESS_SOURCE_CONTEXT;
+    }
+    Diagnostics->ProcessObject = (ULONG_PTR)processObject;
+    (VOID)KswordARKBugcheckFindProcessForObject(
+        processObject,
+        &Diagnostics->ProcessId,
+        Diagnostics->ProcessName,
+        (ULONG)sizeof(Diagnostics->ProcessName));
 }
 
 static VOID
@@ -439,71 +801,15 @@ KswordARKBugcheckSetCandidate(
         Source);
 }
 
-static BOOLEAN
-KswordARKBugcheckSelectPrimaryAddress(
-    _Inout_ PKSWORD_ARK_BUGCHECK_DIAGNOSTICS Diagnostics,
-    _Out_ PULONG_PTR Address,
-    _Out_ PULONG ParameterIndex,
-    _Out_ PULONG Confidence
-    )
-{
-    PCSTR meaning = "no known address parameter";
-
-    *Address = 0;
-    *ParameterIndex = 0;
-    *Confidence = KSWORD_ARK_BUGCHECK_CONFIDENCE_NONE;
-
-    switch (Diagnostics->BugCheckCode) {
-    case 0x0000000A:
-    case 0x000000D1:
-        *Address = Diagnostics->Parameter4;
-        *ParameterIndex = 4;
-        *Confidence = KSWORD_ARK_BUGCHECK_CONFIDENCE_HIGH;
-        meaning = "instruction pointer that referenced memory";
-        break;
-    case 0x0000001E:
-    case 0x0000003B:
-    case 0x0000007E:
-        *Address = Diagnostics->Parameter2;
-        *ParameterIndex = 2;
-        *Confidence = KSWORD_ARK_BUGCHECK_CONFIDENCE_HIGH;
-        meaning = "exception or instruction address";
-        break;
-    case 0x00000050:
-    case 0x000000BE:
-    case 0x00000116:
-    case 0x00000117:
-        *Address = Diagnostics->Parameter3;
-        *ParameterIndex = 3;
-        *Confidence = KSWORD_ARK_BUGCHECK_CONFIDENCE_MEDIUM;
-        meaning = "probable instruction or fault address";
-        break;
-    default:
-        break;
-    }
-
-    Diagnostics->FaultAddress = *Address;
-    Diagnostics->FaultParameter = *ParameterIndex;
-    (VOID)RtlStringCbCopyA(
-        Diagnostics->FaultMeaning,
-        sizeof(Diagnostics->FaultMeaning),
-        meaning);
-    return (*Address != 0 && *Confidence != KSWORD_ARK_BUGCHECK_CONFIDENCE_NONE)
-        ? TRUE
-        : FALSE;
-}
-
 static VOID
 KswordARKBugcheckResolveCandidate(
     _Inout_ PKSWORD_ARK_BUGCHECK_DIAGNOSTICS Diagnostics
     )
 {
-    ULONG_PTR candidates[4];
     ULONG_PTR primaryAddress;
     ULONG primaryParameter;
     ULONG primaryConfidence;
-    ULONG index;
-    PKSWORD_ARK_BUGCHECK_MODULE_ENTRY module;
+    KSWORD_ARK_BUGCHECK_MODULE_ENTRY module;
 
     Diagnostics->CandidateAddress = 0;
     Diagnostics->CandidateModuleBase = 0;
@@ -527,40 +833,19 @@ KswordARKBugcheckResolveCandidate(
         sizeof(Diagnostics->FaultMeaning),
         "not classified");
 
-    if (KswordARKBugcheckSelectPrimaryAddress(
+    if (KswordARKBugcheckDecodePrimaryAddress(
             Diagnostics,
             &primaryAddress,
             &primaryParameter,
             &primaryConfidence)) {
-        module = KswordARKBugcheckFindModuleForAddress(primaryAddress);
-        if (module != NULL) {
+        if (KswordARKBugcheckFindModuleForAddress(primaryAddress, &module)) {
             KswordARKBugcheckSetCandidate(
                 Diagnostics,
-                module,
+                &module,
                 primaryAddress,
                 primaryConfidence,
                 primaryParameter,
                 "bugcheck-specific address parameter");
-            return;
-        }
-    }
-
-    candidates[0] = Diagnostics->Parameter1;
-    candidates[1] = Diagnostics->Parameter2;
-    candidates[2] = Diagnostics->Parameter3;
-    candidates[3] = Diagnostics->Parameter4;
-    for (index = 0; index < RTL_NUMBER_OF(candidates); ++index) {
-        module = KswordARKBugcheckFindModuleForAddress(candidates[index]);
-        if (module != NULL) {
-            KswordARKBugcheckSetCandidate(
-                Diagnostics,
-                module,
-                candidates[index],
-                index == 0
-                    ? KSWORD_ARK_BUGCHECK_CONFIDENCE_MEDIUM
-                    : KSWORD_ARK_BUGCHECK_CONFIDENCE_LOW,
-                index + 1,
-                "fallback scan of bugcheck parameters");
             return;
         }
     }
@@ -604,6 +889,7 @@ KswordARKBugcheckCaptureData(
     diagnostics->Irql = (ULONG)KeGetCurrentIrql();
     diagnostics->Cpu = KeGetCurrentProcessorNumber();
     diagnostics->PerfCounter = KeQueryPerformanceCounter(NULL);
+    KswordARKBugcheckResolveProcessContext(diagnostics);
     KswordARKBugcheckResolveCandidate(diagnostics);
     InterlockedExchange(&diagnostics->Captured, 1);
 
@@ -726,6 +1012,9 @@ KswordARKBugcheckInitialize(
     g_KswordArkBugcheckState.DeviceObject =
         WdfDeviceWdmGetDeviceObject(ControlDevice);
     g_KswordArkBugcheckState.Bitmap.BrandColorRgb = 0x0078D4UL;
+    KeInitializeSpinLock(&g_KswordArkBugcheckState.ModuleCacheLock);
+    KeInitializeSpinLock(&g_KswordArkBugcheckState.ProcessCacheLock);
+    InterlockedExchange(&g_KswordArkBugcheckState.TrackingReady, 1);
 
     panelStatus = STATUS_DEVICE_NOT_READY;
     bgpStatus = KswordARKBugcheckBgpInitialize();
@@ -736,6 +1025,7 @@ KswordARKBugcheckInitialize(
     }
 
     KswordARKBugcheckRefreshModuleCache();
+    KswordARKBugcheckRefreshProcessCache();
     InterlockedExchange(&g_KswordArkBugcheckState.Active, 1);
 
     KeInitializeCallbackRecord(&g_KswordArkBugcheckState.ClassicRecord);
@@ -810,6 +1100,8 @@ KswordARKBugcheckUninitialize(
     VOID
     )
 {
+    InterlockedExchange(&g_KswordArkBugcheckState.TrackingReady, 0);
+    KeMemoryBarrier();
     InterlockedExchange(&g_KswordArkBugcheckState.Active, 0);
     InterlockedExchange(&g_KswordArkBugcheckState.Bitmap.Valid, 0);
 

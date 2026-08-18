@@ -22,6 +22,23 @@ KswordARKBugcheckUninitialize(
     VOID
     );
 
+// Feed the crash-safe process/module identity caches from the driver's existing
+// notify callbacks. Writers run before a crash; the bugcheck path only reads
+// fixed nonpaged snapshots and never dereferences an arbitrary crash parameter.
+VOID
+KswordARKBugcheckTrackProcess(
+    _In_ PEPROCESS Process,
+    _In_ HANDLE ProcessId,
+    _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo
+    );
+
+VOID
+KswordARKBugcheckTrackLoadedImage(
+    _In_opt_ PUNICODE_STRING FullImageName,
+    _In_ HANDLE ProcessId,
+    _In_ PIMAGE_INFO ImageInfo
+    );
+
 // Optional bitmap upload adapter registered through ioctl_registry.c.
 NTSTATUS
 KswordARKBugcheckIoctlSetBitmap(
