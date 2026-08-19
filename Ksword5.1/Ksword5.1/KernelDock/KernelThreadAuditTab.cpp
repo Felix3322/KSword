@@ -3,6 +3,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
@@ -197,6 +198,8 @@ void KernelThreadAuditTab::initializeUi()
     splitter->setStretchFactor(1, 2);
     rootLayout->addWidget(splitter, 1);
 
+    ks::ui::DetailLayoutRegistry::registerHost(m_table, m_detailEditor, this);
+
     // 连接：刷新、筛选、选择、A/B 列组、表头菜单和行操作菜单。
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() { requestRefresh(); });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() { rebuildTable(); });
@@ -341,6 +344,7 @@ void KernelThreadAuditTab::applySnapshot(const Snapshot& snapshot)
 
 void KernelThreadAuditTab::rebuildTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
     const QString filterText = m_filterEdit->text().trimmed();
     m_table->setSortingEnabled(false);
     m_table->setRowCount(0);

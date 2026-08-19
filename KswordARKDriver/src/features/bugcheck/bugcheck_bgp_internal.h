@@ -133,6 +133,29 @@ KswordARKBugcheckBgpReadScreen(
     _Out_ PKSWORD_ARK_BGP_SCREEN_INFO Screen
     );
 
+// Invoke the validated private BGP parser without applying CFG to the private
+// kernel target itself.  The resolver remains responsible for validating the
+// target image, section, signature family, and uniqueness before publication.
+NTSTATUS
+KswordARKBugcheckBgpInvokeParseBitmap(
+    _In_ const VOID* Bitmap,
+    _Out_ PVOID* Rectangle
+    );
+
+// Invoke the validated private BGP rectangle destructor through the same
+// narrowly scoped no-CFG boundary used by the remaining private BGP calls.
+NTSTATUS
+KswordARKBugcheckBgpInvokeDestroyRectangle(
+    _In_opt_ PVOID Rectangle
+    );
+
+// Invoke the validated private BGP lock release routine without extending the
+// CFG exception to the lifecycle caller or any unrelated driver code.
+VOID
+KswordARKBugcheckBgpInvokeRelease(
+    VOID
+    );
+
 NTSTATUS
 KswordARKBugcheckBgpValidateBitmap(
     _In_reads_bytes_(BitmapLength) const VOID* Bitmap,

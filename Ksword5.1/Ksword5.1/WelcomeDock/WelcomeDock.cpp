@@ -57,12 +57,12 @@ namespace
     // kReleaseVersionText 作用：
     // - 欢迎页显示的版本号文本；
     // - 由发布脚本按注释标记替换。
-    const QString kReleaseVersionText = QStringLiteral("5.1.4.1 Alpha"); // RELEASE_META_VERSION_MARKER
+    const QString kReleaseVersionText = QStringLiteral("5.1.4.2正式版"); // RELEASE_META_VERSION_MARKER
 
     // kReleaseBuildTimeText 作用：
     // - 欢迎页显示的精确编译时间；
     // - 由发布脚本按注释标记替换。
-    const QString kReleaseBuildTimeText = QStringLiteral("2026-05-02 22:00:00.093 +08:00"); // RELEASE_META_BUILD_TIME_MARKER
+    const QString kReleaseBuildTimeText = QStringLiteral("2026-08-17 22:41:10.119 +08:00"); // RELEASE_META_BUILD_TIME_MARKER
 
     // kQQGroupInviteUrl 作用：QQ 群按钮点击后打开的官方加群邀请链接。
     const QString kQQGroupInviteUrl = QStringLiteral("https://qm.qq.com/q/5tWNPfIxkk");

@@ -1,6 +1,7 @@
 #include "MemoryDock.Internal.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../UI/TableColumnAutoFit.h"
 
 #include <memory>
@@ -530,6 +531,11 @@ void MemoryDock::initializeKernelMemoryEvidenceTab()
         "请选择一条内核内存证据记录查看详情。\n"
         "说明：text diff 的磁盘对比由 R3 后续阶段完成，本页当前展示 R0 内存 hash/sample 状态。"));
     splitter->addWidget(m_kernelMemoryEvidenceDetailEditor);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_kernelMemoryEvidenceTable,
+        m_kernelMemoryEvidenceDetailEditor,
+        m_tabKernelMemoryEvidence);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
@@ -689,6 +695,7 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
 
 void MemoryDock::rebuildKernelMemoryEvidenceTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_kernelMemoryEvidenceDetailEditor);
     // 输入：无，读取 m_kernelMemoryEvidenceCache 和过滤控件。
     // 处理：把缓存投影为表格，风险过滤仅在 R3 本地执行。
     // 返回：无。

@@ -1,6 +1,7 @@
 #include "MemoryDock.Internal.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../UI/TableColumnAutoFit.h"
 
 // 分层工具条用到的 Qt 控件在这里显式补齐：Internal.h 虽然已经聚合了同名头，
@@ -339,6 +340,11 @@ void MemoryDock::initializeProcessPteTranslateTab()
     m_processPteTranslateDetailEditor->setReadOnly(true);
     m_processPteTranslateDetailEditor->setText(QStringLiteral("请选择一条 PTE / VA 翻译记录查看详情。"));
     splitter->addWidget(m_processPteTranslateDetailEditor);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_processPteTranslateTable,
+        m_processPteTranslateDetailEditor,
+        m_tabProcessPteTranslate);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
@@ -567,6 +573,7 @@ void MemoryDock::refreshProcessPteTranslateAsync()
 
 void MemoryDock::rebuildProcessPteTranslateTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_processPteTranslateDetailEditor);
     // 输入：读取当前缓存和风险过滤开关。
     // 处理：把 Tab9 缓存投影到表格并保留排序友好数值列。
     // 返回：无。

@@ -90,7 +90,7 @@ KswordARKBugcheckBgpShutdown(
     InterlockedExchange(&g_KswordArkBgp.State, KswordArkBgpStateUnloading);
     if (InterlockedExchange(&g_KswordArkBgp.LockHeld, 0) != 0 &&
         g_KswordArkBgp.Release != NULL) {
-        g_KswordArkBgp.Release();
+        KswordARKBugcheckBgpInvokeRelease();
     }
     g_KswordArkBgp.RequiredWidth = 0;
     g_KswordArkBgp.RequiredHeight = 0;
@@ -152,7 +152,9 @@ KswordARKBugcheckBgpParseBitmap(
     }
 
     parsedRectangle = NULL;
-    status = g_KswordArkBgp.ParseBitmap(Bitmap, &parsedRectangle);
+    status = KswordARKBugcheckBgpInvokeParseBitmap(
+        Bitmap,
+        &parsedRectangle);
     if (!NT_SUCCESS(status) || parsedRectangle == NULL) {
         return NT_SUCCESS(status) ? STATUS_UNSUCCESSFUL : status;
     }
@@ -208,7 +210,7 @@ KswordARKBugcheckBgpDestroyRectangle(
     )
 {
     if (Rectangle != NULL && g_KswordArkBgp.DestroyRectangle != NULL) {
-        (VOID)g_KswordArkBgp.DestroyRectangle(Rectangle);
+        (VOID)KswordARKBugcheckBgpInvokeDestroyRectangle(Rectangle);
     }
 }
 

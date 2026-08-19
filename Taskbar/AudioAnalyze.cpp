@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cwchar>
 #include <thread>
 #include <vector>
 #include <QDebug>
@@ -156,6 +157,54 @@ bool AudioSpectrumAnalyzer::initializeAudioDevice()
     return setupAudioClient();
 }
 
+bool AudioSpectrumAnalyzer::defaultAudioDeviceChangedOnWorker() const
+{
+    // 设备枚举器和当前设备均由采集线程拥有，缺失任一对象说明当前会话需要重新建立。
+    if (!m_deviceEnumerator || !m_audioDevice)
+    {
+        return true;
+    }
+
+    // 读取当前绑定设备和系统默认渲染设备的稳定端点 ID，用于判断用户是否切换了输出设备。
+    LPWSTR currentDeviceId = nullptr;
+    LPWSTR defaultDeviceId = nullptr;
+    IMMDevice* defaultDevice = nullptr;
+    const HRESULT currentIdResult = m_audioDevice->GetId(&currentDeviceId);
+    const HRESULT defaultDeviceResult = m_deviceEnumerator->GetDefaultAudioEndpoint(
+        eRender,
+        eConsole,
+        &defaultDevice);
+
+    HRESULT defaultIdResult = E_FAIL;
+    if (SUCCEEDED(defaultDeviceResult) && defaultDevice)
+    {
+        defaultIdResult = defaultDevice->GetId(&defaultDeviceId);
+    }
+
+    // 当前设备 ID 已不可读取时会话已失效；默认端点暂不可用时保留当前会话，稍后继续检查。
+    const bool currentDeviceInvalid = FAILED(currentIdResult) || currentDeviceId == nullptr;
+    const bool defaultDeviceAvailable = SUCCEEDED(defaultIdResult) && defaultDeviceId != nullptr;
+    const bool defaultDeviceChanged = defaultDeviceAvailable
+        && !currentDeviceInvalid
+        && std::wcscmp(currentDeviceId, defaultDeviceId) != 0;
+
+    // 设备 ID 由 COM 分配，比较完成后在创建它们的采集线程内成对释放所有临时对象。
+    if (defaultDeviceId)
+    {
+        CoTaskMemFree(defaultDeviceId);
+    }
+    if (defaultDevice)
+    {
+        defaultDevice->Release();
+    }
+    if (currentDeviceId)
+    {
+        CoTaskMemFree(currentDeviceId);
+    }
+
+    return currentDeviceInvalid || defaultDeviceChanged;
+}
+
 bool AudioSpectrumAnalyzer::setupAudioClient()
 {
     // 先在局部变量中建立完整会话，失败时不会把半初始化接口留给下一台设备。
@@ -279,49 +328,86 @@ void AudioSpectrumAnalyzer::stopCapture()
 
 void AudioSpectrumAnalyzer::captureAudioData()
 {
-    // 该线程拥有完整的 COM 会话；失败路径也必须在同一线程回收已创建接口。
-    if (!initializeAudioSessionOnWorker()) {
-        releaseAudioSessionOnWorker();
-        m_isCapturing.store(false, std::memory_order_release);
-        qWarning() << "音频采集会话初始化失败。";
-        return;
-    }
+    // 采集线程持有所有 Core Audio 接口；会话重建始终在此线程完成，避免跨 COM apartment 调用。
+    constexpr ULONGLONG defaultDeviceCheckIntervalMs = 500;
+    ULONGLONG nextDefaultDeviceCheckAt = 0;
 
-    if (!m_isCapturing.load(std::memory_order_acquire)) {
-        releaseAudioSessionOnWorker();
-        qDebug() << "音频采集在线程启动前已被取消。";
-        return;
-    }
+    while (m_isCapturing.load(std::memory_order_acquire))
+    {
+        // 首次启动或上一次设备切换后，重新绑定当前默认输出设备并开启其 loopback 采集。
+        if (!m_audioClient || !m_captureClient)
+        {
+            if (!initializeAudioSessionOnWorker())
+            {
+                qWarning() << "音频采集会话初始化失败，稍后重试。";
+                releaseAudioSessionOnWorker();
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                continue;
+            }
 
-    const HRESULT startResult = m_audioClient->Start();
-    if (FAILED(startResult)) {
-        qWarning() << "启动音频采集失败，错误码:" << startResult;
-        releaseAudioSessionOnWorker();
-        m_isCapturing.store(false, std::memory_order_release);
-        return;
-    }
+            // 停止请求可能发生在初始化期间，此时只释放本线程刚创建的会话，不再启动采集。
+            if (!m_isCapturing.load(std::memory_order_acquire))
+            {
+                break;
+            }
 
-    while (m_isCapturing.load(std::memory_order_acquire)) {
+            const HRESULT startResult = m_audioClient->Start();
+            if (FAILED(startResult))
+            {
+                qWarning() << "启动音频采集失败，错误码:" << startResult << "，稍后重试。";
+                releaseAudioSessionOnWorker();
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                continue;
+            }
+
+            // 新会话建立后立即开始新的默认端点检查周期，避免在同一轮重复查询。
+            nextDefaultDeviceCheckAt = GetTickCount64() + defaultDeviceCheckIntervalMs;
+        }
+
+        // 定期比较端点 ID，Windows 切换默认输出设备后无需重启 Taskbar 即可切换频谱音源。
+        const ULONGLONG currentTick = GetTickCount64();
+        if (currentTick >= nextDefaultDeviceCheckAt)
+        {
+            nextDefaultDeviceCheckAt = currentTick + defaultDeviceCheckIntervalMs;
+            if (defaultAudioDeviceChangedOnWorker())
+            {
+                qInfo() << "检测到默认音频输出设备改变，正在重建频谱采集会话。";
+                releaseAudioSessionOnWorker();
+                continue;
+            }
+        }
+
         UINT32 packetSize = 0;
         HRESULT hr = m_captureClient->GetNextPacketSize(&packetSize);
 
-        if (FAILED(hr)) {
-            qWarning() << "GetNextPacketSize失败，错误码:" << hr; // 新增日志
+        if (FAILED(hr))
+        {
+            // 设备被系统移除或失效时立即重建；其它短暂错误仍保留原会话并短暂退避。
+            qWarning() << "GetNextPacketSize失败，错误码:" << hr;
+            if (hr == AUDCLNT_E_DEVICE_INVALIDATED)
+            {
+                releaseAudioSessionOnWorker();
+                continue;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        if (packetSize > 0) {
+        if (packetSize > 0)
+        {
             BYTE* data = nullptr;
             UINT32 framesAvailable = 0;
             DWORD flags = 0;
 
             hr = m_captureClient->GetBuffer(&data, &framesAvailable, &flags, nullptr, nullptr);
-            if (SUCCEEDED(hr)) {
+            if (SUCCEEDED(hr))
+            {
                 // 静音包的 data 可为 nullptr；显式补零可保留时间轴且不会解引用空指针。
-                if (framesAvailable > 0) {
+                if (framesAvailable > 0)
+                {
                     const BYTE* sampleData = (flags & AUDCLNT_BUFFERFLAGS_SILENT) ? nullptr : data;
-                    if (m_isCapturing.load(std::memory_order_acquire)) {
+                    if (m_isCapturing.load(std::memory_order_acquire))
+                    {
                         processAudioData(sampleData, framesAvailable);
                     }
                 }
@@ -329,11 +415,18 @@ void AudioSpectrumAnalyzer::captureAudioData()
                 // 只要 GetBuffer 成功就必须配对 ReleaseBuffer，包括零帧包。
                 m_captureClient->ReleaseBuffer(framesAvailable);
             }
-            else {
-                qWarning() << "GetBuffer失败，错误码:" << hr; // 新增日志
+            else
+            {
+                // 与 GetNextPacketSize 相同，设备失效时释放旧接口，下轮由工作线程重新绑定默认端点。
+                qWarning() << "GetBuffer失败，错误码:" << hr;
+                if (hr == AUDCLNT_E_DEVICE_INVALIDATED)
+                {
+                    releaseAudioSessionOnWorker();
+                }
             }
         }
-        else {
+        else
+        {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }

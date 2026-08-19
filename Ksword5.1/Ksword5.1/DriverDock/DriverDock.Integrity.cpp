@@ -2,6 +2,7 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 #include <QPointer>
 #include <QRunnable>
@@ -481,6 +482,9 @@ void DriverDock::initializeIntegrityTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_integrityTable, m_integrityDetailEdit, m_integrityPage);
+
     m_tabWidget->addTab(
         m_integrityPage,
         QIcon(QStringLiteral(":/Icon/process_critical.svg")),
@@ -631,6 +635,8 @@ void DriverDock::rebuildDriverIntegrityTable()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_integrityDetailEdit);
     const bool riskOnly = m_integrityRiskOnlyCheck != nullptr && m_integrityRiskOnlyCheck->isChecked();
     std::vector<std::size_t> visibleIndexes;
     for (std::size_t index = 0; index < m_driverIntegrityCache.size(); ++index)

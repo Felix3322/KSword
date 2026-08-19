@@ -45,6 +45,8 @@ private:
 
     // sample_rate 仅由采集线程读写，用于频段换算。
     int sample_rate = 48000;
+    // defaultAudioDeviceChangedOnWorker：比较当前会话与系统默认输出设备，返回是否需要重建会话。
+    bool defaultAudioDeviceChangedOnWorker() const;
     bool initializeAudioDevice();
     bool setupAudioClient();
     void captureAudioData();

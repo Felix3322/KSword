@@ -12,6 +12,7 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -1009,6 +1010,9 @@ void HardwareDeviceManagerPage::initializeUi()
     m_detailEditor->setReadOnly(true);
     m_detailEditor->setLocalizedText(QStringLiteral("选择一个设备查看详细属性。"));
     m_splitter->addWidget(m_detailEditor);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_deviceTree, m_detailEditor, this);
     m_splitter->setStretchFactor(0, 4);
     m_splitter->setStretchFactor(1, 1);
 }
@@ -1031,6 +1035,7 @@ void HardwareDeviceManagerPage::initializeConnections()
         {
             return;
         }
+        ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
         const QString filterText = m_searchEdit != nullptr ? m_searchEdit->text().trimmed().toLower() : QString();
         for (int index = 0; index < m_deviceTree->topLevelItemCount(); ++index)
         {
@@ -1048,6 +1053,7 @@ void HardwareDeviceManagerPage::initializeConnections()
         {
             return;
         }
+        ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
         const QString filterText = m_searchEdit != nullptr ? m_searchEdit->text().trimmed().toLower() : QString();
         for (int index = 0; index < m_deviceTree->topLevelItemCount(); ++index)
         {
@@ -1208,6 +1214,8 @@ void HardwareDeviceManagerPage::rebuildDeviceTree(const std::vector<DeviceEntry>
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
 
     m_deviceTree->clear();
     if (deviceList.empty())

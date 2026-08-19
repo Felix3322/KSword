@@ -416,6 +416,8 @@
     <ClCompile Include="StartupDock\StartupDock.Services.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Tasks.cpp" />
     <ClCompile Include="UI\CodeEditorWidget.cpp" />
+    <ClCompile Include="UI\DetailLayoutHost.cpp" />
+    <ClCompile Include="UI\DetailLayoutRegistry.cpp" />
     <ClCompile Include="UI\KernelDisassemblyDialog.cpp" />
     <ClCompile Include="..\..\third_party\zydis\Zydis.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -603,6 +605,8 @@
     <ClInclude Include="ksword\string\string.h" />
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />
+    <ClInclude Include="UI\DetailLayoutHost.h" />
+    <ClInclude Include="UI\DetailLayoutRegistry.h" />
     <ClInclude Include="UI\SmoothScrollSupport.h" />
     <ClInclude Include="UI\TableColumnAutoFit.h" />
     <ClInclude Include="UI\TableFreezeSupport.h" />
@@ -939,7 +943,7 @@
       <KswordQtDeployExe Condition="'$(KswordQtDeployExe)'=='' and '$(QTDIR)'!='' and Exists('$(QTDIR)\bin\windeployqt.exe')">$(QTDIR)\bin\windeployqt.exe</KswordQtDeployExe>
     </PropertyGroup>
     <Message Importance="High" Text="Deploying Qt runtime and plugins to $(TargetDir)" Condition="Exists('$(KswordQtDeployExe)')" />
-    <Exec Command="&quot;$(KswordQtDeployExe)&quot; --release --force --compiler-runtime --dir &quot;$(TargetDir).&quot; &quot;$(TargetPath)&quot;" Condition="Exists('$(KswordQtDeployExe)')" />
+    <Exec Command="&quot;$(KswordQtDeployExe)&quot; --release --force --compiler-runtime --no-opengl-sw --dir &quot;$(TargetDir).&quot; &quot;$(TargetPath)&quot;" Condition="Exists('$(KswordQtDeployExe)')" />
     <Warning Condition="!Exists('$(KswordQtDeployExe)')" Text="windeployqt.exe was not found; the Release output may be missing Qt runtime DLLs and plugins." />
   </Target>
   <!-- Qt 官方动态库由 MSVC /MD 构建，即使 Ksword5.1.exe 自身使用 /MT，也仍需把 VC 运行库 DLL 随 Release 输出部署。 -->

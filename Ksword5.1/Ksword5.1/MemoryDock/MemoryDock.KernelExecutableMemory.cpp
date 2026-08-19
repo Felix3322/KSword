@@ -1,6 +1,7 @@
 #include "MemoryDock.Internal.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 #include <QColor>      // QColor：风险行前景色着色使用。
 #include <QPixmap>
@@ -502,6 +503,11 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     detailLayout->addWidget(m_kernelExecutableDetailEditor, 1);
     splitter->addWidget(detailPanel);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_kernelExecutableTable,
+        m_kernelExecutableDetailEditor,
+        m_tabKernelExecutableMemory);
+
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
@@ -649,6 +655,7 @@ void MemoryDock::refreshKernelExecutableMemoryScanAsync()
 
 void MemoryDock::rebuildKernelExecutableMemoryScanTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_kernelExecutableDetailEditor);
     // 输入：无，依赖 m_kernelExecutableCache 与当前过滤控件。
     // 处理：只做缓存到表格的投影，不重新调用 DriverClient。
     // 返回：无。

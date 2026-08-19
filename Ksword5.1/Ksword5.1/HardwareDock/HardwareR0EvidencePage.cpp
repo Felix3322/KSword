@@ -6,6 +6,7 @@
 #include "../theme.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -1102,6 +1103,9 @@ void HardwareR0EvidencePage::initializeUi()
     m_detailEditor->setReadOnly(true);
     m_detailEditor->setText(QStringLiteral("请选择一条 R0 CPU/MSR/IDT/GDT 证据查看详情。"));
     detailLayout->addWidget(m_detailEditor, 1);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_evidenceTable, m_detailEditor, this);
     splitter->addWidget(detailPanel);
 
     splitter->setStretchFactor(0, 3);
@@ -1288,6 +1292,8 @@ void HardwareR0EvidencePage::rebuildEvidenceTable()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
 
     const bool riskOnly = m_riskOnlyCheck != nullptr && m_riskOnlyCheck->isChecked();
     const QString filterText = m_filterEdit != nullptr ? m_filterEdit->text().trimmed() : QString();

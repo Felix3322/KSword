@@ -121,6 +121,12 @@ public:
     // 返回：true=成功，false=失败。
     bool reopenCurrentFileWithEncoding(QStringConverter::Encoding encoding);
 
+signals:
+    // contentChanged：统一通知外部详情布局当前可见文本已经变化。
+    // 调用方式：程序写入、用户编辑或语言切换重绘后自动发出。
+    // 入参 text：编辑器当前完整纯文本；返回：Qt 信号无返回值。
+    void contentChanged(const QString& text);
+
 protected:
     // changeEvent：语言切换时重新渲染 setLocalizedText 保存的生成报告。
     void changeEvent(QEvent* event) override;

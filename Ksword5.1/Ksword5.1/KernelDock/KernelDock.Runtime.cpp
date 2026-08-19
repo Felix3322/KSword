@@ -1,5 +1,6 @@
 
 #include "KernelDock.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 // ============================================================
 // KernelDock.Runtime.cpp
@@ -680,6 +681,7 @@ void KernelDock::selectFirstObjectNamespaceEntryItem()
 
 void KernelDock::rebuildAtomTable(const QString& filterKeyword)
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_atomDetailEditor);
     if (m_atomTable == nullptr)
     {
         return;
@@ -740,6 +742,7 @@ void KernelDock::rebuildAtomTable(const QString& filterKeyword)
 
 void KernelDock::rebuildNtQueryTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_ntQueryDetailEditor);
     if (m_ntQueryTable == nullptr)
     {
         return;

@@ -36,6 +36,17 @@ namespace ks::settings
         TopDown = 1
     };
 
+    // DetailDisplayScheme：严格命中页面的统一详情布局方案。
+    // BottomCollapsed：表格下方折叠；Right：表格右侧；
+    // Embedded：在数据行后插入详情行；Floating：每个页面使用独立详情窗口。
+    enum class DetailDisplayScheme
+    {
+        BottomCollapsed = 0,
+        Right = 1,
+        Embedded = 2,
+        Floating = 3
+    };
+
     // AppearanceSettings：界面与启动设置结构体。
     // themeMode：当前主题策略；
     // customThemeColor：用户自定义的主主题色（#RRGGBB）；空值表示使用内置默认色。
@@ -100,6 +111,7 @@ namespace ks::settings
         bool scrollBarAutoHideEnabled = false;
         bool smoothScrollingEnabled = true;
         bool sliderWheelAdjustEnabled = false;
+        DetailDisplayScheme detailDisplayScheme = DetailDisplayScheme::BottomCollapsed;
         QString fontFamily;
         bool textAntialiasingEnabled = true;
         bool notificationCardsEnabled = true;
@@ -139,6 +151,14 @@ namespace ks::settings
     // 入参 jsonText：JSON 中的主题字段。
     // 返回：解析后的主题枚举，非法值回退 FollowSystem。
     ThemeMode themeModeFromJsonText(const QString& jsonText);
+
+    // detailDisplaySchemeToJsonText / detailDisplaySchemeFromJsonText：
+    // - 在稳定 JSON 文本与详情布局枚举之间转换；
+    // - 未知文本统一回退为默认的下方折叠方案。
+    // 调用方式：AppearanceSettings JSON 读写与设置日志使用。
+    // 入参 scheme/jsonText：布局枚举或配置文本；返回：对应文本或合法枚举。
+    QString detailDisplaySchemeToJsonText(DetailDisplayScheme scheme);
+    DetailDisplayScheme detailDisplaySchemeFromJsonText(const QString& jsonText);
 
     // appearanceSettingsJsonRelativePath 作用：
     // - 返回外观配置 JSON 的默认相对路径。

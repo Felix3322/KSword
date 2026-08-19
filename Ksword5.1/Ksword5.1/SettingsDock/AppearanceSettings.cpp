@@ -451,6 +451,43 @@ ks::settings::ThemeMode ks::settings::themeModeFromJsonText(const QString& jsonT
     return ThemeMode::FollowSystem;
 }
 
+QString ks::settings::detailDisplaySchemeToJsonText(const DetailDisplayScheme scheme)
+{
+    // JSON 文本保持英文稳定值，避免语言切换影响配置兼容性。
+    switch (scheme)
+    {
+    case DetailDisplayScheme::Right:
+        return QStringLiteral("right");
+    case DetailDisplayScheme::Embedded:
+        return QStringLiteral("embedded");
+    case DetailDisplayScheme::Floating:
+        return QStringLiteral("floating");
+    case DetailDisplayScheme::BottomCollapsed:
+    default:
+        return QStringLiteral("bottom_collapsed");
+    }
+}
+
+ks::settings::DetailDisplayScheme ks::settings::detailDisplaySchemeFromJsonText(
+    const QString& jsonText)
+{
+    // 未知或历史损坏值安全回退到默认方案，不让页面在启动时丢失详情入口。
+    const QString normalizedText = jsonText.trimmed().toLower();
+    if (normalizedText == QStringLiteral("right"))
+    {
+        return DetailDisplayScheme::Right;
+    }
+    if (normalizedText == QStringLiteral("embedded"))
+    {
+        return DetailDisplayScheme::Embedded;
+    }
+    if (normalizedText == QStringLiteral("floating"))
+    {
+        return DetailDisplayScheme::Floating;
+    }
+    return DetailDisplayScheme::BottomCollapsed;
+}
+
 QString ks::settings::appearanceSettingsJsonRelativePath()
 {
     const QString preferredRootPath = resolvePreferredWritableRootPath();
@@ -631,6 +668,9 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.sliderWheelAdjustEnabled = rootObject
         .value(QStringLiteral("slider_wheel_adjust_enabled"))
         .toBool(loadedSettings.sliderWheelAdjustEnabled);
+    loadedSettings.detailDisplayScheme = detailDisplaySchemeFromJsonText(
+        rootObject.value(QStringLiteral("detail_display_scheme"))
+        .toString(detailDisplaySchemeToJsonText(loadedSettings.detailDisplayScheme)));
     loadedSettings.fontFamily = rootObject
         .value(QStringLiteral("font_family"))
         .toString(loadedSettings.fontFamily)
@@ -768,6 +808,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(
         QStringLiteral("slider_wheel_adjust_enabled"),
         settings.sliderWheelAdjustEnabled);
+    rootObject.insert(
+        QStringLiteral("detail_display_scheme"),
+        detailDisplaySchemeToJsonText(settings.detailDisplayScheme));
     rootObject.insert(
         QStringLiteral("font_family"),
         settings.fontFamily.trimmed());

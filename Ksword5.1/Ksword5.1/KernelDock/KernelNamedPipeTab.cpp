@@ -14,6 +14,7 @@
 
 #include "../theme.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -199,6 +200,8 @@ void KernelNamedPipeTab::initializeUi()
 
     m_rootLayout->addWidget(m_resultTable, 1);
     m_rootLayout->addWidget(m_detailEdit, 0);
+
+    ks::ui::DetailLayoutRegistry::registerHost(m_resultTable, m_detailEdit, this);
     applyAdaptiveColumnWidths();
 }
 
@@ -340,6 +343,8 @@ void KernelNamedPipeTab::rebuildTable()
         return;
     }
 
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEdit);
+
     m_resultTable->setSortingEnabled(false);
     m_resultTable->clear();
 
@@ -370,6 +375,8 @@ void KernelNamedPipeTab::applyFilter()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEdit);
 
     const QString filterText = m_filterEdit->text().trimmed().toCaseFolded();
     for (int rowIndex = 0; rowIndex < m_resultTable->topLevelItemCount(); ++rowIndex)

@@ -1,6 +1,7 @@
 #include "MemoryDock.Internal.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../UI/TableColumnAutoFit.h"
 
 #include <memory>
@@ -492,6 +493,11 @@ void MemoryDock::initializeProcessMemoryEvidenceTab()
     m_processMemoryEvidenceDetailEditor->setReadOnly(true);
     m_processMemoryEvidenceDetailEditor->setText(QStringLiteral("请选择一条进程内存证据记录查看详情。"));
     splitter->addWidget(m_processMemoryEvidenceDetailEditor);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_processMemoryEvidenceTable,
+        m_processMemoryEvidenceDetailEditor,
+        m_tabProcessMemoryEvidence);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
@@ -729,6 +735,7 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
 
 void MemoryDock::rebuildProcessMemoryEvidenceTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_processMemoryEvidenceDetailEditor);
     // 输入：读取当前缓存和过滤选项。
     // 处理：把进程内存证据投影到只读表格。
     // 返回：无。

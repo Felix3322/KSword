@@ -8,6 +8,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -1793,6 +1794,9 @@ void KernelDock::initializeShadowSsdtTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_shadowSsdtTable, m_shadowSsdtDetailEditor, m_shadowSsdtPage);
+
     connect(m_refreshShadowSsdtButton, &QPushButton::clicked, this, [this]() {
         refreshShadowSsdtAsync();
     });
@@ -1885,6 +1889,9 @@ void KernelDock::initializeInlineHookTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_inlineHookTable, m_inlineHookDetailEditor, m_inlineHookPage);
+
     connect(m_refreshInlineHookButton, &QPushButton::clicked, this, [this]() {
         refreshInlineHooksAsync();
     });
@@ -1975,6 +1982,9 @@ void KernelDock::initializeIatEatHookTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_iatEatHookTable, m_iatEatHookDetailEditor, m_iatEatHookPage);
+
     connect(m_refreshIatEatHookButton, &QPushButton::clicked, this, [this]() {
         refreshIatEatHooksAsync();
     });
@@ -2039,6 +2049,9 @@ void KernelDock::initializeTimerDpcTab()
     m_timerDpcDetailEditor->setText(kernelText("kernel.timer_dpc.detail.initial", QStringLiteral("请选择一条 KTIMER/DPC 记录查看详情。")));
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_timerDpcTable, m_timerDpcDetailEditor, m_timerDpcPage);
 
     connect(m_refreshTimerDpcButton, &QPushButton::clicked, this, [this]() { refreshTimerDpcAfterDynDataAsync(); });
     connect(m_timerDpcFilterEdit, &QLineEdit::textChanged, this, [this](const QString& text) { rebuildTimerDpcTable(text.trimmed()); });
@@ -2636,6 +2649,8 @@ void KernelDock::rebuildShadowSsdtTable(const QString& filterKeyword)
         return;
     }
 
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_shadowSsdtDetailEditor);
+
     m_shadowSsdtTable->setSortingEnabled(false);
     m_shadowSsdtTable->setRowCount(0);
 
@@ -2679,6 +2694,8 @@ void KernelDock::rebuildInlineHookTable(const QString& filterKeyword)
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_inlineHookDetailEditor);
 
     m_inlineHookTable->setSortingEnabled(false);
     m_inlineHookTable->setRowCount(0);
@@ -2737,6 +2754,8 @@ void KernelDock::rebuildIatEatHookTable(const QString& filterKeyword)
         return;
     }
 
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_iatEatHookDetailEditor);
+
     m_iatEatHookTable->setSortingEnabled(false);
     m_iatEatHookTable->setRowCount(0);
 
@@ -2780,6 +2799,7 @@ void KernelDock::rebuildTimerDpcTable(const QString& filterKeyword)
     {
         return;
     }
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_timerDpcDetailEditor);
     m_timerDpcTable->setSortingEnabled(false);
     m_timerDpcTable->setRowCount(0);
     for (std::size_t sourceIndex = 0U; sourceIndex < m_timerDpcRows.size(); ++sourceIndex)

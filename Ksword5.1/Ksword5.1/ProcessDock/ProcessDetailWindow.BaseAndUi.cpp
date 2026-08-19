@@ -7,6 +7,7 @@
 #include "../OtherDock/OtherDock.h"
 #include "../MiscDock/SoundSource/SoundSourcePage.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../PluginHost.h"
 
 #include <QTimer>
@@ -3251,6 +3252,9 @@ void ProcessDetailWindow::initializeThreadTab()
     m_threadRuntimeSampleOutput->setText(QStringLiteral(
         "选择线程行后可查看 R0 runtime detail；点击“采样PDB字段”可按需读取 thread_detail deep JSON 小字段。"));
     threadGroupLayout->addWidget(m_threadRuntimeSampleOutput, 0);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_threadInspectTable, m_threadRuntimeSampleOutput, threadGroup);
 
     m_threadLayout->addWidget(threadGroup, 1);
 

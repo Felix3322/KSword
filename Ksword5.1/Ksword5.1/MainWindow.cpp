@@ -91,6 +91,7 @@
 #include "PluginHost.h"
 #include "Internationalization/LanguageManager.h"
 #include "UI/CodeEditorWidget.h"
+#include "UI/DetailLayoutRegistry.h"
 #include "UI/GlobalDialogTheme.h"
 #include "UI/GlobalUiBaseStyle.h"
 #include "UI/GlobalUiSearch.h"
@@ -11374,6 +11375,7 @@ void MainWindow::applyAppearanceSettings(
         && (themeVisualRefreshRequired || backgroundChanged || fontChanged);
 
     m_currentAppearanceSettings = settings;
+    ks::ui::DetailLayoutRegistry::applyGlobalScheme(settings.detailDisplayScheme);
     if (smoothScrollingChanged)
     {
         ks::ui::SetGlobalSmoothScrollingEnabled(settings.smoothScrollingEnabled);

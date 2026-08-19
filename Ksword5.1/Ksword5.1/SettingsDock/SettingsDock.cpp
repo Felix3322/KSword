@@ -22,6 +22,7 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStringList>
@@ -726,6 +727,59 @@ void SettingsDock::initializeAppearanceTab()
 
     appearanceRootLayout->addWidget(interactionGroupBox);
 
+    // ===== 详情页显示方案分组 =====
+    // 该设置只作用于严格命中页面，选择后点击“应用”会立即重排已创建页面。
+    QGroupBox* detailSchemeGroupBox = new QGroupBox(
+        QStringLiteral("详情页显示方案"),
+        m_appearanceTab);
+    languageManager.bindText(
+        detailSchemeGroupBox,
+        QStringLiteral("settings.detail_layout.group"),
+        QStringLiteral("详情页显示方案"));
+    QVBoxLayout* detailSchemeLayout = new QVBoxLayout(detailSchemeGroupBox);
+    detailSchemeLayout->setSpacing(6);
+
+    QLabel* detailSchemeHintLabel = new QLabel(
+        QStringLiteral("统一设置表格当前行详情的显示位置；点击应用后立即生效。"),
+        detailSchemeGroupBox);
+    detailSchemeHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        detailSchemeHintLabel,
+        QStringLiteral("settings.detail_layout.hint"),
+        QStringLiteral("统一设置表格当前行详情的显示位置；点击应用后立即生效。"));
+    detailSchemeLayout->addWidget(detailSchemeHintLabel);
+
+    m_detailSchemeButtonGroup = new QButtonGroup(detailSchemeGroupBox);
+    m_detailSchemeButtonGroup->setExclusive(true);
+    const auto addDetailSchemeRadio = [this, detailSchemeGroupBox, detailSchemeLayout, &languageManager](
+        const ks::settings::DetailDisplayScheme scheme,
+        const QString& textKey,
+        const QString& fallbackText)
+        {
+            // 每项使用 QRadioButton：显示明确文字，避免四种布局只靠图标难以分辨。
+            QRadioButton* radioButton = new QRadioButton(fallbackText, detailSchemeGroupBox);
+            languageManager.bindText(radioButton, textKey, fallbackText);
+            m_detailSchemeButtonGroup->addButton(radioButton, static_cast<int>(scheme));
+            detailSchemeLayout->addWidget(radioButton);
+        };
+    addDetailSchemeRadio(
+        ks::settings::DetailDisplayScheme::BottomCollapsed,
+        QStringLiteral("settings.detail_layout.bottom_collapsed"),
+        QStringLiteral("下方折叠（默认）"));
+    addDetailSchemeRadio(
+        ks::settings::DetailDisplayScheme::Right,
+        QStringLiteral("settings.detail_layout.right"),
+        QStringLiteral("表格右侧"));
+    addDetailSchemeRadio(
+        ks::settings::DetailDisplayScheme::Embedded,
+        QStringLiteral("settings.detail_layout.embedded"),
+        QStringLiteral("行内嵌入"));
+    addDetailSchemeRadio(
+        ks::settings::DetailDisplayScheme::Floating,
+        QStringLiteral("settings.detail_layout.floating"),
+        QStringLiteral("独立窗口"));
+    appearanceRootLayout->addWidget(detailSchemeGroupBox);
+
     // ===== 启动行为分组 =====
     QGroupBox* startupGroupBox = new QGroupBox(QStringLiteral("启动行为"), m_startupTab);
     languageManager.bindText(startupGroupBox, QStringLiteral("settings.startup.group"), QStringLiteral("启动行为"));
@@ -1174,6 +1228,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("滑块滚轮调节开关切换"));
         });
 
+    connect(m_detailSchemeButtonGroup, &QButtonGroup::idClicked, this, [this](const int) {
+        markPendingChanges(QStringLiteral("详情页显示方案切换"));
+        });
+
     connect(m_notificationCardsEnabledCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
         markPendingChanges(QStringLiteral("通知卡片开关切换"));
         });
@@ -1381,6 +1439,21 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
             windowScalePercentFromFactor(settings.startupWindowScaleFactor));
     }
 
+    if (m_detailSchemeButtonGroup != nullptr)
+    {
+        QAbstractButton* detailSchemeButton = m_detailSchemeButtonGroup->button(
+            static_cast<int>(settings.detailDisplayScheme));
+        if (detailSchemeButton == nullptr)
+        {
+            detailSchemeButton = m_detailSchemeButtonGroup->button(
+                static_cast<int>(ks::settings::DetailDisplayScheme::BottomCollapsed));
+        }
+        if (detailSchemeButton != nullptr)
+        {
+            detailSchemeButton->setChecked(true);
+        }
+    }
+
     // 在线扫描 API Key 回填：
     // - 设置页只显示用户保存过的 Key；
     // - PasswordEchoOnEdit 会在未编辑时隐藏文本，避免旁观泄露。
@@ -1499,6 +1572,15 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         (m_smoothScrollingCheckBox != nullptr) && m_smoothScrollingCheckBox->isChecked();
     collectedSettings.sliderWheelAdjustEnabled =
         (m_sliderWheelAdjustCheckBox != nullptr) && m_sliderWheelAdjustCheckBox->isChecked();
+    const int detailSchemeId = m_detailSchemeButtonGroup != nullptr
+        ? m_detailSchemeButtonGroup->checkedId()
+        : static_cast<int>(m_currentAppearanceSettings.detailDisplayScheme);
+    if (detailSchemeId >= static_cast<int>(ks::settings::DetailDisplayScheme::BottomCollapsed) &&
+        detailSchemeId <= static_cast<int>(ks::settings::DetailDisplayScheme::Floating))
+    {
+        collectedSettings.detailDisplayScheme =
+            static_cast<ks::settings::DetailDisplayScheme>(detailSchemeId);
+    }
     collectedSettings.fontFamily = m_fontCombo != nullptr
         ? m_fontCombo->currentData(Qt::UserRole).toString().trimmed()
         : m_currentAppearanceSettings.fontFamily;
@@ -1762,6 +1844,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.scrollBarAutoHideEnabled == m_currentAppearanceSettings.scrollBarAutoHideEnabled
         && nextSettings.smoothScrollingEnabled == m_currentAppearanceSettings.smoothScrollingEnabled
         && nextSettings.sliderWheelAdjustEnabled == m_currentAppearanceSettings.sliderWheelAdjustEnabled
+        && nextSettings.detailDisplayScheme == m_currentAppearanceSettings.detailDisplayScheme
         && nextSettings.fontFamily.compare(m_currentAppearanceSettings.fontFamily, Qt::CaseInsensitive) == 0
         && nextSettings.textAntialiasingEnabled == m_currentAppearanceSettings.textAntialiasingEnabled
         && nextSettings.notificationCardsEnabled == m_currentAppearanceSettings.notificationCardsEnabled
@@ -1893,6 +1976,9 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << (m_currentAppearanceSettings.smoothScrollingEnabled ? "true" : "false")
         << "，滚轮调整滑块="
         << (m_currentAppearanceSettings.sliderWheelAdjustEnabled ? "true" : "false")
+        << "，详情页显示方案="
+        << ks::settings::detailDisplaySchemeToJsonText(
+            m_currentAppearanceSettings.detailDisplayScheme).toStdString()
         << "，VirusTotal API Key已配置="
         << (!m_currentAppearanceSettings.virusTotalApiKey.trimmed().isEmpty() ? "true" : "false")
         << "，ThreatBook API Key已配置="

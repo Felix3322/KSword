@@ -2,6 +2,7 @@
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 
 // ============================================================
 // NetworkFirewallPage.cpp
@@ -2701,6 +2702,9 @@ void NetworkFirewallPage::initializeRuleManagerUi()
     m_ruleSplitter->setSizes({ 720, 240 });
     pageLayout->addWidget(m_ruleSplitter, 1);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_ruleTable, m_ruleDetailEditor, m_ruleManagerPage);
+
     if (m_innerTabWidget != nullptr)
     {
         m_innerTabWidget->addTab(m_ruleManagerPage, QStringLiteral("规则管理"));
@@ -3496,6 +3500,8 @@ void NetworkFirewallPage::appendRulesToTable(
         return;
     }
 
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_ruleDetailEditor);
+
     if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_ruleTable}))
     {
         const QPointer<NetworkFirewallPage> safeThis(this);
@@ -3565,6 +3571,8 @@ void NetworkFirewallPage::applyRuleFilterToRows()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_ruleDetailEditor);
 
     const QString filterText = m_ruleSearchEdit != nullptr ? m_ruleSearchEdit->text().trimmed().toLower() : QString();
     const bool enabledOnly = m_ruleEnabledOnlyCheck != nullptr && m_ruleEnabledOnlyCheck->isChecked();

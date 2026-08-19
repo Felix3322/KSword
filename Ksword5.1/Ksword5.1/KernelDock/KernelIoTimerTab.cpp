@@ -4,6 +4,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -186,6 +187,8 @@ void KernelIoTimerTab::initializeUi()
     splitter->setStretchFactor(0, 4);
     splitter->setStretchFactor(1, 2);
     rootLayout->addWidget(splitter, 1);
+
+    ks::ui::DetailLayoutRegistry::registerHost(m_table, m_detailEditor, this);
 
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() {
         m_initialRefreshRequested = true;
@@ -408,6 +411,7 @@ void KernelIoTimerTab::applySnapshot(const Snapshot& snapshot)
 
 void KernelIoTimerTab::rebuildTable()
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
     const QString filterText = m_filterEdit != nullptr ? m_filterEdit->text().trimmed() : QString();
     m_table->setSortingEnabled(false);
     m_table->setRowCount(0);

@@ -10,6 +10,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QRadioButton;
 class QSlider;
 class QSpinBox;
 class QTabWidget;
@@ -215,6 +216,9 @@ private:
 
     // m_themeButtonGroup 作用：三种主题按钮的互斥分组。
     QButtonGroup* m_themeButtonGroup = nullptr;
+
+    // m_detailSchemeButtonGroup：四种严格命中详情布局的全局互斥单选组。
+    QButtonGroup* m_detailSchemeButtonGroup = nullptr;
 
     // m_languageCombo 作用：列出 languages 目录中发现并通过校验的语言包。
     QComboBox* m_languageCombo = nullptr;

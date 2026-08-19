@@ -2,6 +2,14 @@
 
 ## 已确认行为
 
+- WDK 10.0.26100 默认通过 `WindowsDriver.Shared.Props` 为内核驱动启用
+  `/guard:cf`。私有 `nt!Bgp*` 地址在正常系统中常常不属于 `ntoskrnl` 的
+  Guard CF 函数表，普通函数指针调用会触发 `KERNEL_SECURITY_CHECK_FAILURE
+  (0x139)`、参数 1 为 `0xA`。不能把 GFIDS 成员资格作为 BGP 启用硬条件，
+  否则所有正常机器都会进入 query-only 而不显示诊断页面。当前实现保持
+  驱动整体 CFG，仅在 `DECLSPEC_GUARDNOCF + DECLSPEC_NOINLINE` 的集中适配器
+  内调用已经通过内核映像范围、可执行/非分页节、签名族、语义关系和唯一性
+  验证的私有入口；适配器的最终反汇编不得出现 `__guard_dispatch_icall_fptr`。
 - Windows 10 19042 的 BGP 私有 `GetBpp` 在驱动加载期尚未调用 `InbvAcquireDisplayOwnership` 时可能返回 `1`，同时分辨率返回 `0×0`。这是未取得显示所有权的延迟探测状态，不能直接判定为不支持。
 - 加载期仍需在 `PASSIVE_LEVEL` 完成全部资源准备。当前实现同时生成并解析 24 BPP、32 BPP 的 Logo 与黑色/蓝色 ASCII 字形矩形。
 - 崩溃回调中的顺序保持为 `InbvAcquireDisplayOwnership → BgpFwAcquireLock → 重新读取分辨率/BPP → BgpClearScreen → BgpGxDrawRectangle → BgpFwReleaseLock`。

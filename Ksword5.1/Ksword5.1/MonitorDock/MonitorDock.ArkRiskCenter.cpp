@@ -6,6 +6,7 @@
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableColumnAutoFit.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -807,6 +808,9 @@ void MonitorDock::initializeArkRiskCenterTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_arkRiskTable, m_arkRiskDetailEdit, m_arkRiskCenterPage);
+
     connect(m_arkRiskRefreshButton, &QPushButton::clicked, this, [this]() { refreshArkRiskCenterAsync(); });
     connect(m_arkRiskFilterEdit, &QLineEdit::textChanged, this, [this]() { rebuildArkRiskCenterTable(); });
     connect(m_arkRiskHighOnlyCheck, &QCheckBox::toggled, this, [this]() { rebuildArkRiskCenterTable(); });
@@ -961,6 +965,8 @@ void MonitorDock::rebuildArkRiskCenterTable()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_arkRiskDetailEdit);
     const QString filter = m_arkRiskFilterEdit != nullptr ? m_arkRiskFilterEdit->text().trimmed() : QString();
     const bool highOnly = m_arkRiskHighOnlyCheck != nullptr && m_arkRiskHighOnlyCheck->isChecked();
 

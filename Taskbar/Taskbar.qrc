@@ -8,6 +8,7 @@
         <file>Resource/Icon/lock_line.svg</file>
         <file>Resource/Icon/tool_line.svg</file>
         <file>Resource/Icon/user_2_line.svg</file>
+        <file>Resource/svg/system/refresh_1_line.svg</file>
         <file>Resource/svg/system/settings_6_line.svg</file>
     </qresource>
 </RCC>

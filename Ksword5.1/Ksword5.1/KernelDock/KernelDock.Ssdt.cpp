@@ -7,6 +7,7 @@
 #include "KernelDockSsdtWorker.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -226,6 +227,9 @@ void KernelDock::initializeSsdtTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_ssdtTable, m_ssdtDetailEditor, m_ssdtPage);
+
     connect(m_refreshSsdtButton, &QPushButton::clicked, this, [this]() {
         refreshSsdtAsync();
     });
@@ -374,6 +378,8 @@ void KernelDock::rebuildSsdtTable(const QString& filterKeyword)
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_ssdtDetailEditor);
 
     m_ssdtTable->setSortingEnabled(false);
     m_ssdtTable->setRowCount(0);

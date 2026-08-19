@@ -634,6 +634,113 @@ KswordARKBugcheckBgpResolveFunctions(
     return STATUS_SUCCESS;
 }
 
+/*
+ * The private nt!Bgp* routines are deliberately absent from the kernel GFIDS
+ * table on supported systems, even though Windows itself calls them directly.
+ * Keep CFG enabled for the complete driver and suppress it only in these
+ * non-inlined adapters after the resolver has validated the kernel image,
+ * executable/nonpaged section, signature family, semantic relationship, and
+ * uniqueness of every published address.  This prevents guard_icall_bugcheck
+ * without turning a missing GFIDS entry into a global BGP feature disable.
+ */
+static
+DECLSPEC_NOINLINE
+PVOID
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeGetResolution(
+    _Out_ PVOID Resolution
+    )
+{
+    return g_KswordArkBgp.GetResolution(Resolution);
+}
+
+static
+DECLSPEC_NOINLINE
+ULONG
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeGetBpp(
+    VOID
+    )
+{
+    return g_KswordArkBgp.GetBpp();
+}
+
+static
+DECLSPEC_NOINLINE
+VOID
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeAcquireOwnership(
+    VOID
+    )
+{
+    g_KswordArkBgp.AcquireOwnership();
+}
+
+static
+DECLSPEC_NOINLINE
+VOID
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeAcquire(
+    VOID
+    )
+{
+    g_KswordArkBgp.Acquire();
+}
+
+DECLSPEC_NOINLINE
+VOID
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeRelease(
+    VOID
+    )
+{
+    g_KswordArkBgp.Release();
+}
+
+static
+DECLSPEC_NOINLINE
+NTSTATUS
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeClear(
+    _In_ ULONG ArgbColor
+    )
+{
+    return g_KswordArkBgp.Clear(ArgbColor);
+}
+
+static
+DECLSPEC_NOINLINE
+NTSTATUS
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeDraw(
+    _In_ PVOID Rectangle,
+    _In_ const VOID* Position
+    )
+{
+    return g_KswordArkBgp.Draw(Rectangle, Position);
+}
+
+DECLSPEC_NOINLINE
+NTSTATUS
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeParseBitmap(
+    _In_ const VOID* Bitmap,
+    _Out_ PVOID* Rectangle
+    )
+{
+    return g_KswordArkBgp.ParseBitmap(Bitmap, Rectangle);
+}
+
+DECLSPEC_NOINLINE
+NTSTATUS
+DECLSPEC_GUARDNOCF
+KswordARKBugcheckBgpInvokeDestroyRectangle(
+    _In_opt_ PVOID Rectangle
+    )
+{
+    return g_KswordArkBgp.DestroyRectangle(Rectangle);
+}
+
 NTSTATUS
 KswordARKBugcheckBgpReadScreen(
     _Out_ PKSWORD_ARK_BGP_SCREEN_INFO Screen
@@ -649,11 +756,11 @@ KswordARKBugcheckBgpReadScreen(
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
-    if (g_KswordArkBgp.GetResolution(resolution) == NULL) {
+    if (KswordARKBugcheckBgpInvokeGetResolution(resolution) == NULL) {
         return STATUS_UNSUCCESSFUL;
     }
 
-    bitsPerPixel = g_KswordArkBgp.GetBpp();
+    bitsPerPixel = KswordARKBugcheckBgpInvokeGetBpp();
     g_KswordArkBgp.ProbeWidth = resolution[0];
     g_KswordArkBgp.ProbeHeight = resolution[1];
     g_KswordArkBgp.ProbeBpp = bitsPerPixel;
@@ -791,7 +898,7 @@ KswordARKBugcheckBgpBeginDraw(
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageOwnershipBefore,
         STATUS_PENDING);
-    g_KswordArkBgp.AcquireOwnership();
+    KswordARKBugcheckBgpInvokeAcquireOwnership();
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageOwnershipAfter,
         STATUS_SUCCESS);
@@ -799,7 +906,7 @@ KswordARKBugcheckBgpBeginDraw(
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageAcquireBefore,
         STATUS_PENDING);
-    g_KswordArkBgp.Acquire();
+    KswordARKBugcheckBgpInvokeAcquire();
     InterlockedExchange(&g_KswordArkBgp.LockHeld, 1);
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageAcquireAfter,
@@ -832,7 +939,7 @@ KswordARKBugcheckBgpBeginDraw(
         KswordARKBugcheckBgpRecordStage(
             KswordArkBgpStageReleaseBefore,
             STATUS_PENDING);
-        g_KswordArkBgp.Release();
+        KswordARKBugcheckBgpInvokeRelease();
         InterlockedExchange(&g_KswordArkBgp.LockHeld, 0);
         KswordARKBugcheckBgpRecordStage(
             KswordArkBgpStageReleaseAfter,
@@ -858,7 +965,7 @@ KswordARKBugcheckBgpClearScreen(
     KswordARKBugcheckBgpRecordStage(
         KswordArkBgpStageClearBefore,
         STATUS_PENDING);
-    status = g_KswordArkBgp.Clear(ArgbColor);
+    status = KswordARKBugcheckBgpInvokeClear(ArgbColor);
     InterlockedExchange(&g_KswordArkBgp.ClearStatus, (LONG)status);
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
     KswordARKBugcheckBgpRecordStage(
@@ -894,7 +1001,7 @@ KswordARKBugcheckBgpDrawRectangle(
 
     position.X = X;
     position.Y = Y;
-    status = g_KswordArkBgp.Draw(Rectangle, &position);
+    status = KswordARKBugcheckBgpInvokeDraw(Rectangle, &position);
     InterlockedExchange(&g_KswordArkBgp.DrawStatus, (LONG)status);
     InterlockedExchange(&g_KswordArkBgp.LastStatus, (LONG)status);
     return status;
@@ -924,7 +1031,7 @@ KswordARKBugcheckBgpFinishDraw(
         KswordARKBugcheckBgpRecordStage(
             KswordArkBgpStageReleaseBefore,
             STATUS_PENDING);
-        g_KswordArkBgp.Release();
+        KswordARKBugcheckBgpInvokeRelease();
         KswordARKBugcheckBgpRecordStage(
             KswordArkBgpStageReleaseAfter,
             STATUS_SUCCESS);

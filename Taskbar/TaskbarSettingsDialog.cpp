@@ -3,16 +3,50 @@
 #include "TaskbarNotificationService.h"
 
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QFileInfo>
 #include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
+#include <QProcess>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
+
+namespace
+{
+    // scheduleTaskbarRestartAfterDelay：使用独立 cmd 等待一秒后拉起当前程序，返回调度是否成功。
+    bool scheduleTaskbarRestartAfterDelay()
+    {
+        // applicationFilePath 指向当前 Taskbar.exe，工作目录保持为 exe 所在目录以兼容发行包运行。
+        const QString programPath = QCoreApplication::applicationFilePath();
+        const QFileInfo programFileInfo(programPath);
+        if (programPath.isEmpty() || !programFileInfo.isFile())
+        {
+            return false;
+        }
+
+        // cmd 在旧进程退出后等待一秒，再由 start 拉起新实例，保证 AppBar 资源有释放窗口。
+        const QString command = QStringLiteral("timeout /t 1 /nobreak > NUL & start \"\" \"%1\"")
+            .arg(QDir::toNativeSeparators(programPath));
+        const QStringList arguments = {
+            QStringLiteral("/d"),
+            QStringLiteral("/c"),
+            command
+        };
+
+        return QProcess::startDetached(
+            QStringLiteral("cmd.exe"),
+            arguments,
+            programFileInfo.absolutePath());
+    }
+}
 
 TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notificationService, QWidget* parent)
     : QDialog(parent)
@@ -23,6 +57,7 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
     , m_notificationDurationSpinBox(nullptr)
     , m_sourceStatusLabel(nullptr)
     , m_testEarthquakeButton(nullptr)
+    , m_restartTaskbarButton(nullptr)
     , m_refreshTimer(nullptr)
 {
     // 对话框为非模态工具窗口，集中服务所有屏幕的 Taskbar，而不单独保存每屏设置。
@@ -87,6 +122,24 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
     earthquakeLayout->addLayout(testLayout);
     rootLayout->addWidget(earthquakeGroup);
 
+    QGroupBox* taskbarGroup = new QGroupBox(QStringLiteral("Taskbar"), this);
+    QVBoxLayout* taskbarLayout = new QVBoxLayout(taskbarGroup);
+    QLabel* restartDescriptionLabel = new QLabel(
+        QStringLiteral("切换系统输出设备后，可重启 Taskbar 重新建立音频采集。"),
+        taskbarGroup);
+    restartDescriptionLabel->setWordWrap(true);
+    taskbarLayout->addWidget(restartDescriptionLabel);
+
+    QHBoxLayout* restartLayout = new QHBoxLayout();
+    restartLayout->addStretch(1);
+    m_restartTaskbarButton = new QPushButton(QStringLiteral("重启 Taskbar"), taskbarGroup);
+    m_restartTaskbarButton->setIcon(QIcon(QStringLiteral(":/Icon/Resource/svg/system/refresh_1_line.svg")));
+    m_restartTaskbarButton->setToolTip(
+        QStringLiteral("退出当前 Taskbar，等待一秒释放 AppBar 资源后自动重新启动。"));
+    restartLayout->addWidget(m_restartTaskbarButton);
+    taskbarLayout->addLayout(restartLayout);
+    rootLayout->addWidget(taskbarGroup);
+
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::hide);
     rootLayout->addWidget(buttons);
@@ -103,6 +156,7 @@ TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notific
             m_notificationService->injectTestEarthquake();
         }
     });
+    connect(m_restartTaskbarButton, &QPushButton::clicked, this, &TaskbarSettingsDialog::restartTaskbar);
 
     if (m_notificationService != nullptr)
     {
@@ -217,4 +271,18 @@ void TaskbarSettingsDialog::refreshSourceDiagnostics()
         lines.push_back(QStringLiteral("%1: %2").arg(status.name, state));
     }
     m_sourceStatusLabel->setText(lines.join(QLatin1Char('\n')));
+}
+
+void TaskbarSettingsDialog::restartTaskbar()
+{
+    // 仅在 cmd 已成功接管延迟重启时退出，调度失败则保留当前 Taskbar 继续工作。
+    if (!scheduleTaskbarRestartAfterDelay())
+    {
+        return;
+    }
+
+    // 防止用户重复点击产生多个新实例，并用文字反馈已开始执行重启。
+    m_restartTaskbarButton->setEnabled(false);
+    m_restartTaskbarButton->setText(QStringLiteral("正在重启..."));
+    QCoreApplication::quit();
 }

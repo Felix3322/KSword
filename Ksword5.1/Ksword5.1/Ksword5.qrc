@@ -87,6 +87,8 @@
         <file alias="file_nav_back.svg">Resource/Icon/arrow/left_line.svg</file>
         <file alias="file_nav_forward.svg">Resource/Icon/arrow/right_line.svg</file>
         <file alias="file_nav_up.svg">Resource/Icon/arrow/arrow_up_line.svg</file>
+        <file alias="detail_node_collapsed.svg">Resource/Icon/arrow/right_small_line.svg</file>
+        <file alias="detail_node_expanded.svg">Resource/Icon/arrow/down_small_line.svg</file>
         <file alias="file_regex.svg">Resource/Icon/editor/formula_line.svg</file>
         <file alias="file_case.svg">Resource/Icon/editor/AZ_sort_ascending_letters_line.svg</file>
         <file alias="file_find.svg">Resource/Icon/editor/list_search_line.svg</file>

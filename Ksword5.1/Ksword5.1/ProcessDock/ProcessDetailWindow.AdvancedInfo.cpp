@@ -1,4 +1,5 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Internationalization/LanguageManager.h"
 
@@ -3341,6 +3342,7 @@ void ProcessDetailWindow::requestAsyncThreadInspectRefresh()
 
 void ProcessDetailWindow::applyThreadInspectResult(const ThreadInspectRefreshResult& refreshResult)
 {
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_threadRuntimeSampleOutput);
     m_threadInspectRefreshing = false;
     if (m_refreshThreadInspectButton != nullptr)
     {

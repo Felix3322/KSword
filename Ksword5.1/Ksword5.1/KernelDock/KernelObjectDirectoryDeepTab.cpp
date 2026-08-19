@@ -14,6 +14,7 @@
 // ============================================================
 
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -303,6 +304,8 @@ void KernelObjectDirectoryDeepTab::initializeUi()
     splitter->setStretchFactor(0, 4);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(m_resultTree, m_detailEditor, this);
+
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() {
         startRefresh();
     });
@@ -372,6 +375,7 @@ void KernelObjectDirectoryDeepTab::startRefresh()
     setRefreshRunning(true);
     if (m_resultTree != nullptr)
     {
+        ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
         m_resultTree->clear();
     }
     if (m_detailEditor != nullptr)
@@ -473,6 +477,8 @@ void KernelObjectDirectoryDeepTab::rebuildTree()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
 
     m_resultTree->setUpdatesEnabled(false);
     m_resultTree->clear();

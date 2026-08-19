@@ -11,6 +11,7 @@
 // ============================================================
 
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "KernelBaseNamedObjectsTab.h"
 #include "KernelDockCidTab.h"
 #include "KernelDescriptorTableTab.h"
@@ -1041,6 +1042,9 @@ void KernelDock::initializeAtomTableTab()
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
 
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_atomTable, m_atomDetailEditor, m_atomPage);
+
     // 原子表页连接：刷新、筛选、详情联动、右键菜单。
     connect(m_refreshAtomButton, &QPushButton::clicked, this, [this]() {
         refreshAtomTableAsync();
@@ -1113,6 +1117,9 @@ void KernelDock::initializeNtQueryTab()
 
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
+
+    ks::ui::DetailLayoutRegistry::registerHost(
+        m_ntQueryTable, m_ntQueryDetailEditor, m_ntQueryPage);
 
     // 历史 NtQuery 页连接：刷新与详情联动。
     connect(m_refreshNtQueryButton, &QPushButton::clicked, this, [this]() {

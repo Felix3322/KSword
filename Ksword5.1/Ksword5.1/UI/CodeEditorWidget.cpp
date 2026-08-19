@@ -1344,6 +1344,7 @@ void CodeEditorWidget::initializeConnections()
     connect(m_editor, &QPlainTextEdit::textChanged, this, [this]()
         {
             updateStatusText();
+            emit contentChanged(text());
         });
 
     new QShortcut(QKeySequence::Find, this, [this]()

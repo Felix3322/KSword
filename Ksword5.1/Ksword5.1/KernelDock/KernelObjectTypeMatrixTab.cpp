@@ -12,6 +12,7 @@
 #include "KernelDockQueryWorker.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/DetailLayoutRegistry.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
@@ -219,6 +220,8 @@ void KernelObjectTypeMatrixTab::initializeUi()
     m_detailEditor->setReadOnly(true);
     m_detailEditor->setText(kernelText("kernel.object_type.detail.select_hint", QStringLiteral("请选择一个对象类型查看枚举策略和下钻建议。")));
     rootLayout->addWidget(m_detailEditor, 1);
+
+    ks::ui::DetailLayoutRegistry::registerHost(m_table, m_detailEditor, this);
 }
 
 void KernelObjectTypeMatrixTab::initializeConnections()
@@ -413,6 +416,8 @@ void KernelObjectTypeMatrixTab::rebuildTable()
     {
         return;
     }
+
+    ks::ui::DetailLayoutRegistry::prepareDataRebuild(m_detailEditor);
 
     m_table->setSortingEnabled(false);
     m_table->setRowCount(0);
