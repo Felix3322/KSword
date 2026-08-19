@@ -8,7 +8,6 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QBoxLayout>
-#include <QContextMenuEvent>
 #include <QDialog>
 #include <QEvent>
 #include <QHeaderView>
@@ -31,8 +30,8 @@
 namespace
 {
     // 专用角色避开页面普遍使用的 Qt::UserRole 缓存索引。
-    constexpr int EmbeddedMarkerRole = Qt::UserRole + 410;
     constexpr int OriginalDecorationRole = Qt::UserRole + 411;
+    constexpr int OriginalDecorationCapturedRole = Qt::UserRole + 412;
 
     QIcon embeddedIndicatorIcon(const bool expanded)
     {
@@ -63,7 +62,15 @@ namespace
             QSplitter* splitter = qobject_cast<QSplitter*>(ancestorWidget);
             if (splitter != nullptr && splitter->isAncestorOf(detailEditor))
             {
-                return splitter;
+                // 只有表格和详情处于 splitter 的不同直接面板时才接管它。
+                // 页面常见的外层 splitter 可能同时包住整个表格页，误认它会在折叠时
+                // 把承载表格的整块面板一起隐藏，最终只剩一个箭头。
+                QWidget* tablePane = directChildUnder(tableView, splitter);
+                QWidget* detailPane = directChildUnder(detailEditor, splitter);
+                if (tablePane != nullptr && detailPane != nullptr && tablePane != detailPane)
+                {
+                    return splitter;
+                }
             }
             ancestorWidget = ancestorWidget->parentWidget();
         }
@@ -95,21 +102,13 @@ namespace
         textEditor->setReadOnly(true);
         textEditor->setPlainText(detailText);
         textEditor->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-        textEditor->setMinimumHeight(116);
+        // 编辑器直接覆盖在视图 viewport 中，由源行高度决定几何，不能把自身最小高度
+        // 传播给整张表格或树。
+        textEditor->setMinimumSize(0, 0);
         textEditor->setContextMenuPolicy(Qt::DefaultContextMenu);
         return textEditor;
     }
 
-    // treeItemForIndex：通过公开的视图坐标接口取得可见 QModelIndex 对应的 QTreeWidgetItem。
-    QTreeWidgetItem* treeItemForIndex(QTreeWidget* treeWidget, const QModelIndex& modelIndex)
-    {
-        if (treeWidget == nullptr || !modelIndex.isValid())
-        {
-            return nullptr;
-        }
-        const QRect itemRect = treeWidget->visualRect(modelIndex);
-        return itemRect.isValid() ? treeWidget->itemAt(itemRect.center()) : nullptr;
-    }
 }
 
 ks::ui::DetailLayoutHost::DetailLayoutHost(
@@ -123,6 +122,7 @@ ks::ui::DetailLayoutHost::DetailLayoutHost(
 {
     initializeHostUi();
     initializeConnections();
+    scheduleHostUiInitialization();
 }
 
 ks::ui::DetailLayoutHost::~DetailLayoutHost()
@@ -138,6 +138,7 @@ void ks::ui::DetailLayoutHost::setTableView(QAbstractItemView* tableView)
     }
     m_tableView = tableView;
     initializeConnections();
+    scheduleHostUiInitialization();
 }
 
 void ks::ui::DetailLayoutHost::setDetailEditor(CodeEditorWidget* detailEditor)
@@ -148,6 +149,7 @@ void ks::ui::DetailLayoutHost::setDetailEditor(CodeEditorWidget* detailEditor)
     }
     m_detailEditor = detailEditor;
     initializeConnections();
+    scheduleHostUiInitialization();
 }
 
 CodeEditorWidget* ks::ui::DetailLayoutHost::detailEditor() const
@@ -161,6 +163,16 @@ void ks::ui::DetailLayoutHost::initializeHostUi()
     if (m_splitter.isNull())
     {
         return;
+    }
+
+    if (!m_toggleBar.isNull())
+    {
+        return;
+    }
+
+    if (!m_detailPane.isNull() && m_tablePane.isNull())
+    {
+        m_tablePane = directChildUnder(m_tableView.data(), m_splitter.data());
     }
 
     // 固定宽度按钮不能直接成为纵向 QSplitter 子项，否则它的 maximumWidth 会把整个
@@ -191,6 +203,29 @@ void ks::ui::DetailLayoutHost::initializeHostUi()
     m_splitter->insertWidget(1, m_toggleBar.data());
 }
 
+void ks::ui::DetailLayoutHost::scheduleHostUiInitialization()
+{
+    if (m_hostUiInitializationScheduled || m_ownerWidget.isNull())
+    {
+        return;
+    }
+    m_hostUiInitializationScheduled = true;
+    QTimer::singleShot(0, this,
+        [this]()
+        {
+            m_hostUiInitializationScheduled = false;
+            if (m_splitter.isNull() || m_detailPane.isNull())
+            {
+                initializeHostUi();
+            }
+            if (!m_splitter.isNull() && !m_detailPane.isNull())
+            {
+                applyScheme(m_scheme);
+                updateEmbeddedEditorGeometries();
+            }
+        });
+}
+
 void ks::ui::DetailLayoutHost::ensureManagedSplitter()
 {
     if (m_tableView.isNull() || m_detailEditor.isNull())
@@ -202,7 +237,15 @@ void ks::ui::DetailLayoutHost::ensureManagedSplitter()
     if (sharedSplitter != nullptr)
     {
         m_splitter = sharedSplitter;
+        m_tablePane = directChildUnder(m_tableView.data(), sharedSplitter);
         m_detailPane = directChildUnder(m_detailEditor.data(), sharedSplitter);
+        if (m_tablePane == nullptr || m_detailPane == nullptr || m_tablePane == m_detailPane)
+        {
+            m_splitter.clear();
+            m_tablePane.clear();
+            m_detailPane.clear();
+            return;
+        }
         m_detailEditor->setMinimumHeight(0);
         m_detailEditor->setMaximumHeight(QWIDGETSIZE_MAX);
         return;
@@ -241,6 +284,7 @@ void ks::ui::DetailLayoutHost::ensureManagedSplitter()
     commonLayout->insertWidget(insertionIndex, splitter, 1);
 
     m_splitter = splitter;
+    m_tablePane = tablePane;
     m_detailPane = detailPane;
     m_detailEditor->setMinimumHeight(0);
     m_detailEditor->setMaximumHeight(QWIDGETSIZE_MAX);
@@ -269,21 +313,16 @@ void ks::ui::DetailLayoutHost::initializeConnections()
                 connect(m_tableView->model(), &QAbstractItemModel::rowsInserted, this,
                     [this](const QModelIndex&, int, int)
                     {
-                        if (m_internalModelChange || m_scheme !=
-                            ks::settings::DetailDisplayScheme::Embedded)
+                        if (m_scheme != ks::settings::DetailDisplayScheme::Embedded)
                         {
                             return;
                         }
-                        QTimer::singleShot(0, this, [this]() { refreshEmbeddedIndicators(); });
+                        scheduleEmbeddedIndicatorRefresh();
                     });
                 connect(m_tableView->model(), &QAbstractItemModel::modelAboutToBeReset, this,
                     [this]()
                     {
-                        if (!m_internalModelChange)
-                        {
-                            m_embeddedEntries.clear();
-                            m_tableSortingStateCaptured = false;
-                        }
+                        clearEmbeddedDetails();
                     });
             }
         }
@@ -310,6 +349,7 @@ void ks::ui::DetailLayoutHost::applyScheme(
     if (m_splitter.isNull() || m_detailPane.isNull())
     {
         m_scheme = scheme;
+        scheduleHostUiInitialization();
         return;
     }
 
@@ -330,6 +370,12 @@ void ks::ui::DetailLayoutHost::applyScheme(
     {
         m_toggleBar->setVisible(scheme == ks::settings::DetailDisplayScheme::BottomCollapsed);
     }
+    if (!m_tablePane.isNull())
+    {
+        m_tablePane->setVisible(true);
+        m_tablePane->setMinimumSize(0, 0);
+        m_tablePane->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    }
     switch (scheme)
     {
     case ks::settings::DetailDisplayScheme::Right:
@@ -340,7 +386,7 @@ void ks::ui::DetailLayoutHost::applyScheme(
         if (schemeChanged)
         {
             // 右侧详情默认约占 18%，保留拖动手柄供当前页面继续调整。
-            m_splitter->setSizes({ 820, 0, 180 });
+            setManagedSplitterSizes(820, 0, 180);
         }
         break;
     case ks::settings::DetailDisplayScheme::Embedded:
@@ -350,7 +396,7 @@ void ks::ui::DetailLayoutHost::applyScheme(
         m_detailPane->setMaximumHeight(0);
         if (schemeChanged)
         {
-            m_splitter->setSizes({ 1000, 0, 0 });
+            setManagedSplitterSizes(1000, 0, 0);
         }
         refreshEmbeddedIndicators();
         break;
@@ -361,7 +407,7 @@ void ks::ui::DetailLayoutHost::applyScheme(
         m_detailPane->setMaximumHeight(0);
         if (schemeChanged)
         {
-            m_splitter->setSizes({ 1000, 0, 0 });
+            setManagedSplitterSizes(1000, 0, 0);
         }
         break;
     case ks::settings::DetailDisplayScheme::BottomCollapsed:
@@ -374,6 +420,24 @@ void ks::ui::DetailLayoutHost::applyScheme(
         }
         break;
     }
+    updateEmbeddedEditorGeometries();
+}
+
+void ks::ui::DetailLayoutHost::setManagedSplitterSizes(
+    const int tableSize,
+    const int toggleSize,
+    const int detailSize)
+{
+    if (m_splitter.isNull())
+    {
+        return;
+    }
+    // QSplitter 会把 setSizes 的相对值按当前可用空间归一化。使用非零表格尺寸，
+    // 即使页面尚未 show 或窗口刚切换 tab，也不会把业务面板压成 0。
+    const int safeTable = std::max(1, tableSize);
+    const int safeToggle = std::max(0, toggleSize);
+    const int safeDetail = std::max(0, detailSize);
+    m_splitter->setSizes({ safeTable, safeToggle, safeDetail });
 }
 
 void ks::ui::DetailLayoutHost::updateBottomExpanded(const bool expanded)
@@ -408,18 +472,18 @@ void ks::ui::DetailLayoutHost::updateBottomExpanded(const bool expanded)
     }
     if (expanded && !m_splitter.isNull())
     {
-        m_splitter->setSizes({ 720, 18, 240 });
+        setManagedSplitterSizes(720, 18, 240);
     }
     else if (!m_splitter.isNull())
     {
-        m_splitter->setSizes({ 1000, 18, 0 });
+        setManagedSplitterSizes(1000, 18, 0);
     }
 }
 
 void ks::ui::DetailLayoutHost::handleViewClicked(
     const QPersistentModelIndex& sourceIndex)
 {
-    if (!sourceIndex.isValid() || isEmbeddedMarker(sourceIndex))
+    if (!sourceIndex.isValid())
     {
         return;
     }
@@ -427,7 +491,7 @@ void ks::ui::DetailLayoutHost::handleViewClicked(
     switch (m_scheme)
     {
     case ks::settings::DetailDisplayScheme::Embedded:
-        // 原页面的选择回调先更新 CodeEditorWidget，本处再把最新文本镜像为合成行。
+        // 原页面的选择回调先更新 CodeEditorWidget，本处再把最新文本镜像到行内视图。
         QTimer::singleShot(0, this, [this, sourceIndex]()
             {
                 if (sourceIndex.isValid())
@@ -508,30 +572,24 @@ void ks::ui::DetailLayoutHost::insertTableEmbeddedDetail(
         return;
     }
 
-    m_internalModelChange = true;
-    if (!m_tableSortingStateCaptured)
-    {
-        m_tableSortingWasEnabled = tableWidget->isSortingEnabled();
-        m_tableSortingStateCaptured = true;
-    }
-    tableWidget->setSortingEnabled(false);
-    const int detailRow = sourceIndex.row() + 1;
-    tableWidget->insertRow(detailRow);
-    QTableWidgetItem* markerItem = new QTableWidgetItem();
-    markerItem->setData(EmbeddedMarkerRole, true);
-    markerItem->setFlags(Qt::NoItemFlags);
-    tableWidget->setItem(detailRow, 0, markerItem);
-    tableWidget->setSpan(detailRow, 0, 1, std::max(1, tableWidget->columnCount()));
+    const int sourceRow = sourceIndex.row();
+    // 以展开前实际可视矩形作为基准。rowHeight() 取的是表头 section 状态，
+    // 在排序/异步填充后的布局更新窗口内可能与 viewport 中的行高不同，
+    // 会让详情编辑器下移一整行并留下空白。
+    const int originalHeight = std::max(1, tableWidget->visualRect(sourceIndex).height());
+    constexpr int inlineDetailHeight = 128;
+    tableWidget->setRowHeight(sourceRow, originalHeight + inlineDetailHeight);
 
-    QPlainTextEdit* textEditor = createReadOnlyInlineEditor(tableWidget, detailText);
-    tableWidget->setCellWidget(detailRow, 0, textEditor);
-    tableWidget->setRowHeight(detailRow, 128);
-    m_internalModelChange = false;
-
+    QPlainTextEdit* textEditor = createReadOnlyInlineEditor(tableWidget->viewport(), detailText);
     EmbeddedEntry entry;
     entry.sourceIndex = sourceIndex;
     entry.textEditor = textEditor;
+    entry.originalRowHeight = originalHeight;
+    entry.detailHeight = inlineDetailHeight;
     m_embeddedEntries.append(entry);
+    textEditor->show();
+    updateEmbeddedEditorGeometries();
+    QTimer::singleShot(0, this, [this]() { updateEmbeddedEditorGeometries(); });
     setSourceExpandedIndicator(sourceIndex, true);
 }
 
@@ -541,29 +599,29 @@ void ks::ui::DetailLayoutHost::insertTreeEmbeddedDetail(
 {
     QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data());
     QTreeWidgetItem* sourceItem = treeWidget != nullptr
-        ? treeItemForIndex(treeWidget, sourceIndex)
+        ? treeWidget->itemFromIndex(sourceIndex)
         : nullptr;
     if (treeWidget == nullptr || sourceItem == nullptr)
     {
         return;
     }
 
-    m_internalModelChange = true;
-    QTreeWidgetItem* detailItem = new QTreeWidgetItem(sourceItem);
-    detailItem->setData(0, EmbeddedMarkerRole, true);
-    detailItem->setFlags(Qt::NoItemFlags);
-    detailItem->setFirstColumnSpanned(true);
-    QPlainTextEdit* textEditor = createReadOnlyInlineEditor(treeWidget, detailText);
-    treeWidget->setItemWidget(detailItem, 0, textEditor);
-    sourceItem->setExpanded(true);
-    m_internalModelChange = false;
-
+    const QSize originalSizeHint = sourceItem->sizeHint(0);
+    const int originalHeight = std::max(1, treeWidget->visualRect(sourceIndex).height());
+    constexpr int inlineDetailHeight = 128;
+    sourceItem->setSizeHint(0, QSize(-1, originalHeight + inlineDetailHeight));
+    QPlainTextEdit* textEditor = createReadOnlyInlineEditor(treeWidget->viewport(), detailText);
     EmbeddedEntry entry;
     entry.sourceIndex = sourceIndex;
     entry.textEditor = textEditor;
     entry.treeSourceItem = sourceItem;
-    entry.treeDetailItem = detailItem;
+    entry.originalRowHeight = originalHeight;
+    entry.detailHeight = inlineDetailHeight;
+    entry.originalSizeHint = originalSizeHint;
     m_embeddedEntries.append(entry);
+    textEditor->show();
+    updateEmbeddedEditorGeometries();
+    QTimer::singleShot(0, this, [this]() { updateEmbeddedEditorGeometries(); });
     setSourceExpandedIndicator(sourceIndex, true);
 }
 
@@ -578,37 +636,13 @@ bool ks::ui::DetailLayoutHost::removeEmbeddedEntry(
             continue;
         }
 
-        m_internalModelChange = true;
-        if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
+        restoreEmbeddedEntryLayout(entry);
+        if (!entry.textEditor.isNull())
         {
-            for (int rowIndex = tableWidget->rowCount() - 1; rowIndex >= 0; --rowIndex)
-            {
-                QTableWidgetItem* markerItem = tableWidget->item(rowIndex, 0);
-                if (markerItem != nullptr && markerItem->data(EmbeddedMarkerRole).toBool() &&
-                    tableWidget->cellWidget(rowIndex, 0) == entry.textEditor.data())
-                {
-                    tableWidget->removeRow(rowIndex);
-                    break;
-                }
-            }
+            delete entry.textEditor.data();
         }
-        else if (entry.treeDetailItem != nullptr)
-        {
-            delete entry.treeDetailItem;
-        }
-        m_internalModelChange = false;
         m_embeddedEntries.removeAt(entryIndex);
-        if (m_embeddedEntries.isEmpty())
-        {
-            if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
-            {
-                if (m_tableSortingStateCaptured)
-                {
-                    tableWidget->setSortingEnabled(m_tableSortingWasEnabled);
-                }
-            }
-            m_tableSortingStateCaptured = false;
-        }
+        updateEmbeddedEditorGeometries();
         return true;
     }
     return false;
@@ -622,56 +656,84 @@ void ks::ui::DetailLayoutHost::clearEmbeddedDetails()
         return;
     }
 
-    m_internalModelChange = true;
-    if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
+    m_indicatorRefreshScheduled = false;
+    for (const EmbeddedEntry& entry : std::as_const(m_embeddedEntries))
     {
-        tableWidget->setSortingEnabled(false);
-        for (int rowIndex = tableWidget->rowCount() - 1; rowIndex >= 0; --rowIndex)
+        restoreEmbeddedEntryLayout(entry);
+        if (!entry.textEditor.isNull())
         {
-            QTableWidgetItem* markerItem = tableWidget->item(rowIndex, 0);
-            if (markerItem != nullptr && markerItem->data(EmbeddedMarkerRole).toBool())
-            {
-                tableWidget->removeRow(rowIndex);
-            }
-        }
-        if (m_tableSortingStateCaptured)
-        {
-            tableWidget->setSortingEnabled(m_tableSortingWasEnabled);
+            delete entry.textEditor.data();
         }
     }
-    else if (QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data()))
-    {
-        QList<QTreeWidgetItem*> pendingItems;
-        for (int index = 0; index < treeWidget->topLevelItemCount(); ++index)
-        {
-            pendingItems.append(treeWidget->topLevelItem(index));
-        }
-        while (!pendingItems.isEmpty())
-        {
-            QTreeWidgetItem* item = pendingItems.takeLast();
-            for (int childIndex = item->childCount() - 1; childIndex >= 0; --childIndex)
-            {
-                QTreeWidgetItem* childItem = item->child(childIndex);
-                if (childItem->data(0, EmbeddedMarkerRole).toBool())
-                {
-                    delete item->takeChild(childIndex);
-                }
-                else
-                {
-                    pendingItems.append(childItem);
-                }
-            }
-        }
-    }
-    m_internalModelChange = false;
     m_embeddedEntries.clear();
-    m_tableSortingStateCaptured = false;
+    m_pendingIndicatorIndexes.clear();
+    ++m_indicatorGeneration;
     restoreEmbeddedIndicators();
+    updateEmbeddedEditorGeometries();
 }
 
 void ks::ui::DetailLayoutHost::prepareDataRebuild()
 {
     clearEmbeddedDetails();
+}
+
+void ks::ui::DetailLayoutHost::restoreEmbeddedEntryLayout(const EmbeddedEntry& entry)
+{
+    if (!m_tableView.isNull())
+    {
+        if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
+        {
+            if (entry.sourceIndex.isValid() && entry.originalRowHeight > 0)
+            {
+                tableWidget->setRowHeight(entry.sourceIndex.row(), entry.originalRowHeight);
+            }
+        }
+        else if (entry.treeSourceItem != nullptr && !entry.originalSizeHint.isNull())
+        {
+            entry.treeSourceItem->setSizeHint(0, entry.originalSizeHint.toSize());
+        }
+    }
+}
+
+void ks::ui::DetailLayoutHost::updateEmbeddedEditorGeometries()
+{
+    if (m_tableView.isNull())
+    {
+        return;
+    }
+    QWidget* viewport = m_tableView->viewport();
+    if (viewport == nullptr)
+    {
+        return;
+    }
+    for (const EmbeddedEntry& entry : std::as_const(m_embeddedEntries))
+    {
+        if (entry.textEditor.isNull() || !entry.sourceIndex.isValid())
+        {
+            continue;
+        }
+        QRect itemRect = m_tableView->visualRect(entry.sourceIndex);
+        if (!itemRect.isValid() || itemRect.height() <= 0 || !viewport->rect().intersects(itemRect))
+        {
+            entry.textEditor->setVisible(false);
+            continue;
+        }
+        const int topPadding = qMax(0, entry.originalRowHeight);
+        const int detailHeight = qMax(1, entry.detailHeight);
+        QRect editorRect = itemRect;
+        editorRect.setTop(editorRect.top() + topPadding);
+        editorRect.setLeft(0);
+        editorRect.setWidth(viewport->width());
+        editorRect.setBottom(qMin(itemRect.bottom(), editorRect.top() + detailHeight - 1));
+        if (editorRect.height() <= 0)
+        {
+            entry.textEditor->setVisible(false);
+            continue;
+        }
+        entry.textEditor->setGeometry(editorRect);
+        entry.textEditor->setVisible(true);
+        entry.textEditor->raise();
+    }
 }
 
 void ks::ui::DetailLayoutHost::refreshEmbeddedIndicators()
@@ -680,49 +742,101 @@ void ks::ui::DetailLayoutHost::refreshEmbeddedIndicators()
     {
         return;
     }
+    const int rowCount = m_tableView->model() != nullptr
+        ? m_tableView->model()->rowCount()
+        : 0;
+    queueEmbeddedIndicatorRows(QModelIndex(), 0, rowCount - 1);
+}
 
-    const QIcon collapsedIcon = embeddedIndicatorIcon(false);
-    if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
+void ks::ui::DetailLayoutHost::scheduleEmbeddedIndicatorRefresh()
+{
+    if (m_indicatorRefreshScheduled)
     {
-        for (int rowIndex = 0; rowIndex < tableWidget->rowCount(); ++rowIndex)
+        return;
+    }
+    m_indicatorRefreshScheduled = true;
+    QTimer::singleShot(0, this,
+        [this]()
         {
-            QTableWidgetItem* firstItem = tableWidget->item(rowIndex, 0);
-            if (firstItem == nullptr || firstItem->data(EmbeddedMarkerRole).toBool())
-            {
-                continue;
-            }
-            if (!firstItem->data(OriginalDecorationRole).isValid())
-            {
-                firstItem->setData(OriginalDecorationRole, firstItem->data(Qt::DecorationRole));
-            }
-            firstItem->setIcon(collapsedIcon);
+            m_indicatorRefreshScheduled = false;
+            refreshEmbeddedIndicators();
+        });
+}
+
+void ks::ui::DetailLayoutHost::queueEmbeddedIndicatorRows(
+    const QModelIndex& parentIndex,
+    const int firstRow,
+    const int lastRow)
+{
+    if (m_tableView.isNull() || m_tableView->model() == nullptr || firstRow > lastRow)
+    {
+        return;
+    }
+    ++m_indicatorGeneration;
+    m_pendingIndicatorIndexes.clear();
+    const int boundedFirst = qMax(0, firstRow);
+    const int boundedLast = qMin(lastRow, m_tableView->model()->rowCount(parentIndex) - 1);
+    for (int row = boundedFirst; row <= boundedLast; ++row)
+    {
+        const QModelIndex index = m_tableView->model()->index(row, 0, parentIndex);
+        if (index.isValid())
+        {
+            m_pendingIndicatorIndexes.append(QPersistentModelIndex(index));
         }
     }
-    else if (QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data()))
+    if (!m_indicatorBatchScheduled)
     {
-        QList<QTreeWidgetItem*> pendingItems;
-        for (int index = 0; index < treeWidget->topLevelItemCount(); ++index)
+        m_indicatorBatchScheduled = true;
+        const quint64 generation = m_indicatorGeneration;
+        QTimer::singleShot(0, this, [this, generation]() { processEmbeddedIndicatorBatch(generation); });
+    }
+}
+
+void ks::ui::DetailLayoutHost::processEmbeddedIndicatorBatch(const quint64 generation)
+{
+    if (generation != m_indicatorGeneration || m_scheme != ks::settings::DetailDisplayScheme::Embedded ||
+        m_tableView.isNull() || m_tableView->model() == nullptr)
+    {
+        m_indicatorBatchScheduled = false;
+        if (generation != m_indicatorGeneration && !m_pendingIndicatorIndexes.isEmpty() &&
+            m_scheme == ks::settings::DetailDisplayScheme::Embedded)
         {
-            pendingItems.append(treeWidget->topLevelItem(index));
+            m_indicatorBatchScheduled = true;
+            const quint64 currentGeneration = m_indicatorGeneration;
+            QTimer::singleShot(0, this,
+                [this, currentGeneration]() { processEmbeddedIndicatorBatch(currentGeneration); });
         }
-        while (!pendingItems.isEmpty())
+        return;
+    }
+    int processed = 0;
+    while (!m_pendingIndicatorIndexes.isEmpty() && processed < 128)
+    {
+        const QPersistentModelIndex index = m_pendingIndicatorIndexes.takeLast();
+        if (!index.isValid())
         {
-            QTreeWidgetItem* item = pendingItems.takeLast();
-            if (!item->data(0, EmbeddedMarkerRole).toBool())
+            continue;
+        }
+        installEmbeddedIndicator(index, false);
+        if (qobject_cast<QTreeWidget*>(m_tableView.data()) != nullptr)
+        {
+            const int childCount = m_tableView->model()->rowCount(index);
+            for (int child = 0; child < childCount; ++child)
             {
-                if (!item->data(0, OriginalDecorationRole).isValid())
+                const QModelIndex childIndex = m_tableView->model()->index(child, 0, index);
+                if (childIndex.isValid())
                 {
-                    item->setData(0, OriginalDecorationRole, item->data(0, Qt::DecorationRole));
+                    m_pendingIndicatorIndexes.append(QPersistentModelIndex(childIndex));
                 }
-                item->setIcon(0, collapsedIcon);
-            }
-            for (int childIndex = 0; childIndex < item->childCount(); ++childIndex)
-            {
-                pendingItems.append(item->child(childIndex));
             }
         }
+        ++processed;
     }
-
+    if (!m_pendingIndicatorIndexes.isEmpty())
+    {
+        QTimer::singleShot(0, this, [this, generation]() { processEmbeddedIndicatorBatch(generation); });
+        return;
+    }
+    m_indicatorBatchScheduled = false;
     for (const EmbeddedEntry& entry : std::as_const(m_embeddedEntries))
     {
         if (entry.sourceIndex.isValid())
@@ -732,75 +846,83 @@ void ks::ui::DetailLayoutHost::refreshEmbeddedIndicators()
     }
 }
 
-void ks::ui::DetailLayoutHost::restoreEmbeddedIndicators()
+void ks::ui::DetailLayoutHost::installEmbeddedIndicator(
+    const QPersistentModelIndex& sourceIndex,
+    const bool expanded)
 {
+    if (m_tableView.isNull() || !sourceIndex.isValid())
+    {
+        return;
+    }
     if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
     {
-        for (int rowIndex = 0; rowIndex < tableWidget->rowCount(); ++rowIndex)
+        QTableWidgetItem* firstItem = tableWidget->item(sourceIndex.row(), 0);
+        if (firstItem == nullptr)
         {
-            QTableWidgetItem* firstItem = tableWidget->item(rowIndex, 0);
-            if (firstItem != nullptr && firstItem->data(OriginalDecorationRole).isValid())
-            {
-                firstItem->setData(Qt::DecorationRole, firstItem->data(OriginalDecorationRole));
-                firstItem->setData(OriginalDecorationRole, QVariant());
-            }
+            return;
         }
+        if (!firstItem->data(OriginalDecorationCapturedRole).toBool())
+        {
+            firstItem->setData(OriginalDecorationRole, firstItem->data(Qt::DecorationRole));
+            firstItem->setData(OriginalDecorationCapturedRole, true);
+            m_indicatorIndexes.append(sourceIndex);
+        }
+        firstItem->setIcon(embeddedIndicatorIcon(expanded));
     }
     else if (QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data()))
     {
-        QList<QTreeWidgetItem*> pendingItems;
-        for (int index = 0; index < treeWidget->topLevelItemCount(); ++index)
+        QTreeWidgetItem* item = treeWidget->itemFromIndex(sourceIndex);
+        if (item == nullptr)
         {
-            pendingItems.append(treeWidget->topLevelItem(index));
+            return;
         }
-        while (!pendingItems.isEmpty())
+        if (!item->data(0, OriginalDecorationCapturedRole).toBool())
         {
-            QTreeWidgetItem* item = pendingItems.takeLast();
-            if (item->data(0, OriginalDecorationRole).isValid())
+            item->setData(0, OriginalDecorationRole, item->data(0, Qt::DecorationRole));
+            item->setData(0, OriginalDecorationCapturedRole, true);
+            m_indicatorIndexes.append(sourceIndex);
+        }
+        item->setIcon(0, embeddedIndicatorIcon(expanded));
+    }
+}
+
+void ks::ui::DetailLayoutHost::restoreEmbeddedIndicators()
+{
+    for (const QPersistentModelIndex& sourceIndex : std::as_const(m_indicatorIndexes))
+    {
+        if (!sourceIndex.isValid())
+        {
+            continue;
+        }
+        if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
+        {
+            QTableWidgetItem* firstItem = tableWidget->item(sourceIndex.row(), 0);
+            if (firstItem != nullptr && firstItem->data(OriginalDecorationCapturedRole).toBool())
+            {
+                firstItem->setData(Qt::DecorationRole, firstItem->data(OriginalDecorationRole));
+                firstItem->setData(OriginalDecorationRole, QVariant());
+                firstItem->setData(OriginalDecorationCapturedRole, false);
+            }
+        }
+        else if (QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data()))
+        {
+            QTreeWidgetItem* item = treeWidget->itemFromIndex(sourceIndex);
+            if (item != nullptr && item->data(0, OriginalDecorationCapturedRole).toBool())
             {
                 item->setData(0, Qt::DecorationRole, item->data(0, OriginalDecorationRole));
                 item->setData(0, OriginalDecorationRole, QVariant());
-            }
-            for (int childIndex = 0; childIndex < item->childCount(); ++childIndex)
-            {
-                pendingItems.append(item->child(childIndex));
+                item->setData(0, OriginalDecorationCapturedRole, false);
             }
         }
     }
+    m_indicatorIndexes.clear();
 }
 
 void ks::ui::DetailLayoutHost::setSourceExpandedIndicator(
     const QPersistentModelIndex& sourceIndex,
     const bool expanded)
 {
-    const QIcon stateIcon = embeddedIndicatorIcon(expanded);
-    if (QTableWidget* tableWidget = qobject_cast<QTableWidget*>(m_tableView.data()))
-    {
-        QTableWidgetItem* firstItem = tableWidget->item(sourceIndex.row(), 0);
-        if (firstItem != nullptr)
-        {
-            firstItem->setIcon(stateIcon);
-        }
-    }
-    else if (QTreeWidget* treeWidget = qobject_cast<QTreeWidget*>(m_tableView.data()))
-    {
-        QTreeWidgetItem* sourceItem = treeItemForIndex(treeWidget, sourceIndex);
-        if (sourceItem == nullptr)
-        {
-            for (const EmbeddedEntry& entry : std::as_const(m_embeddedEntries))
-            {
-                if (entry.sourceIndex == sourceIndex)
-                {
-                    sourceItem = entry.treeSourceItem;
-                    break;
-                }
-            }
-        }
-        if (sourceItem != nullptr)
-        {
-            sourceItem->setIcon(0, stateIcon);
-        }
-    }
+    installEmbeddedIndicator(sourceIndex, expanded);
 }
 
 void ks::ui::DetailLayoutHost::showFloatingWindow()
@@ -881,16 +1003,17 @@ void ks::ui::DetailLayoutHost::destroyFloatingWindow()
 
 bool ks::ui::DetailLayoutHost::eventFilter(QObject* watchedObject, QEvent* eventObject)
 {
-    if (!m_tableView.isNull() && watchedObject == m_tableView->viewport() &&
-        eventObject != nullptr && eventObject->type() == QEvent::ContextMenu)
+    if (!m_tableView.isNull() && watchedObject == m_tableView->viewport() && eventObject != nullptr)
     {
-        const QContextMenuEvent* contextMenuEvent =
-            static_cast<const QContextMenuEvent*>(eventObject);
-        const QModelIndex contextIndex = m_tableView->indexAt(contextMenuEvent->pos());
-        if (isEmbeddedMarker(QPersistentModelIndex(contextIndex)))
+        switch (eventObject->type())
         {
-            // 合成详情行只允许其 QPlainTextEdit 自己提供复制菜单，不进入业务右键菜单。
-            return true;
+        case QEvent::Resize:
+        case QEvent::Scroll:
+        case QEvent::LayoutRequest:
+            updateEmbeddedEditorGeometries();
+            break;
+        default:
+            break;
         }
     }
     if (watchedObject == m_floatingWindow.data() && eventObject != nullptr)
@@ -905,11 +1028,4 @@ bool ks::ui::DetailLayoutHost::eventFilter(QObject* watchedObject, QEvent* event
         }
     }
     return QObject::eventFilter(watchedObject, eventObject);
-}
-
-bool ks::ui::DetailLayoutHost::isEmbeddedMarker(
-    const QPersistentModelIndex& modelIndex) const
-{
-    return modelIndex.isValid() && modelIndex.sibling(modelIndex.row(), 0)
-        .data(EmbeddedMarkerRole).toBool();
 }

@@ -5,7 +5,7 @@
 // 作用：
 // - 把严格命中页面的“数据视图 + CodeEditorWidget”统一适配为四种详情布局；
 // - 页面仍负责生成详情文本，本类只负责布局、展开状态和文本镜像；
-// - 使用 QPersistentModelIndex 跟踪合成详情行，避免插入行后缓存索引漂移。
+// - 使用 QPersistentModelIndex 跟踪源项，行内详情只修改视图几何，不改业务模型。
 // ============================================================
 
 #include "../SettingsDock/AppearanceSettings.h"
@@ -16,6 +16,7 @@
 #include <QPointer>
 #include <QString>
 #include <QVariant>
+#include <QtGlobal>
 
 class CodeEditorWidget;
 class QAbstractItemView;
@@ -47,7 +48,7 @@ namespace ks::ui
         void setTableView(QAbstractItemView* tableView);
         void setDetailEditor(CodeEditorWidget* detailEditor);
 
-        // applyScheme：切换当前页面布局；会清理旧模式的临时合成行/窗口状态。
+        // applyScheme：切换当前页面布局；会清理旧模式的临时行内视图/窗口状态。
         void applyScheme(ks::settings::DetailDisplayScheme scheme);
 
         // clearEmbeddedDetails：移除所有行内详情并恢复源行图标。
@@ -64,17 +65,21 @@ namespace ks::ui
         bool eventFilter(QObject* watchedObject, QEvent* eventObject) override;
 
     private:
-        // EmbeddedEntry：保存一个源行与其合成详情控件的稳定对应关系。
+        // EmbeddedEntry：保存一个源行与其行内详情控件的稳定对应关系。
         struct EmbeddedEntry
         {
             QPersistentModelIndex sourceIndex;
             QPointer<QPlainTextEdit> textEditor;
             QTreeWidgetItem* treeSourceItem = nullptr;
-            QTreeWidgetItem* treeDetailItem = nullptr;
+            int originalRowHeight = -1;
+            int detailHeight = 128;
+            QVariant originalSizeHint;
         };
 
-        // initializeHostUi / initializeConnections：创建统一分隔器、箭头并绑定文本/点击事件。
+        // initializeHostUi / scheduleHostUiInitialization / initializeConnections：
+        // 延迟到页面构造完成后创建统一分隔器、箭头并绑定文本/点击事件。
         void initializeHostUi();
+        void scheduleHostUiInitialization();
         void initializeConnections();
 
         // ensureManagedSplitter：复用既有分隔器或把直接布局中的表格/详情包装进新分隔器。
@@ -82,39 +87,45 @@ namespace ks::ui
 
         // updateBottomExpanded：更新下方详情显隐、箭头方向和默认分隔比例。
         void updateBottomExpanded(bool expanded);
+        void setManagedSplitterSizes(int tableSize, int toggleSize, int detailSize);
 
         // handleViewClicked：按当前方案处理一次用户行点击。
         void handleViewClicked(const QPersistentModelIndex& sourceIndex);
 
-        // handleDetailChanged：同步原详情文本到当前合成行或独立窗口。
+        // handleDetailChanged：同步原详情文本到当前行内视图或独立窗口。
         void handleDetailChanged(const QString& detailText);
 
-        // toggleEmbeddedDetail：为当前源行插入或移除只读 QPlainTextEdit 详情行。
+        // toggleEmbeddedDetail：为当前源行显示或移除视图层只读 QPlainTextEdit 详情。
         void toggleEmbeddedDetail(const QPersistentModelIndex& sourceIndex);
 
-        // insertTableEmbeddedDetail / insertTreeEmbeddedDetail：分别适配表格和树视图。
+        // insertTableEmbeddedDetail / insertTreeEmbeddedDetail：
+        // 只扩展源行的视图高度并覆盖只读文本框，不向业务模型插入任何行或节点。
         void insertTableEmbeddedDetail(const QPersistentModelIndex& sourceIndex, const QString& detailText);
         void insertTreeEmbeddedDetail(const QPersistentModelIndex& sourceIndex, const QString& detailText);
 
-        // removeEmbeddedEntry：移除指定源行的合成详情；返回 true 表示已找到并移除。
+        // removeEmbeddedEntry：移除指定源行的行内详情；返回 true 表示已找到并移除。
         bool removeEmbeddedEntry(const QPersistentModelIndex& sourceIndex);
 
-        // refreshEmbeddedIndicators：给可展开源行绘制右/下箭头，并跳过合成详情行。
+        // 行内详情布局与指示器均在视图层维护，批量节点按事件循环分片处理。
+        void updateEmbeddedEditorGeometries();
+        void restoreEmbeddedEntryLayout(const EmbeddedEntry& entry);
         void refreshEmbeddedIndicators();
+        void scheduleEmbeddedIndicatorRefresh();
+        void queueEmbeddedIndicatorRows(const QModelIndex& parentIndex, int firstRow, int lastRow);
+        void processEmbeddedIndicatorBatch(quint64 generation);
         void restoreEmbeddedIndicators();
         void setSourceExpandedIndicator(const QPersistentModelIndex& sourceIndex, bool expanded);
+        void installEmbeddedIndicator(const QPersistentModelIndex& sourceIndex, bool expanded);
 
         // showFloatingWindow / destroyFloatingWindow：管理当前页面唯一的非模态详情窗口。
         void showFloatingWindow();
         void destroyFloatingWindow();
 
-        // isEmbeddedMarker：判断模型索引是否为本类插入的合成详情行/节点。
-        bool isEmbeddedMarker(const QPersistentModelIndex& modelIndex) const;
-
         QPointer<QAbstractItemView> m_tableView;       // m_tableView：页面原始表格或树。
         QPointer<CodeEditorWidget> m_detailEditor;     // m_detailEditor：页面原始详情编辑器。
         QPointer<QWidget> m_ownerWidget;               // m_ownerWidget：生命周期宿主。
         QPointer<QSplitter> m_splitter;                // m_splitter：统一承载表格和原详情区。
+        QPointer<QWidget> m_tablePane;                 // m_tablePane：分隔器中承载业务表格的完整面板。
         QPointer<QWidget> m_detailPane;                // m_detailPane：分隔器中的完整详情面板。
         QPointer<QWidget> m_toggleBar;                  // m_toggleBar：占满页面宽度的箭头承载条，避免固定宽按钮压窄分隔器。
         QPointer<QToolButton> m_toggleButton;           // m_toggleButton：下方折叠方案的箭头按钮。
@@ -124,8 +135,11 @@ namespace ks::ui
         ks::settings::DetailDisplayScheme m_scheme =
             ks::settings::DetailDisplayScheme::BottomCollapsed;
         bool m_bottomExpanded = false;                  // m_bottomExpanded：下方详情是否展开。
-        bool m_internalModelChange = false;             // m_internalModelChange：防止合成行变更递归响应。
-        bool m_tableSortingStateCaptured = false;       // m_tableSortingStateCaptured：是否已保存表格原排序状态。
-        bool m_tableSortingWasEnabled = false;          // m_tableSortingWasEnabled：退出行内模式时恢复的排序状态。
+        bool m_hostUiInitializationScheduled = false;   // m_hostUiInitializationScheduled：页面构造结束后的延迟初始化是否已排队。
+        bool m_indicatorBatchScheduled = false;         // m_indicatorBatchScheduled：节点图标分片任务是否已排队。
+        bool m_indicatorRefreshScheduled = false;       // m_indicatorRefreshScheduled：批量数据更新后的图标刷新是否已合并。
+        quint64 m_indicatorGeneration = 0;              // m_indicatorGeneration：取消过期图标遍历的代次。
+        QList<QPersistentModelIndex> m_indicatorIndexes; // m_indicatorIndexes：已保存原始图标的源项。
+        QList<QPersistentModelIndex> m_pendingIndicatorIndexes; // m_pendingIndicatorIndexes：待分片处理的源项。
     };
 }
