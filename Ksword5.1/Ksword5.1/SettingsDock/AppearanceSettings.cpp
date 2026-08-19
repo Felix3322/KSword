@@ -391,7 +391,7 @@ namespace
         defaultSettings.autoRequestAdminOnStartup = true;
         defaultSettings.startupWindowScaleFactor = 1.0;
         defaultSettings.startupScaleRecommendPromptDisabled = false;
-        defaultSettings.unlockerShellContextMenuEnabled = true;
+        defaultSettings.unlockerShellContextMenuEnabled = false;
         defaultSettings.useWideScrollBars = false;
         defaultSettings.scrollBarAutoHideEnabled = false;
         defaultSettings.smoothScrollingEnabled = true;

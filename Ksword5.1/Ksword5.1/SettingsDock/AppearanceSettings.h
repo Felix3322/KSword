@@ -106,7 +106,7 @@ namespace ks::settings
         bool autoRequestAdminOnStartup = true;
         double startupWindowScaleFactor = 1.0;
         bool startupScaleRecommendPromptDisabled = false;
-        bool unlockerShellContextMenuEnabled = true;
+        bool unlockerShellContextMenuEnabled = false;
         bool useWideScrollBars = false;
         bool scrollBarAutoHideEnabled = false;
         bool smoothScrollingEnabled = true;
