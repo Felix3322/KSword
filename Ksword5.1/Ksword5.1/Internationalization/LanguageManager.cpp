@@ -1234,7 +1234,7 @@ QString ks::i18n::LanguageManager::resolveSourceText(
                 // example a translated status template receiving "安全模式").
                 // Resolve each captured value independently so an English outer
                 // template cannot retain a nested Chinese enum/status string.
-                translatedText += sourceText(sourceMatch.captured(captureGroup));
+                translatedText += this->sourceText(sourceMatch.captured(captureGroup));
                 previousEnd = placeholderMatch.capturedEnd();
             }
             if (!translatedText.isNull())
