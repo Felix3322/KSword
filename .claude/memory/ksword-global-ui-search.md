@@ -31,7 +31,10 @@
 - setObjectName 的 `ksXxxYyy` 标识符、`#include "无路径分隔的头文件名.h"` 都会被提取，
   必须在两个语言包 source_translations 里加“恒等词条”（"ksTitleInputGroup": "ksTitleInputGroup"）。
 - 组合文本按整串查词条：按钮文本 "搜索 ▾"/"CMD ▾" 是完整键，不能只登记 "搜索"。
+- 审计器会同时提取 C++ 相邻字符串字面量的编译后完整值；拆开的每段都有词条但完整值缺失时，`audit` 必须失败。
+- `text/contextText/translated/bind*` 等调用点引用的语义键必须真实存在于两份语言包；审计器会从源码反向校验，不能再依赖中文 fallback 蒙混通过。
 - LanguageManager 有运行时全树翻译（app eventFilter 监听 ChildAdded/Show/UpdateRequest 等），
   代码里直接写中文字面量即可，动态 setText/setPlaceholderText 后也会被自动重翻。
+- source template 的 `%1` 等捕获值会再做一次源文本翻译，使外层英文模板不会夹带“安全模式”等稳定中文枚举；动态多行报告仍应逐行翻译后再 join，不能对最终整块只调用一次 sourceText。
 - 语言包两文件键序逐行对齐（同键同行号），插入词条必须两包同锚点成对插入；
   用“整行内容锚点 + 行插入”脚本定点编辑，禁止 json.load/dump 重写。

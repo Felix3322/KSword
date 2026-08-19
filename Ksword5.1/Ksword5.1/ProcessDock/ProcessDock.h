@@ -962,7 +962,6 @@ private:
         int staticDetailFillBudget,
         std::uint32_t detailDemandFlags,
         std::uint64_t refreshTicket,
-        int progressTaskPid,
         const std::unordered_map<std::string, CacheEntry>& previousCache,
         const std::unordered_map<std::string, ks::process::CounterSample>& previousCounters,
         const std::unordered_map<std::uint32_t, NetworkTrafficCounters>& networkTrafficSnapshot,
@@ -1148,7 +1147,6 @@ private:
     std::uint32_t m_logicalCpuCount = 1;      // CPU 核心数（CPU 百分比换算）。
     std::chrono::steady_clock::time_point m_lastRefreshStartTime{}; // 主线程记录的刷新开始时刻。
     std::chrono::steady_clock::time_point m_lastProcessTableRebuildTime{}; // 最近一次进程表重绘时间。
-    int m_refreshProgressTaskPid = 0;         // 绑定到 kPro 的“进程刷新任务”PID。
 
     // ======== 数据缓存 ========
     std::unordered_map<std::string, CacheEntry> m_cacheByIdentity; // 进程缓存（PID+CreateTime）。

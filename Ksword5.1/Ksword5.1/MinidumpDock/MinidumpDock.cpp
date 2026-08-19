@@ -587,8 +587,7 @@ void MinidumpDock::promptKswordRelatedCrash(const ks::minidump::DumpParseResult&
     messageBox.setText(
         translated("minidump.dialog.ksword_related.text", "这次崩溃与 KSword 有关"));
     messageBox.setInformativeText(
-        ks::i18n::sourceText(
-            ks::minidump::BuildKswordReportGuidance(relevance, result.filePath)));
+        ks::minidump::BuildKswordReportGuidance(relevance, result.filePath));
 
     QPushButton* const qqButton = messageBox.addButton(
         translated("minidump.dialog.ksword_related.qq", "加入 QQ 群反馈"),

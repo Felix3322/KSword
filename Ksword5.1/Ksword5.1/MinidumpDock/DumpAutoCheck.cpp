@@ -12,6 +12,7 @@
 
 #include "DumpSymbolIndex.h"
 #include "MinidumpFormat.h"
+#include "../Internationalization/LanguageManager.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -252,26 +253,36 @@ namespace ks::minidump
         const QString& dumpFilePath)
     {
         QStringList lines;
-        lines.append(relevance.summary);
+        lines.append(ks::i18n::sourceText(relevance.summary));
         if (!relevance.matchedModules.isEmpty())
         {
-            lines.append(QStringLiteral("命中组件：%1")
-                .arg(relevance.matchedModules.join(QStringLiteral("、"))));
+            lines.append(ks::i18n::sourceText(QStringLiteral("命中组件：%1"))
+                .arg(relevance.matchedModules.join(ks::i18n::text(
+                    QStringLiteral("minidump.report.module_separator"),
+                    QStringLiteral("、")))));
         }
         lines.append(QString());
-        lines.append(QStringLiteral("这属于 KSword 自身的问题，请反馈给开发者。提交时请一并说明："));
-        lines.append(QStringLiteral("1. 崩溃前你在 KSword 里做了什么：打开了哪个页面、点了哪个功能、"
-            "目标进程/驱动/文件是什么；"));
-        lines.append(QStringLiteral("2. 是否可以稳定复现，以及复现的具体步骤；"));
-        lines.append(QStringLiteral("3. 当时 R0 驱动是否已启用，是否刚做过加载/卸载操作；"));
-        lines.append(QStringLiteral("4. 系统版本与 KSword 版本；"));
-        lines.append(QStringLiteral("5. 附上本页的“导出报告”结果，必要时附转储文件本身。"));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("这属于 KSword 自身的问题，请反馈给开发者。提交时请一并说明：")));
+        lines.append(ks::i18n::sourceText(QStringLiteral(
+            "1. 崩溃前你在 KSword 里做了什么：打开了哪个页面、点了哪个功能、"
+            "目标进程/驱动/文件是什么；")));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("2. 是否可以稳定复现，以及复现的具体步骤；")));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("3. 当时 R0 驱动是否已启用，是否刚做过加载/卸载操作；")));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("4. 系统版本与 KSword 版本；")));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("5. 附上本页的“导出报告”结果，必要时附转储文件本身。")));
         if (!dumpFilePath.isEmpty())
         {
-            lines.append(QStringLiteral("   转储文件：%1").arg(dumpFilePath));
+            lines.append(ks::i18n::sourceText(
+                QStringLiteral("   转储文件：%1")).arg(dumpFilePath));
         }
         lines.append(QString());
-        lines.append(QStringLiteral("反馈渠道：QQ 群，或 GitHub Issues。"));
+        lines.append(ks::i18n::sourceText(
+            QStringLiteral("反馈渠道：QQ 群，或 GitHub Issues。")));
         return lines.join(QStringLiteral("\n"));
     }
 }

@@ -37,7 +37,7 @@ namespace
     QString addressText(const unsigned long long address)
     {
         return address == 0ULL
-            ? QStringLiteral("不可用")
+            ? ks::i18n::sourceText(QStringLiteral("不可用"))
             : QStringLiteral("0x%1")
                 .arg(address, 16, 16, QLatin1Char('0'))
                 .toUpper();
@@ -96,8 +96,8 @@ namespace
             reason = QStringLiteral("系统变速状态不可用");
             break;
         }
-        return QStringLiteral("%1；NTSTATUS=0x%2")
-            .arg(reason)
+        return ks::i18n::sourceText(QStringLiteral("%1；NTSTATUS=0x%2"))
+            .arg(ks::i18n::sourceText(reason))
             .arg(
                 static_cast<unsigned long>(lastStatus),
                 8,
@@ -481,9 +481,9 @@ namespace ks::misc
             m_hypervAvailable = false;
             m_operationLabel->setText(
                 result.unsupported
-                    ? QStringLiteral(
-                        "当前 KswordARK 驱动不支持系统全局变速，请更新 R0。")
-                    : QStringLiteral("R0 查询失败：%1")
+                    ? ks::i18n::sourceText(QStringLiteral(
+                        "当前 KswordARK 驱动不支持系统全局变速，请更新 R0。"))
+                    : ks::i18n::sourceText(QStringLiteral("R0 查询失败：%1"))
                         .arg(QString::fromStdString(
                             result.io.message)));
             updateButtons();
@@ -524,26 +524,26 @@ namespace ks::misc
             m_speedUpRadio->isChecked()
             ? KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP
             : KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN;
-        const QString modeText =
+        const QString modeText = ks::i18n::sourceText(
             m_speedUpRadio->isChecked()
             ? QStringLiteral("加速")
-            : QStringLiteral("减速");
+            : QStringLiteral("减速"));
         const unsigned long backend =
             m_hypervBackendRadio->isChecked()
             ? KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC
             : KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT;
-        const QString backendText =
+        const QString backendText = ks::i18n::sourceText(
             m_hypervBackendRadio->isChecked()
             ? QStringLiteral("Hyper-V 共享 QPC")
-            : QStringLiteral("HAL 兼容后端");
+            : QStringLiteral("HAL 兼容后端"));
         const unsigned long resolutionMode =
             m_compatRadio->isChecked()
             ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
             : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED;
-        const QString schemeText =
+        const QString schemeText = ks::i18n::sourceText(
             m_compatRadio->isChecked()
             ? QStringLiteral("兼容模式")
-            : QStringLiteral("安全模式");
+            : QStringLiteral("安全模式"));
 
         if (!m_acknowledgeCheck->isChecked() ||
             !confirmHighRisk(
@@ -568,8 +568,9 @@ namespace ks::misc
             showOpaqueMessage(
                 this,
                 QMessageBox::Critical,
-                QStringLiteral("系统全局变速"),
-                QStringLiteral("控制前无法读取 R0 状态，未执行任何修改。"));
+                ks::i18n::sourceText(QStringLiteral("系统全局变速")),
+                ks::i18n::sourceText(
+                    QStringLiteral("控制前无法读取 R0 状态，未执行任何修改。")));
             return;
         }
 
@@ -591,12 +592,12 @@ namespace ks::misc
             showOpaqueMessage(
                 this,
                 QMessageBox::Critical,
-                QStringLiteral("系统全局变速"),
+                ks::i18n::sourceText(QStringLiteral("系统全局变速")),
                 result.io.ok
                     ? operationStatusText(
                         result.response.status,
                         result.response.lastStatus)
-                    : QStringLiteral("R0 控制失败：%1")
+                    : ks::i18n::sourceText(QStringLiteral("R0 控制失败：%1"))
                         .arg(QString::fromStdString(
                             result.io.message)));
             refreshStatus();
@@ -610,7 +611,7 @@ namespace ks::misc
             << ", scheme=" << schemeText.toStdString()
             << ", factor=" << factor << eol;
         m_operationLabel->setText(
-            QStringLiteral("已应用：%1；%2；%3 %4 倍")
+            ks::i18n::sourceText(QStringLiteral("已应用：%1；%2；%3 %4 倍"))
                 .arg(backendText)
                 .arg(schemeText)
                 .arg(modeText)
@@ -644,12 +645,12 @@ namespace ks::misc
             showOpaqueMessage(
                 this,
                 QMessageBox::Critical,
-                QStringLiteral("恢复系统计时"),
+                ks::i18n::sourceText(QStringLiteral("恢复系统计时")),
                 result.io.ok
                     ? operationStatusText(
                         result.response.status,
                         result.response.lastStatus)
-                    : QStringLiteral("R0 控制失败：%1")
+                    : ks::i18n::sourceText(QStringLiteral("R0 控制失败：%1"))
                         .arg(QString::fromStdString(
                             result.io.message)));
             refreshStatus();
@@ -658,8 +659,8 @@ namespace ks::misc
 
         info << resetEvent
             << "[SystemTimePage] 已停止变速并切换到连续 1x 计时。" << eol;
-        m_operationLabel->setText(
-            QStringLiteral("已停止变速，当前以连续计数保持 1x"));
+        m_operationLabel->setText(ks::i18n::sourceText(
+            QStringLiteral("已停止变速，当前以连续计数保持 1x")));
         m_acknowledgeCheck->setChecked(false);
         refreshStatus();
     }
@@ -672,8 +673,8 @@ namespace ks::misc
         }
 
         setBusy(true);
-        m_operationLabel->setText(
-            QStringLiteral("正在请求 Windows 时间服务器同步..."));
+        m_operationLabel->setText(ks::i18n::sourceText(
+            QStringLiteral("正在请求 Windows 时间服务器同步...")));
 
         auto* process = new QProcess(this);
         m_timeSyncProcess = process;
@@ -713,7 +714,8 @@ namespace ks::misc
                 completeTimeSynchronization(
                     process,
                     false,
-                    QStringLiteral("无法启动 Windows 时间服务命令 w32tm.exe"));
+                    ks::i18n::sourceText(
+                        QStringLiteral("无法启动 Windows 时间服务命令 w32tm.exe")));
             });
         connect(
             process,
@@ -737,7 +739,8 @@ namespace ks::misc
                         exitStatus == QProcess::NormalExit &&
                         exitCode == 0,
                     timedOut
-                        ? QStringLiteral("等待时间服务器响应超时（15 秒）")
+                        ? ks::i18n::sourceText(
+                            QStringLiteral("等待时间服务器响应超时（15 秒）"))
                         : output);
             });
 
@@ -763,8 +766,8 @@ namespace ks::misc
         if (success)
         {
             resetCalibratedClock();
-            m_operationLabel->setText(
-                QStringLiteral("已从 Windows 时间服务器同步系统时间"));
+            m_operationLabel->setText(ks::i18n::sourceText(
+                QStringLiteral("已从 Windows 时间服务器同步系统时间")));
             info << timeSyncEvent
                 << "[SystemTimePage] Windows 时间服务器同步成功。"
                 << eol;
@@ -772,21 +775,22 @@ namespace ks::misc
         }
 
         const QString failureDetail = detailText.trimmed().isEmpty()
-            ? QStringLiteral("Windows 时间服务未返回详细错误")
+            ? ks::i18n::sourceText(
+                QStringLiteral("Windows 时间服务未返回详细错误"))
             : detailText.trimmed();
         warn << timeSyncEvent
             << "[SystemTimePage] Windows 时间服务器同步失败: "
             << failureDetail.toStdString() << eol;
         m_operationLabel->setText(
-            QStringLiteral("时间服务器同步失败：%1")
+            ks::i18n::sourceText(QStringLiteral("时间服务器同步失败：%1"))
                 .arg(failureDetail));
         showOpaqueMessage(
             this,
             QMessageBox::Warning,
-            QStringLiteral("更新时间失败"),
-            QStringLiteral(
+            ks::i18n::sourceText(QStringLiteral("更新时间失败")),
+            ks::i18n::sourceText(QStringLiteral(
                 "未能从 Windows 已配置的时间服务器更新时间。\n\n%1\n\n"
-                "请确认 Windows Time 服务正在运行，并以管理员身份重试。")
+                "请确认 Windows Time 服务正在运行，并以管理员身份重试。"))
                 .arg(failureDetail));
     }
 
@@ -871,14 +875,14 @@ namespace ks::misc
             KswordTheme::OpaqueDialogStyle(
                 warningBox.objectName()));
         warningBox.setIcon(QMessageBox::Warning);
-        warningBox.setWindowTitle(
-            QStringLiteral("系统全局变速风险确认"));
+        warningBox.setWindowTitle(ks::i18n::sourceText(
+            QStringLiteral("系统全局变速风险确认")));
         warningBox.setText(
-            QStringLiteral(
+            ks::i18n::sourceText(QStringLiteral(
                 "即将使用“%1”后端与“%2”，对整个系统%3 %4 倍。\n\n"
                 "此操作会改变全局性能计数器的时间流速，"
                 "可能破坏超时、同步、网络、音视频和安全软件行为。\n"
-                "请确认已保存工作，并准备在异常时立即恢复 1x。")
+                "请确认已保存工作，并准备在异常时立即恢复 1x。"))
                 .arg(backendText)
                 .arg(schemeText)
                 .arg(modeText)
@@ -894,9 +898,9 @@ namespace ks::misc
         // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
         QMessageBox finalBox(this);
         finalBox.setIcon(QMessageBox::Warning);
-        finalBox.setWindowTitle(QStringLiteral("最终确认"));
-        finalBox.setText(
-            QStringLiteral("确认修改系统时间相关设置？该操作会影响全局时间行为。"));
+        finalBox.setWindowTitle(ks::i18n::sourceText(QStringLiteral("最终确认")));
+        finalBox.setText(ks::i18n::sourceText(
+            QStringLiteral("确认修改系统时间相关设置？该操作会影响全局时间行为。")));
         finalBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
         finalBox.setDefaultButton(QMessageBox::No);
         return finalBox.exec() == QMessageBox::Yes;
@@ -944,34 +948,34 @@ namespace ks::misc
             m_currentCommand != command ||
             m_currentFactor != factor ||
             m_currentBackend != backend;
-        const QString schemeText =
+        const QString schemeText = ks::i18n::sourceText(
             resolutionMode ==
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED
             ? QStringLiteral("安全模式")
             : resolutionMode ==
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
                 ? QStringLiteral("兼容模式")
-                : QStringLiteral("未知");
-        const QString backendText =
+                : QStringLiteral("未知"));
+        const QString backendText = ks::i18n::sourceText(
             backend ==
                 KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC
             ? QStringLiteral("Hyper-V 共享 QPC")
             : backend ==
                 KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT
                 ? QStringLiteral("HAL 兼容后端")
-                : QStringLiteral("未知");
-        const QString hypervStateText = hypervActive
+                : QStringLiteral("未知"));
+        const QString hypervStateText = ks::i18n::sourceText(hypervActive
             ? QStringLiteral("共享页已接管")
             : hypervSharedPage
                 ? QStringLiteral("共享页可用")
                 : hypervPresent
                     ? QStringLiteral("已检测，但共享页不可用")
-                    : QStringLiteral("未检测到 Microsoft Hyper-V");
-        const QString kernelPathText =
+                    : QStringLiteral("未检测到 Microsoft Hyper-V"));
+        const QString kernelPathText = ks::i18n::sourceText(
             (stateFlags &
                 KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE) != 0UL
             ? QStringLiteral("HAL 处理器表")
-            : QStringLiteral("HAL 计数器槽");
+            : QStringLiteral("HAL 计数器槽"));
 
         m_hypervAvailable = hypervPresent && hypervSharedPage;
         m_active = active;
@@ -1016,7 +1020,7 @@ namespace ks::misc
             command == KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP)
         {
             m_currentModeLabel->setText(
-                QStringLiteral("当前：全局加速 %1 倍")
+                ks::i18n::sourceText(QStringLiteral("当前：全局加速 %1 倍"))
                     .arg(factor));
         }
         else if (active &&
@@ -1024,13 +1028,13 @@ namespace ks::misc
                     KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN)
         {
             m_currentModeLabel->setText(
-                QStringLiteral("当前：全局减速到 1/%1")
+                ks::i18n::sourceText(QStringLiteral("当前：全局减速到 1/%1"))
                     .arg(factor));
         }
         else
         {
-            m_currentModeLabel->setText(
-                QStringLiteral("当前：原始速度 1x"));
+            m_currentModeLabel->setText(ks::i18n::sourceText(
+                QStringLiteral("当前：原始速度 1x")));
         }
 
         m_currentModeLabel->setStyleSheet(
@@ -1041,9 +1045,9 @@ namespace ks::misc
                         ? KswordTheme::WarningHex()
                         : KswordTheme::SuccessHex()));
         m_backendLabel->setText(
-            QStringLiteral(
+            ks::i18n::sourceText(QStringLiteral(
                 "Windows 构建：%1；后端：%2；实现模式：%3；"
-                "内核计时路径：%4；Hyper-V：%5；状态代次：%6")
+                "内核计时路径：%4；Hyper-V：%5；状态代次：%6"))
                 .arg(osBuildNumber)
                 .arg(backendText)
                 .arg(schemeText)
@@ -1053,10 +1057,10 @@ namespace ks::misc
         if (hypervSharedPage)
         {
             m_diagnosticLabel->setText(
-                QStringLiteral(
+                ks::i18n::sourceText(QStringLiteral(
                     "计时描述符：%1；主槽：%2；辅助槽：%3；"
                     "Hyper-V 共享页：%4；更新锁：%5；"
-                    "原倍率：%6；当前倍率：%7；原偏置：%8；当前偏置：%9")
+                    "原倍率：%6；当前倍率：%7；原偏置：%8；当前偏置：%9"))
                     .arg(addressText(counterSourceAddress))
                     .arg(addressText(primarySlotAddress))
                     .arg(addressText(secondarySlotAddress))
@@ -1070,9 +1074,9 @@ namespace ks::misc
         else
         {
             m_diagnosticLabel->setText(
-                QStringLiteral(
+                ks::i18n::sourceText(QStringLiteral(
                     "计时描述符：%1；主槽：%2；辅助槽：%3；"
-                    "Hyper-V 共享页：不可用")
+                    "Hyper-V 共享页：不可用"))
                     .arg(addressText(counterSourceAddress))
                     .arg(addressText(primarySlotAddress))
                     .arg(addressText(secondarySlotAddress)));

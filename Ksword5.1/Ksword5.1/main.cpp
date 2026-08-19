@@ -1805,13 +1805,9 @@ int main(int argc, char* argv[])
 
         // 兜底策略：
         // - 若首帧事件异常未触发；
-        // - 4 秒后强制隐藏启动页。
+        // - 4 秒后静默强制隐藏启动页，避免兜底动作产生面向用户的警告通知。
         QTimer::singleShot(4000, &window, []()
             {
-                kLogEvent splashFallbackEvent;
-                warn << splashFallbackEvent
-                    << "[main] 首帧隐藏 splash 的 4 秒兜底计时器触发。"
-                    << eol;
                 kSplash.hide();
             });
     }

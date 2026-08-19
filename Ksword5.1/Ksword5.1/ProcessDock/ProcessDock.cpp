@@ -6333,13 +6333,6 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
     }
     m_refreshInProgress = true;
 
-    // 创建并复用“进程刷新”进度任务，避免每轮刷新都新增新卡片。
-    if (m_refreshProgressTaskPid <= 0)
-    {
-        m_refreshProgressTaskPid = kPro.addReusable(this, "进程列表刷新", "初始化刷新任务");
-    }
-    kPro.set(m_refreshProgressTaskPid, forceRefresh ? "准备刷新列表参数..." : "准备监视采样参数...", 0, 0.02f);
-
     // 复制当前缓存快照给后台线程，避免跨线程读写冲突。
     const int strategyIndex = m_strategyCombo->currentIndex();
     // 静态详情预算按“当前是否真的显示了需要打开进程才能补齐的列”判定，
@@ -6388,7 +6381,6 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
     // 注意：forceUiRefresh 必须在进入后台 lambda 前保存成局部值；
     // 否则内层 QueuedConnection lambda 在工作线程里无法再引用 requestAsyncRefresh 的参数。
     const bool forceUiRefresh = forceRefresh;
-    const int progressPid = m_refreshProgressTaskPid;
     QRunnable* backgroundTask = QRunnable::create([
         guard,
         localTicket,
@@ -6398,7 +6390,6 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
         staticDetailFillBudget,
         detailDemandFlags,
         cpuCount,
-        progressPid,
         forceUiRefresh,
         previousCache = std::move(previousCache),
         previousCounters = std::move(previousCounters),
@@ -6410,7 +6401,6 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
             staticDetailFillBudget,
             detailDemandFlags,
             localTicket,
-            progressPid,
             previousCache,
             previousCounters,
             networkTrafficSnapshot,
@@ -6547,12 +6537,6 @@ void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool for
     if (m_sideTabWidget != nullptr && m_sideTabWidget->currentWidget() == m_threadPage)
     {
         requestAsyncThreadRefresh(false);
-    }
-
-    // 更新进度任务：本轮刷新完成后自动隐藏卡片。
-    if (m_refreshProgressTaskPid > 0)
-    {
-        kPro.set(m_refreshProgressTaskPid, "刷新完成", 100, 1.0f);
     }
 
     // 输出详细刷新日志，便于后续性能与正确性排查。
@@ -6740,7 +6724,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     const int staticDetailFillBudget,
     const std::uint32_t detailDemandFlags,
     const std::uint64_t refreshTicket,
-    const int progressTaskPid,
     const std::unordered_map<std::string, CacheEntry>& previousCache,
     const std::unordered_map<std::string, ks::process::CounterSample>& previousCounters,
     const std::unordered_map<std::uint32_t, ProcessDock::NetworkTrafficCounters>& networkTrafficSnapshot,
@@ -6757,12 +6740,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     refreshResult.detailModeEnabled = detailModeEnabled;
     refreshResult.kernelCompareEnabled = queryKernelProcessList;
 
-    // 进度条阶段 1：开始枚举。
-    if (progressTaskPid > 0)
-    {
-        kPro.set(progressTaskPid, "正在枚举进程列表...", 10, 0.10f);
-    }
-
     const ks::process::ProcessEnumStrategy strategy = toStrategy(strategyIndex);
     std::vector<ks::process::ProcessRecord> latestProcessList = ks::process::EnumerateProcesses(
         strategy,
@@ -6775,11 +6752,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     // 可选阶段：向 R0 请求内核进程列表，并追加“仅内核可见”的记录。
     if (queryKernelProcessList)
     {
-        if (progressTaskPid > 0)
-        {
-            kPro.set(progressTaskPid, "正在请求内核进程列表...", 18, 0.18f);
-        }
-
         std::vector<KernelProcessSnapshotEntry> kernelProcessList;
         std::string kernelQueryDetailText;
         const bool queryKernelOk = enumerateProcessesByR0Driver(&kernelProcessList, &kernelQueryDetailText);
@@ -6854,11 +6826,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     }
 
     refreshResult.enumeratedCount = latestProcessList.size();
-
-    if (progressTaskPid > 0)
-    {
-        kPro.set(progressTaskPid, "正在复用缓存并计算性能计数...", 25, 0.25f);
-    }
 
     // 静态详情预算控制：
     // - 预算用于限制“路径/命令行/用户/签名”等慢操作，避免首轮刷新过慢；
@@ -7069,11 +7036,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         }
     }
 
-    if (progressTaskPid > 0)
-    {
-        kPro.set(progressTaskPid, "正在并行补齐路径/签名/参数...", 40, 0.40f);
-    }
-
     if (!staticFillIndices.empty())
     {
         // 线程数量策略：
@@ -7150,11 +7112,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
             continue;
         }
         imagePathFillIndices.push_back(recordIndex);
-    }
-
-    if (progressTaskPid > 0)
-    {
-        kPro.set(progressTaskPid, "正在补齐进程图标路径...", 48, 0.48f);
     }
 
     if (!imagePathFillIndices.empty())
@@ -7254,11 +7211,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
             onDemandIndices.push_back(recordIndex);
         }
 
-        if (progressTaskPid > 0 && !onDemandIndices.empty())
-        {
-            kPro.set(progressTaskPid, "正在采集按需展示的进程详细列...", 49, 0.49f);
-        }
-
         if (!onDemandIndices.empty())
         {
             // 这些查询以 OpenProcess + 若干轻量信息类为主，并发度与图标路径补齐保持一致；
@@ -7308,10 +7260,8 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     }
 
     // 第三阶段：计算性能差值并写回缓存（该阶段仍串行，保证逻辑简单稳定）。
-    std::size_t processIndex = 0;
     for (std::size_t recordIndex = 0; recordIndex < latestProcessList.size(); ++recordIndex)
     {
-        ++processIndex;
         ks::process::ProcessRecord& processRecord = latestProcessList[recordIndex];
         const std::string& identityKey = identityKeys[recordIndex];
 
@@ -7398,15 +7348,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         }
         refreshResult.nextCache.emplace(identityKey, std::move(cacheEntry));
 
-        // 进度条阶段 3：按处理进度更新（频率做了抽样，避免过度抖动）。
-        if (progressTaskPid > 0 && (processIndex % 48 == 0 || processIndex == latestProcessList.size()))
-        {
-            const double ratio = latestProcessList.empty()
-                ? 1.0
-                : (static_cast<double>(processIndex) / static_cast<double>(latestProcessList.size()));
-            const float progressValue = static_cast<float>(0.50 + ratio * 0.35); // 50% -> 85%
-            kPro.set(progressTaskPid, "正在处理缓存与性能差值...", 55, progressValue);
-        }
     }
 
     // 再处理退出进程：上一轮存在、本轮不存在，则保留显示 1 轮灰底。
@@ -7445,11 +7386,6 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         {
             refreshResult.nextCounters.emplace(oldPair.first, oldCounterIt->second);
         }
-    }
-
-    if (progressTaskPid > 0)
-    {
-        kPro.set(progressTaskPid, "后台刷新结果构建完成，等待主线程应用...", 90, 0.90f);
     }
 
     refreshResult.workerElapsedMs = static_cast<std::uint64_t>(

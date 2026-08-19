@@ -11046,16 +11046,20 @@ void MainWindow::checkRecentCrashDumps()
         ? QStringLiteral("%1 MB").arg(sizeMegabytes, 0, 'f', 1)
         : QStringLiteral("%1 KB").arg(recent.fileSizeBytes / 1024.0, 0, 'f', 1);
 
-    QString bodyText = QStringLiteral(
-        "检测到系统在最近 24 小时内产生了新的崩溃转储：\n\n"
-        "文件：%1\n时间：%2\n大小：%3\n\n"
-        "是否现在解析它？")
+    QString bodyText = ks::i18n::text(
+        QStringLiteral("mainwindow.dump.found.body"),
+        QStringLiteral(
+            "检测到系统在最近 24 小时内产生了新的崩溃转储：\n\n"
+            "文件：%1\n时间：%2\n大小：%3\n\n"
+            "是否现在解析它？"))
         .arg(recent.filePath)
         .arg(recent.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")))
         .arg(sizeText);
     if (recent.totalRecentCount > 1)
     {
-        bodyText += QStringLiteral("\n\n（窗口内共有 %1 个转储，这里列出的是最新的一个。）")
+        bodyText += ks::i18n::text(
+            QStringLiteral("mainwindow.dump.found.multiple"),
+            QStringLiteral("\n\n（窗口内共有 %1 个转储，这里列出的是最新的一个。）"))
             .arg(recent.totalRecentCount);
     }
 
@@ -11064,7 +11068,7 @@ void MainWindow::checkRecentCrashDumps()
     messageBox.setWindowTitle(
         ks::i18n::text(QStringLiteral("mainwindow.dump.found.title"),
             QStringLiteral("发现新的崩溃转储")));
-    messageBox.setText(ks::i18n::sourceText(bodyText));
+    messageBox.setText(bodyText);
 
     QCheckBox* const disableCheckBox = new QCheckBox(
         ks::i18n::text(QStringLiteral("mainwindow.dump.found.disable"),

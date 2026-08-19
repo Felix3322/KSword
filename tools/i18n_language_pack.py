@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import sys
@@ -47,6 +48,14 @@ class ExtractedString:
     def stable_key(self) -> str:
         digest = hashlib.sha1(self.text.encode("utf-8")).hexdigest()[:16]
         return f"source.{digest}"
+
+
+@dataclass(frozen=True)
+class CppStringToken:
+    text: str
+    start: int
+    end: int
+    line: int
 
 
 def is_extractable_literal(text: str) -> bool:
@@ -132,7 +141,7 @@ def decode_cpp_string_body(body: str) -> str:
     return "".join(result)
 
 
-def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
+def scan_cpp_string_tokens(source_text: str) -> Iterable[CppStringToken]:
     index = 0
     line = 1
     length = len(source_text)
@@ -210,8 +219,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
             body = source_text[body_start:body_end]
             line += source_text.count("\n", token_start, body_end + len(terminator))
             index = body_end + len(terminator)
-            if is_extractable_literal(body):
-                yield body, token_line
+            yield CppStringToken(body, token_start, index, token_line)
             continue
 
         body_characters: list[str] = []
@@ -232,8 +240,139 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 line += 1
             index += 1
         decoded_text = decode_cpp_string_body("".join(body_characters))
+        yield CppStringToken(decoded_text, token_start, index, token_line)
+
+
+def extract_cpp_literals(
+    source_text: str,
+    tokens: Iterable[CppStringToken] | None = None,
+) -> Iterable[tuple[str, int]]:
+    for token in tokens if tokens is not None else scan_cpp_string_tokens(source_text):
+        decoded_text = token.text
         if is_extractable_literal(decoded_text):
-            yield decoded_text, token_line
+            yield decoded_text, token.line
+
+
+def cpp_literal_gap_is_ignorable(gap: str) -> bool:
+    """Return whether C++ concatenates string tokens separated by this gap."""
+    index = 0
+    while index < len(gap):
+        if gap[index].isspace():
+            index += 1
+            continue
+        if gap.startswith("//", index):
+            newline_index = gap.find("\n", index + 2)
+            if newline_index < 0:
+                return True
+            index = newline_index + 1
+            continue
+        if gap.startswith("/*", index):
+            close_index = gap.find("*/", index + 2)
+            if close_index < 0:
+                return False
+            index = close_index + 2
+            continue
+        return False
+    return True
+
+
+def extract_cpp_concatenated_literals(
+    source_text: str,
+    tokens: Iterable[CppStringToken] | None = None,
+) -> Iterable[tuple[str, int]]:
+    """Extract the complete value produced by adjacent C++ string tokens."""
+    tokens = list(tokens) if tokens is not None else list(scan_cpp_string_tokens(source_text))
+    index = 0
+    while index < len(tokens):
+        first = tokens[index]
+        combined = first.text
+        next_index = index + 1
+        while next_index < len(tokens):
+            previous = tokens[next_index - 1]
+            current = tokens[next_index]
+            if not cpp_literal_gap_is_ignorable(source_text[previous.end : current.start]):
+                break
+            combined += current.text
+            next_index += 1
+        if next_index > index + 1 and is_extractable_literal(combined):
+            yield combined, first.line
+        index = next_index
+
+
+SEMANTIC_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+$")
+SEMANTIC_CALL_RE = re.compile(
+    r"(?:\bks::i18n::(?:text|contextText)|\btranslated|\blocalizedStartupText|"
+    r"\bbindText|\bbindToolTip|\bbindStatusTip|\bbindWindowTitle|\bbindPlaceholder|"
+    r"\bbindSuffix|\bbindTab|\bbindTabToolTip|\bbindComboItem)\s*\("
+)
+
+
+def find_cpp_call_end(
+    source_text: str,
+    opening_parenthesis: int,
+    token_by_start: dict[int, CppStringToken] | None = None,
+) -> int:
+    """Find a call's matching parenthesis while ignoring strings and comments."""
+    if token_by_start is None:
+        token_by_start = {token.start: token for token in scan_cpp_string_tokens(source_text)}
+    index = opening_parenthesis
+    depth = 0
+    while index < len(source_text):
+        token = token_by_start.get(index)
+        if token is not None:
+            index = token.end
+            continue
+        if source_text.startswith("//", index):
+            newline_index = source_text.find("\n", index + 2)
+            if newline_index < 0:
+                return len(source_text)
+            index = newline_index + 1
+            continue
+        if source_text.startswith("/*", index):
+            close_index = source_text.find("*/", index + 2)
+            if close_index < 0:
+                return len(source_text)
+            index = close_index + 2
+            continue
+        if source_text[index] == "'":
+            index += 1
+            while index < len(source_text):
+                if source_text[index] == "\\":
+                    index += 2
+                elif source_text[index] == "'":
+                    index += 1
+                    break
+                else:
+                    index += 1
+            continue
+        if source_text[index] == "(":
+            depth += 1
+        elif source_text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return len(source_text)
+
+
+def extract_semantic_key_references(
+    source_text: str,
+    tokens: Iterable[CppStringToken] | None = None,
+) -> Iterable[tuple[str, int]]:
+    """Extract the first dotted string argument from known i18n entry points."""
+    all_tokens = list(tokens) if tokens is not None else list(scan_cpp_string_tokens(source_text))
+    token_by_start = {token.start: token for token in all_tokens}
+    for call_match in SEMANTIC_CALL_RE.finditer(source_text):
+        opening_parenthesis = call_match.end() - 1
+        call_end = find_cpp_call_end(source_text, opening_parenthesis, token_by_start)
+        for token in all_tokens:
+            if token.start <= opening_parenthesis:
+                continue
+            if token.start >= call_end:
+                break
+            if SEMANTIC_KEY_RE.fullmatch(token.text):
+                yield token.text, token.line
+                break
 
 
 def extract_ui_strings(source_text: str) -> Iterable[tuple[str, int]]:
@@ -250,7 +389,10 @@ def extract_ui_strings(source_text: str) -> Iterable[tuple[str, int]]:
             yield text, source_text.count("\n", 0, match.start()) + 1
 
 
-def extract_source_strings(source_root: Path) -> dict[str, ExtractedString]:
+def extract_source_strings(
+    source_root: Path,
+    semantic_references_out: dict[str, list[Occurrence]] | None = None,
+) -> dict[str, ExtractedString]:
     extracted: dict[str, ExtractedString] = {}
     for source_path in sorted(source_root.rglob("*")):
         relative_parts = source_path.relative_to(source_root).parts[:-1]
@@ -262,11 +404,15 @@ def extract_source_strings(source_root: Path) -> dict[str, ExtractedString]:
             source_text = source_path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             source_text = source_path.read_text(encoding="gb18030")
-        iterator = (
-            extract_ui_strings(source_text)
-            if source_path.suffix.lower() == ".ui"
-            else extract_cpp_literals(source_text)
-        )
+        cpp_tokens: list[CppStringToken] = []
+        if source_path.suffix.lower() == ".ui":
+            iterator = extract_ui_strings(source_text)
+        else:
+            cpp_tokens = list(scan_cpp_string_tokens(source_text))
+            iterator = itertools.chain(
+                extract_cpp_literals(source_text, cpp_tokens),
+                extract_cpp_concatenated_literals(source_text, cpp_tokens),
+            )
         source_lines = source_text.splitlines()
         relative_path = source_path.relative_to(source_root).as_posix()
         for text, line in iterator:
@@ -275,7 +421,28 @@ def extract_source_strings(source_root: Path) -> dict[str, ExtractedString]:
                 continue
             entry = extracted.setdefault(text, ExtractedString(text=text))
             entry.occurrences.append(Occurrence(relative_path, line))
+        if semantic_references_out is not None and cpp_tokens:
+            for key, line in extract_semantic_key_references(source_text, cpp_tokens):
+                semantic_references_out.setdefault(key, []).append(Occurrence(relative_path, line))
     return extracted
+
+
+def extract_semantic_references(source_root: Path) -> dict[str, list[Occurrence]]:
+    references: dict[str, list[Occurrence]] = {}
+    for source_path in sorted(source_root.rglob("*")):
+        relative_parts = source_path.relative_to(source_root).parts[:-1]
+        if any(part.lower() in SKIPPED_SOURCE_DIRS for part in relative_parts):
+            continue
+        if not source_path.is_file() or source_path.suffix.lower() not in SOURCE_SUFFIXES - {".ui"}:
+            continue
+        try:
+            source_text = source_path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            source_text = source_path.read_text(encoding="gb18030")
+        relative_path = source_path.relative_to(source_root).as_posix()
+        for key, line in extract_semantic_key_references(source_text):
+            references.setdefault(key, []).append(Occurrence(relative_path, line))
+    return references
 
 
 def load_pack(path: Path) -> dict:
@@ -298,7 +465,7 @@ def allows_han_in_english_source(source_text: str) -> bool:
     return (
         source_text
         == "Mapleleaf,存钱买油条（云舟API）,Extrella_Explorer,NtKrnl64,一花一树叶,hzh"
-        or source_text.lstrip().startswith("$verdict = if($lower -match 'audit|审计|")
+        or "$verdict = if($lower -match 'audit|审计|" in source_text
     )
 
 
@@ -322,6 +489,7 @@ def audit(
     extracted: dict[str, ExtractedString],
     zh_pack: dict,
     en_pack: dict,
+    semantic_references: dict[str, list[Occurrence]] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     zh_semantic = zh_pack.get("translations", {})
@@ -353,6 +521,18 @@ def audit(
                 errors.append(f"context newline mismatch: {context_key!r}")
             if HAN_RE.search(en_value):
                 errors.append(f"en-US context translation still contains Han text: {context_key!r}")
+
+    for referenced_key, occurrences in sorted((semantic_references or {}).items()):
+        location = occurrences[0]
+        location_text = f"{location.path}:{location.line}"
+        if referenced_key not in zh_semantic and referenced_key not in zh_context:
+            errors.append(
+                f"missing zh-CN referenced semantic translation: {referenced_key!r} ({location_text})"
+            )
+        if referenced_key not in en_semantic and referenced_key not in en_context:
+            errors.append(
+                f"missing en-US referenced semantic translation: {referenced_key!r} ({location_text})"
+            )
 
     # Runtime UI translation uses source_translations only as a controlled
     # fallback for otherwise-unbound widget properties and model headers. Every
@@ -413,7 +593,8 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> int:
     arguments = parse_arguments()
-    extracted = extract_source_strings(arguments.source_root)
+    semantic_references: dict[str, list[Occurrence]] = {}
+    extracted = extract_source_strings(arguments.source_root, semantic_references)
     zh_pack = load_pack(arguments.zh_pack)
     en_pack = load_pack(arguments.en_pack)
     if arguments.report is not None:
@@ -441,7 +622,7 @@ def main() -> int:
         )
         return 0
 
-    errors = audit(extracted, zh_pack, en_pack)
+    errors = audit(extracted, zh_pack, en_pack, semantic_references)
     if errors:
         print(f"i18n audit failed with {len(errors)} issue(s):", file=sys.stderr)
         for error in errors[:500]:

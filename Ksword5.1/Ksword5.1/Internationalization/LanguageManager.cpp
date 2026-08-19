@@ -1230,7 +1230,11 @@ QString ks::i18n::LanguageManager::resolveSourceText(
                     translatedText.clear();
                     break;
                 }
-                translatedText += sourceMatch.captured(captureGroup);
+                // Placeholder values can themselves be stable UI phrases (for
+                // example a translated status template receiving "安全模式").
+                // Resolve each captured value independently so an English outer
+                // template cannot retain a nested Chinese enum/status string.
+                translatedText += sourceText(sourceMatch.captured(captureGroup));
                 previousEnd = placeholderMatch.capturedEnd();
             }
             if (!translatedText.isNull())
