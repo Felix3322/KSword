@@ -11,6 +11,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/UI_All.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../ksword/log/log.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -31,6 +32,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QResizeEvent>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 #include <TlHelp32.h>
@@ -321,10 +323,16 @@ void FileMappedProcessWindow::initializeUi()
         targetTextList.push_back(QDir::toNativeSeparators(pathText));
     }
     m_targetLabel = new QLabel(QStringLiteral("目标：%1").arg(targetTextList.join(QStringLiteral(" | "))), this);
+    m_targetLabel->setMinimumWidth(0);
+    m_targetLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_targetLabel->setToolTip(m_targetLabel->text());
     m_targetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_targetLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextPrimaryHex()));
 
     m_statusLabel = new QLabel(QStringLiteral("● 等待扫描"), this);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
     m_resultTable = new QTreeWidget(this);
@@ -567,7 +575,14 @@ void FileMappedProcessWindow::applyRefreshResult(
         .arg(m_rows.size());
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText);
+        statusText += QStringLiteral(" | 存在诊断；详情已写入日志。");
+        kLogEvent diagnosticEvent;
+        warn << diagnosticEvent
+            << "[FileMappedProcessWindow] scan completed with diagnostics, targetCount="
+            << m_targetPaths.size()
+            << ", rowCount=" << m_rows.size()
+            << ", detail=" << refreshResult.diagnosticText.toStdString()
+            << eol;
     }
     m_statusLabel->setText(statusText);
     m_statusLabel->setStyleSheet(

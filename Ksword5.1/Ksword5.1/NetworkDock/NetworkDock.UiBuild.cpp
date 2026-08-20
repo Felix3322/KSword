@@ -163,7 +163,8 @@ void NetworkDock::initializeTrafficMonitorTab()
 
     m_monitorFilterStateLabel = new QLabel(QStringLiteral("当前过滤：无"), m_monitorFilterPanel);
     m_monitorFilterStateLabel->setWordWrap(true);
-    m_monitorFilterStateLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_monitorFilterStateLabel->setMinimumWidth(0);
+    m_monitorFilterStateLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_monitorFilterPanelLayout->addWidget(m_monitorFilterStateLabel);
 
     m_trafficMonitorLayout->addWidget(m_monitorFilterPanel);
@@ -346,7 +347,8 @@ void NetworkDock::initializeConnectionManageTab()
 
     m_connectionStatusLabel = new QLabel(QStringLiteral("状态：等待刷新"), m_connectionManagePage);
     m_connectionStatusLabel->setWordWrap(true);
-    m_connectionStatusLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_connectionStatusLabel->setMinimumWidth(0);
+    m_connectionStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     m_connectionControlLayout->addWidget(m_refreshConnectionButton);
     m_connectionControlLayout->addWidget(m_autoRefreshConnectionButton);

@@ -3444,7 +3444,15 @@ void ProcessDetailWindow::applyThreadInspectResult(const ThreadInspectRefreshRes
         .arg(refreshResult.rows.size());
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QString(" | %1").arg(refreshResult.diagnosticText);
+        statusText += QStringLiteral(
+            " | 存在诊断；详情已写入日志。");
+        kLogEvent diagnosticEvent;
+        warn << diagnosticEvent
+            << "[ProcessDetailWindow] thread inspection completed with diagnostics, rowCount="
+            << refreshResult.rows.size()
+            << ", diagnostic="
+            << refreshResult.diagnosticText.toStdString()
+            << eol;
     }
     updateThreadInspectStatusLabel(statusText, false);
     kPro.set(m_threadInspectRefreshProgressPid, "线程细节刷新完成", 0, 100.0f);
@@ -4185,7 +4193,7 @@ void ProcessDetailWindow::refreshTokenSwitchStates()
 
     // 最终状态栏：
     // - 全部成功显示绿色；
-    // - 有失败项显示橙色并附失败清单。
+    // - 有失败项显示橙色摘要，完整失败清单仅写入日志。
     if (failItemList.isEmpty())
     {
         setStatusLabel(
@@ -4200,9 +4208,9 @@ void ProcessDetailWindow::refreshTokenSwitchStates()
     else
     {
         setStatusLabel(
-            QStringLiteral("● 刷新完成：成功%1，失败项=%2")
+            QStringLiteral("● 刷新完成：成功%1，失败%2；详情已写入日志。")
             .arg(successCount)
-            .arg(failItemList.join(QStringLiteral(", "))),
+            .arg(failItemList.size()),
             statusWarningColor(),
             700);
         warn << actionEvent
@@ -4449,9 +4457,9 @@ void ProcessDetailWindow::applyTokenSwitchStates()
     else
     {
         setStatusLabel(
-            QStringLiteral("● 应用完成：成功%1，失败项=%2")
+            QStringLiteral("● 应用完成：成功%1，失败%2；详情已写入日志。")
             .arg(successCount)
-            .arg(failItemList.join(QStringLiteral(", "))),
+            .arg(failItemList.size()),
             statusWarningColor(),
             700);
         warn << actionEvent
@@ -5148,7 +5156,8 @@ void ProcessDetailWindow::applyKernelCallbackRefreshResult(
         QColor statusColor = suspiciousCount > 0U ? statusWarningColor() : statusIdleColor();
         if (!refreshResult.diagnosticText.trimmed().isEmpty())
         {
-            statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText);
+            statusText += QStringLiteral(
+                " | 存在诊断；详情已写入日志。");
             statusColor = m_kernelCallbackRows.empty() ? statusErrorColor() : statusWarningColor();
         }
         m_kernelCallbackStatusLabel->setText(statusText);
@@ -5876,7 +5885,8 @@ void ProcessDetailWindow::applyPebRefreshResult(const TextRefreshResult& refresh
         QString statusStyle = buildStateLabelStyle(statusIdleColor(), 600);
         if (!refreshResult.diagnosticText.trimmed().isEmpty())
         {
-            statusText += QString(" | %1").arg(refreshResult.diagnosticText);
+            statusText += QStringLiteral(
+                " | 存在诊断；详情已写入日志。");
             statusStyle = buildStateLabelStyle(statusWarningColor(), 700);
         }
         m_pebStatusLabel->setText(statusText);
@@ -6702,8 +6712,16 @@ void ProcessDetailWindow::applySectionRefreshResult(const SectionRefreshResult& 
         QString statusStyle = buildStateLabelStyle(statusIdleColor(), 600);
         if (!refreshResult.diagnosticText.trimmed().isEmpty())
         {
-            statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText);
+            statusText += QStringLiteral(
+                " | 存在诊断；详情已写入日志。");
             statusStyle = buildStateLabelStyle(statusWarningColor(), 700);
+            kLogEvent diagnosticEvent;
+            warn << diagnosticEvent
+                << "[ProcessDetailWindow] section refresh completed with diagnostics, pid="
+                << m_baseRecord.pid
+                << ", diagnostic="
+                << refreshResult.diagnosticText.toStdString()
+                << eol;
         }
         m_sectionInfoStatusLabel->setText(statusText);
         m_sectionInfoStatusLabel->setStyleSheet(statusStyle);

@@ -11,6 +11,7 @@
 #include "../theme.h"
 #include "../UI/UI_All.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../ksword/log/log.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -27,6 +28,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QResizeEvent>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 #ifndef NOMINMAX
@@ -506,6 +508,8 @@ void ThreadStackWindow::initializeUi()
     m_copyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_targetLabel = new QLabel(this);
+    m_targetLabel->setMinimumWidth(0);
+    m_targetLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_targetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_targetLabel->setText(QStringLiteral("PID=%1 TID=%2 进程=%3 Start=%4 Win32Start=%5")
         .arg(m_target.processId)
@@ -513,6 +517,7 @@ void ThreadStackWindow::initializeUi()
         .arg(m_target.processName.trimmed().isEmpty() ? QStringLiteral("Unknown") : m_target.processName)
         .arg(formatHex(m_target.startAddress, true))
         .arg(formatHex(m_target.win32StartAddress, true)));
+    m_targetLabel->setToolTip(m_targetLabel->text());
     m_targetLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextPrimaryHex()));
 
     m_toolbarLayout->addWidget(m_refreshButton);
@@ -524,6 +529,9 @@ void ThreadStackWindow::initializeUi()
     m_boundaryLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
     m_statusLabel = new QLabel(QStringLiteral("● 等待捕获"), this);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
     m_frameTable = new QTreeWidget(this);
@@ -664,7 +672,15 @@ void ThreadStackWindow::applyCaptureResult(const std::uint64_t ticket, const Cap
         .arg(m_frames.size());
     if (!result.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(result.diagnosticText);
+        statusText += QStringLiteral(" | 存在诊断；详情已写入日志。");
+        kLogEvent diagnosticEvent;
+        warn << diagnosticEvent
+            << "[ThreadStackWindow] capture completed with diagnostics, pid="
+            << m_target.processId
+            << ", tid=" << m_target.threadId
+            << ", frameCount=" << m_frames.size()
+            << ", detail=" << result.diagnosticText.toStdString()
+            << eol;
     }
     m_statusLabel->setText(statusText);
     m_statusLabel->setStyleSheet(

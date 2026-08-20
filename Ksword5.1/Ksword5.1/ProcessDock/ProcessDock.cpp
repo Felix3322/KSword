@@ -10716,9 +10716,6 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         processContextText("process.menu.affinity", QStringLiteral("CPU 亲和性")));
     affinitySubMenu->setStyleSheet(buildThreadContextMenuStyle());
     affinitySubMenu->setToolTipsVisible(true);
-    affinitySubMenu->setToolTip(processContextText(
-        "process.menu.affinity.tooltip",
-        QStringLiteral("按 Gx:Ly 切换跨 processor group CPU Set；蓝色按钮表示已启用。")));
 
     struct ContextAffinityTargetState
     {
@@ -10792,6 +10789,18 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     }
     ks::process::normalizeLogicalProcessorCoordinates(
         &commonProcessorCoordinates);
+    const bool includeProcessorGroup =
+        ks::process::logicalProcessorGroupCount(
+            commonProcessorCoordinates) > 1U;
+    affinitySubMenu->setToolTip(processContextText(
+        includeProcessorGroup
+            ? "process.menu.affinity.tooltip.multigroup"
+            : "process.menu.affinity.tooltip",
+        includeProcessorGroup
+            ? QStringLiteral(
+                "检测到多个 Windows Processor Group；按 Gx:Ly 切换 CPU Set，蓝色按钮表示已启用。")
+            : QStringLiteral(
+                "按 Lx 切换 CPU Set，蓝色按钮表示已启用。")));
     if (hasHardConstrainedProcessor)
     {
         affinitySubMenu->setToolTip(
@@ -10819,10 +10828,16 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         affinitySubMenu->setToolTip(
             processContextText(
                 "process.menu.affinity.unavailable",
-                QStringLiteral("无法读取全部选中进程的 CPU 亲和性。")) +
-            (affinityReadDetailText.empty()
-                ? QString()
-                : QStringLiteral("\n") + QString::fromStdString(affinityReadDetailText)));
+                QStringLiteral("无法读取全部选中进程的 CPU 亲和性。")));
+        kLogEvent affinityReadEvent;
+        warn << affinityReadEvent
+            << "[ProcessDock] context CPU affinity query failed, targetCount="
+            << contextActionTargets.size()
+            << ", detail="
+            << (affinityReadDetailText.empty()
+                ? "none"
+                : affinityReadDetailText)
+            << eol;
     }
     else
     {
@@ -10929,9 +10944,10 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                     {
                         return processor.coordinate == coordinate;
                     });
-                const QString identityText = QStringLiteral("G%1:L%2")
-                    .arg(coordinate.group)
-                    .arg(coordinate.logicalIndex);
+                const QString identityText = QString::fromStdString(
+                    ks::process::processorDisplayIdentityText(
+                        coordinate,
+                        includeProcessorGroup));
                 const QString topologyText =
                     topologyIt !=
                         affinityTargetStates->front().snapshot.processors.end()
@@ -11116,16 +11132,16 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                         }
                         if (!allUpdated)
                         {
-                            const QString failureText =
-                                failedProcessDetails.join(
-                                    QStringLiteral("\n"));
+                            const QString failureText = processContextText(
+                                "process.menu.affinity.update_failed",
+                                QStringLiteral(
+                                    "CPU 亲和性更新未完全生效；详细信息已写入日志。"));
                             affinitySubMenu->setToolTip(failureText);
                             QMessageBox::warning(
                                 affinitySubMenu,
                                 processContextText(
-                                    "process.menu.affinity.unavailable",
-                                    QStringLiteral(
-                                        "CPU 亲和性更新未完全生效")),
+                                    "process.menu.affinity",
+                                    QStringLiteral("CPU 亲和性")),
                                 failureText);
                         }
                         updateAffinityCoreButtons();
@@ -11141,6 +11157,12 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
                             << affinityTargetStates->size()
                             << ", allUpdated="
                             << (allUpdated ? "true" : "false")
+                            << ", failed="
+                            << (failedProcessDetails.isEmpty()
+                                ? "none"
+                                : failedProcessDetails
+                                    .join(QStringLiteral(" | "))
+                                    .toStdString())
                             << eol;
                     });
             }

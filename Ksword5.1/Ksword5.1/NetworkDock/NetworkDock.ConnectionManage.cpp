@@ -257,7 +257,14 @@ void NetworkDock::applyConnectionSnapshot(
             std::sort(pidTextList.begin(), pidTextList.end(), [](const QString& left, const QString& right) {
                 return left.toULongLong() < right.toULongLong();
             });
-            filterText = QStringLiteral("，PID筛选=%1").arg(pidTextList.join(','));
+            filterText = QStringLiteral("，PID筛选=%1 个进程")
+                .arg(m_connectionPidFilterSet.size());
+            m_connectionStatusLabel->setToolTip(
+                QStringLiteral("PID：%1").arg(pidTextList.join(',')));
+        }
+        else
+        {
+            m_connectionStatusLabel->setToolTip(QString());
         }
         m_connectionStatusLabel->setText(
             QStringLiteral("状态：TCP=%1 条, UDP=%2 条%3, 刷新于 %4")

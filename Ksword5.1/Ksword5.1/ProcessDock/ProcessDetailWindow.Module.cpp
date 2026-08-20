@@ -159,7 +159,8 @@ void ProcessDetailWindow::applyModuleRefreshResult(const ModuleRefreshResult& re
         .arg(refreshResult.moduleSnapshot.threads.size());
     if (!diagnosticText.trimmed().isEmpty())
     {
-        statusText += QString(" | %1").arg(diagnosticText);
+        statusText += QStringLiteral(
+            " | 存在诊断；详情已写入日志。");
     }
     updateModuleStatusLabel(statusText, false);
     if (refreshResult.moduleSnapshot.modules.empty())

@@ -5,6 +5,7 @@
 // 表格交互与可视化表格基类：提供数值排序单元格、全局操作条与冻结行列能力。
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../ksword/log/log.h"
 
 #include <QAbstractItemView>
 #include <QCoreApplication>
@@ -23,6 +24,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
@@ -791,6 +793,9 @@ void SystemMemoryAuditPage::initializeUi()
     rootLayout->addWidget(detailSplitter, 1);
 
     m_statusLabel = new QLabel(this);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     rootLayout->addWidget(m_statusLabel);
 
@@ -1081,6 +1086,16 @@ void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot, const std::uint64_t
     m_previousBigPoolBytes = std::move(currentBigPoolBytes);
 
     m_snapshot = std::move(snapshot);
+    if (!m_snapshot.errors.isEmpty())
+    {
+        kLogEvent warningEvent;
+        warn << warningEvent
+            << "[SystemMemoryAuditPage] snapshot completed with warnings, warningCount="
+            << m_snapshot.errors.size()
+            << ", details="
+            << m_snapshot.errors.join(QStringLiteral("; ")).toStdString()
+            << eol;
+    }
     m_hasSnapshot = true;
     updateSummaryTiles();
     m_overviewDirty = true;
@@ -1142,6 +1157,16 @@ void SystemMemoryAuditPage::applyUserResidencyScan(UserResidencyScan scan, const
     }
 
     m_userResidencyScan = std::move(scan);
+    if (!m_userResidencyScan.errors.isEmpty())
+    {
+        kLogEvent warningEvent;
+        warn << warningEvent
+            << "[SystemMemoryAuditPage] user residency scan completed with warnings, warningCount="
+            << m_userResidencyScan.errors.size()
+            << ", details="
+            << m_userResidencyScan.errors.join(QStringLiteral("; ")).toStdString()
+            << eol;
+    }
     m_userResidencyScanInProgress.store(false);
     m_userResidencyScanButton->setEnabled(true);
     m_userResidencyScanButton->setText(localized("Deep scan user-mode residency"));
@@ -1625,11 +1650,13 @@ void SystemMemoryAuditPage::updateStatus()
     const bool hasWarnings = !m_snapshot.errors.isEmpty() || !m_userResidencyScan.errors.isEmpty();
     if (!m_snapshot.errors.isEmpty())
     {
-        text += localized(" | partial evidence: %1").arg(m_snapshot.errors.join(QStringLiteral("; ")));
+        text += localized(" | partial evidence warnings: %1 (details in log)")
+            .arg(m_snapshot.errors.size());
     }
     if (!m_userResidencyScan.errors.isEmpty())
     {
-        text += localized(" | user-scan notes: %1").arg(m_userResidencyScan.errors.join(QStringLiteral("; ")));
+        text += localized(" | user-scan warnings: %1 (details in log)")
+            .arg(m_userResidencyScan.errors.size());
     }
     m_statusLabel->setStyleSheet(hasWarnings
         ? QStringLiteral("color: %1;").arg(KswordTheme::WarningHex())

@@ -17,6 +17,7 @@
 #include "../ksword/network/network.h"
 #include "../ksword/network/network_connection_tools.h"
 #include "../ksword/process/process.h"
+#include "../ksword/log/log.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 
 #include <QDateTime>
@@ -41,6 +42,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -811,7 +813,12 @@ void NetworkAuditPage::focusProcessIds(const QSet<quint32>& processIds)
         m_crossFilterLabel->setText(
             m_processFilterSet.isEmpty()
                 ? QStringLiteral("PID 筛选：无")
-                : QStringLiteral("PID 筛选：%1")
+                : QStringLiteral("PID 筛选：%1 个进程")
+                    .arg(m_processFilterSet.size()));
+        m_crossFilterLabel->setToolTip(
+            m_processFilterSet.isEmpty()
+                ? QString()
+                : QStringLiteral("PID：%1")
                     .arg(processIdTextList.join(',')));
     }
     updateCrossViewActionState();
@@ -851,7 +858,9 @@ void NetworkAuditPage::initializeUi()
     m_headerLayout->addWidget(titleLabel);
 
     m_statusLabel = new QLabel(QStringLiteral("状态：等待刷新"), this);
-    m_statusLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_headerLayout->addWidget(m_statusLabel, 1);
 
     m_refreshButton = new QPushButton(QStringLiteral("刷新"), this);
@@ -895,7 +904,8 @@ void NetworkAuditPage::initializeUi()
     m_crossControlLayout->addWidget(m_clearProcessFilterButton);
 
     m_crossFilterLabel = new QLabel(QStringLiteral("PID 筛选：无"), m_crossViewPage);
-    m_crossFilterLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_crossFilterLabel->setMinimumWidth(0);
+    m_crossFilterLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_crossControlLayout->addWidget(m_crossFilterLabel, 1);
     crossLayout->addLayout(m_crossControlLayout);
 
@@ -1171,9 +1181,18 @@ void NetworkAuditPage::refreshAllSnapshotsAsync(const bool forceRefresh)
             {
                 page->applySnapshot(snapshot);
             }
-            else if (page->m_statusLabel != nullptr)
+            else
             {
-                page->m_statusLabel->setText(failureText);
+                kLogEvent failureEvent;
+                warn << failureEvent
+                    << "[NetworkAuditPage] refresh failed, detail="
+                    << failureText.toStdString()
+                    << eol;
+                if (page->m_statusLabel != nullptr)
+                {
+                    page->m_statusLabel->setText(QStringLiteral(
+                        "状态：刷新失败；详情已写入日志。"));
+                }
             }
             if (page->m_refreshButton != nullptr)
             {
@@ -1249,9 +1268,18 @@ void NetworkAuditPage::refreshCrossViewAsync()
                     }
                     page->refreshCrossViewTable(snapshot);
                 }
-                else if (page->m_statusLabel != nullptr)
+                else
                 {
-                    page->m_statusLabel->setText(failureText);
+                    kLogEvent failureEvent;
+                    warn << failureEvent
+                        << "[NetworkAuditPage] cross-view refresh failed, detail="
+                        << failureText.toStdString()
+                        << eol;
+                    if (page->m_statusLabel != nullptr)
+                    {
+                        page->m_statusLabel->setText(QStringLiteral(
+                            "状态：刷新失败；详情已写入日志。"));
+                    }
                 }
                 page->m_refreshInProgress.store(false);
             },

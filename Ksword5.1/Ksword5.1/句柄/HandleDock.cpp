@@ -2,6 +2,7 @@
 
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../ksword/log/log.h"
 #include "../theme.h"
 
 #include <QAbstractItemModel>
@@ -28,6 +29,7 @@
 #include <QSet>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStringList>
 #include <QTabWidget>
@@ -607,6 +609,9 @@ void HandleDock::initializeHandleListTab()
     m_toolbarLayout->addWidget(m_nameBudgetSpinBox);
 
     m_statusLabel = new QLabel(QStringLiteral("● 等待首次刷新"), m_handleListPage);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
     m_tableWidget = new QTreeWidget(m_handleListPage);
@@ -627,6 +632,11 @@ void HandleDock::initializeObjectHeaderTab()
     m_objectHeaderLayout->setSpacing(6);
 
     m_handleDetailStatusLabel = new QLabel(QStringLiteral("● 请选择一个句柄查看对象头证据"), m_objectHeaderPage);
+    m_handleDetailStatusLabel->setWordWrap(true);
+    m_handleDetailStatusLabel->setMinimumWidth(0);
+    m_handleDetailStatusLabel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
     m_handleDetailStatusLabel->setStyleSheet(
         QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     m_handleDetailTable = new QTreeWidget(m_objectHeaderPage);
@@ -1292,7 +1302,13 @@ void HandleDock::applyObjectTypeRefreshResult(
         .arg(refreshResult.rows.size());
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText);
+        statusText += QStringLiteral(" | 存在诊断；详情已写入日志。");
+        kLogEvent diagnosticEvent;
+        warn << diagnosticEvent
+            << "[HandleDock] object type refresh completed with diagnostics, rowCount="
+            << refreshResult.rows.size()
+            << ", detail=" << refreshResult.diagnosticText.toStdString()
+            << eol;
     }
     updateObjectTypeStatusLabel(statusText, false);
 

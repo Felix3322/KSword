@@ -2416,7 +2416,8 @@ void ProcessDetailWindow::applyHotkeyRefreshResult(const HotkeyInspectRefreshRes
         .arg(static_cast<qulonglong>(refreshResult.rows.size()));
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText.trimmed());
+        statusText += QStringLiteral(
+            " | 存在诊断；详情已写入日志。");
     }
     updateHotkeyStatusLabel(statusText, false);
 
@@ -2767,7 +2768,8 @@ void ProcessDetailWindow::applyKeyboardRefreshResult(const KeyboardInspectRefres
         .arg(static_cast<qulonglong>(refreshResult.hookRows.size()));
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText.trimmed());
+        statusText += QStringLiteral(
+            " | 存在诊断；详情已写入日志。");
     }
     updateKeyboardStatusLabel(statusText, false);
     if (m_hotkeyStatusLabel != nullptr)

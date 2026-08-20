@@ -347,10 +347,19 @@ void ProcessDetailWindow::applyActionPrivilegeRefreshResult(
     }
     if (!refreshResult.queryOk)
     {
+        kLogEvent queryEvent;
+        warn << queryEvent
+            << "[ProcessDetailWindow] token privilege query failed, pid="
+            << m_baseRecord.pid
+            << ", detail="
+            << (refreshResult.diagnosticText.isEmpty()
+                ? "none"
+                : refreshResult.diagnosticText.toStdString())
+            << eol;
         m_actionPrivilegeStatusLabel->setText(
             ks::i18n::text(
                 QStringLiteral("process.detail.privileges.status.unavailable"),
-                QString()).arg(refreshResult.diagnosticText));
+                QString()));
         m_actionPrivilegeStatusLabel->setStyleSheet(
             buildStateLabelStyle(statusWarningColor(), 700));
         return;
@@ -626,8 +635,7 @@ void ProcessDetailWindow::executeApplyActionPrivileges(const bool useR0)
                             : QStringLiteral("process.detail.privileges.status.applied_r3"))
                         : QStringLiteral("process.detail.privileges.status.apply_failed"),
                     QString())
-                    .arg(taskResult.editCount)
-                    .arg(taskResult.failureDetails));
+                    .arg(taskResult.editCount));
             guard->m_actionPrivilegeStatusLabel->setStyleSheet(
                 buildStateLabelStyle(
                     taskResult.allSucceeded ? statusIdleColor() : statusWarningColor(),

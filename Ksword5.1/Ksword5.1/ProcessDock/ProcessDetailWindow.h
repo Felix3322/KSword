@@ -763,6 +763,7 @@ private:
     QPushButton* m_clearCriticalButton = nullptr; // 取消关键进程。
 
     QGroupBox* m_affinityActionGroup = nullptr; // CPU 亲和性操作区域。
+    QLabel* m_affinityDescriptionLabel = nullptr; // 根据实际 processor group 数量显示符号说明。
     QLabel* m_affinityStatusLabel = nullptr; // CPU 亲和性当前模式与操作结果。
     QCheckBox* m_affinityPersistenceCheckBox = nullptr; // 是否为当前完整可执行路径保存 CPU 亲和性规则。
     QPushButton* m_affinityRefreshButton = nullptr; // 重新读取亲和性。

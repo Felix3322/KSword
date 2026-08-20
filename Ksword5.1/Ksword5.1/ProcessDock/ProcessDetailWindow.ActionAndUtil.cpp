@@ -737,9 +737,17 @@ void ProcessDetailWindow::refreshActionAffinityControls()
 
     if (!queryOk)
     {
+        kLogEvent queryEvent;
+        warn << queryEvent
+            << "[ProcessDetailWindow] CPU affinity query failed, pid="
+            << m_baseRecord.pid
+            << ", detail="
+            << (detailText.empty() ? "none" : detailText)
+            << eol;
         m_affinityStatusLabel->setText(
-            ks::i18n::text(QStringLiteral("process.detail.affinity.status.unavailable"), QString())
-                .arg(QString::fromStdString(detailText)));
+            ks::i18n::text(
+                QStringLiteral("process.detail.affinity.status.unavailable"),
+                QString()));
         m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
         return;
     }
@@ -873,8 +881,9 @@ void ProcessDetailWindow::applyActionAffinityRule(
         if (m_affinityStatusLabel != nullptr)
         {
             m_affinityStatusLabel->setText(
-                ks::i18n::text(QStringLiteral("process.detail.affinity.status.unavailable"), QString())
-                    .arg(QString::fromStdString(detailText)));
+                ks::i18n::text(
+                    QStringLiteral("process.detail.affinity.status.update_failed"),
+                    QString()));
             m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
         }
         updateActionAffinityCoreButtons();
@@ -905,10 +914,13 @@ void ProcessDetailWindow::applyActionAffinityRule(
     {
         m_affinityStatusLabel->setText(
             persistenceOk
-                ? ks::i18n::text(QStringLiteral("process.detail.affinity.status.updated"), QString())
-                    .arg(requestedProcessorTexts.join(QStringLiteral(", ")))
-                : ks::i18n::text(QStringLiteral("process.detail.affinity.persistence.save_failed"), QString())
-                    .arg(QString::fromStdString(persistenceDetailText)));
+                ? ks::i18n::text(
+                    QStringLiteral("process.detail.affinity.status.updated"),
+                    QString())
+                : ks::i18n::text(
+                    QStringLiteral(
+                        "process.detail.affinity.persistence.save_failed"),
+                    QString()));
         m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(
             persistenceOk ? statusIdleColor() : statusWarningColor(),
             persistenceOk ? 600 : 700));
@@ -944,10 +956,19 @@ void ProcessDetailWindow::refreshActionAffinityPersistenceControl()
         !m_baseRecord.imagePath.empty());
     m_affinityPersistenceCheckBox->setChecked(readOk && ruleFound);
     m_affinityPersistenceCheckBox->setToolTip(
-        ks::i18n::text(QStringLiteral("process.detail.affinity.persistence.tooltip"), QString()) +
-        (readOk || detailText.empty()
-            ? QString()
-            : QStringLiteral("\n") + QString::fromStdString(detailText)));
+        ks::i18n::text(
+            QStringLiteral("process.detail.affinity.persistence.tooltip"),
+            QString()));
+    if (!readOk)
+    {
+        kLogEvent persistenceReadEvent;
+        warn << persistenceReadEvent
+            << "[ProcessDetailWindow] CPU affinity persistence query failed, pid="
+            << m_baseRecord.pid
+            << ", detail="
+            << (detailText.empty() ? "none" : detailText)
+            << eol;
+    }
 }
 
 void ProcessDetailWindow::toggleActionAffinityCore(

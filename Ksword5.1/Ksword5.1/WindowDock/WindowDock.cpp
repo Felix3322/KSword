@@ -12,6 +12,7 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../ksword/process/process.h"
 #include "../ksword/profile/ProfileJsonLoader.h"
+#include "../ksword/log/log.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -48,6 +49,7 @@
 #include <QPoint>
 #include <QPointer>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QRect>
 #include <QScreen>
 #include <QShowEvent>
@@ -3061,6 +3063,9 @@ void WindowDock::initializeUi()
     headerLayout->addWidget(titleLabel, 0);
 
     m_statusLabel = new QLabel(QStringLiteral("正在准备窗口审计快照..."), m_toolBarWidget);
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_statusLabel->setStyleSheet(
         QStringLiteral("font-size:13px;color:%1;")
         .arg(KswordTheme::TextSecondaryHex()));
@@ -3637,9 +3642,15 @@ void WindowDock::requestAsyncRefresh()
                         QStringLiteral("<刷新异常>"),
                         failureText);
                     safeThis->applyAuditViews();
+                    kLogEvent failureEvent;
+                    warn << failureEvent
+                        << "[WindowDock] audit refresh failed, detail="
+                        << failureText.toStdString()
+                        << eol;
                     if (safeThis->m_statusLabel != nullptr)
                     {
-                        safeThis->m_statusLabel->setText(QStringLiteral("窗口审计刷新异常：%1").arg(failureText));
+                        safeThis->m_statusLabel->setText(QStringLiteral(
+                            "窗口审计刷新异常；详情已写入日志。"));
                     }
                     safeThis->m_refreshing.store(false);
                     };

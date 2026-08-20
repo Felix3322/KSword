@@ -906,6 +906,24 @@ void ProcessDetailWindow::rebuildActionAffinityCoreButtons()
         delete layoutItem;
     }
     m_affinityCoreButtons.clear();
+    const bool includeProcessorGroup =
+        m_actionAffinityReadable &&
+        ks::process::logicalProcessorGroupCount(
+            m_actionAffinitySnapshot.processors) > 1U;
+    if (m_affinityDescriptionLabel != nullptr)
+    {
+        QString descriptionText = ks::i18n::text(
+            QStringLiteral("process.detail.affinity.description"),
+            QString());
+        if (includeProcessorGroup)
+        {
+            descriptionText += QStringLiteral("\n") + ks::i18n::text(
+                QStringLiteral(
+                    "process.detail.affinity.description.multigroup"),
+                QString());
+        }
+        m_affinityDescriptionLabel->setText(descriptionText);
+    }
     if (!m_actionAffinityReadable)
     {
         return;
@@ -928,28 +946,32 @@ void ProcessDetailWindow::rebuildActionAffinityCoreButtons()
             }
             currentGroup = processor.coordinate.group;
             matrixColumn = 0;
-            QLabel* const groupLabel = new QLabel(
-                ks::i18n::text(
-                    QStringLiteral("process.detail.affinity.group"),
-                    QString())
-                    .arg(currentGroup),
-                m_affinityActionGroup);
-            groupLabel->setStyleSheet(
-                QStringLiteral("color:%1;font-weight:700;")
-                    .arg(KswordTheme::TextSecondaryHex()));
-            m_affinityMatrixLayout->addWidget(
-                groupLabel,
-                matrixRow++,
-                0,
-                1,
-                kAffinityMatrixColumnCount);
+            if (includeProcessorGroup)
+            {
+                QLabel* const groupLabel = new QLabel(
+                    ks::i18n::text(
+                        QStringLiteral("process.detail.affinity.group"),
+                        QString())
+                        .arg(currentGroup),
+                    m_affinityActionGroup);
+                groupLabel->setStyleSheet(
+                    QStringLiteral("color:%1;font-weight:700;")
+                        .arg(KswordTheme::TextSecondaryHex()));
+                m_affinityMatrixLayout->addWidget(
+                    groupLabel,
+                    matrixRow++,
+                    0,
+                    1,
+                    kAffinityMatrixColumnCount);
+            }
         }
 
         QToolButton* const coreButton =
             new QToolButton(m_affinityActionGroup);
-        const QString identityText = QStringLiteral("G%1:L%2")
-            .arg(processor.coordinate.group)
-            .arg(processor.coordinate.logicalIndex);
+        const QString identityText = QString::fromStdString(
+            ks::process::processorDisplayIdentityText(
+                processor.coordinate,
+                includeProcessorGroup));
         const QString topologyText =
             QString::fromStdString(processor.topologyLabel);
         coreButton->setText(
@@ -3649,7 +3671,7 @@ void ProcessDetailWindow::initializeActionTab()
     m_actionLayout->addWidget(controlGroup);
 
     // CPU 亲和性：
-    // - 按 processor group 分段，以 6 列矩阵展示稳定 Gx:Ly 身份；
+    // - 以 6 列矩阵展示稳定逻辑处理器身份；仅多组时显示 Gx 前缀和分组标题；
     // - 仅在“操作”页首次进入后读取实际 CPU Set，保持详情窗口首次打开的轻量路径；
     // - 每个按钮独立切换，蓝色主题背景代表该逻辑处理器已启用。
     m_affinityActionGroup = new QGroupBox(
@@ -3685,18 +3707,25 @@ void ProcessDetailWindow::initializeActionTab()
             });
     };
 
-    QLabel* affinityDescriptionLabel = new QLabel(
+    m_affinityDescriptionLabel = new QLabel(
         ks::i18n::text(QStringLiteral("process.detail.affinity.description"), QString()),
         m_affinityActionGroup);
-    affinityDescriptionLabel->setWordWrap(true);
-    affinityDescriptionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    affinityDescriptionLabel->setStyleSheet(
+    m_affinityDescriptionLabel->setWordWrap(true);
+    m_affinityDescriptionLabel->setMinimumWidth(0);
+    m_affinityDescriptionLabel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    m_affinityDescriptionLabel->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    m_affinityDescriptionLabel->setStyleSheet(
         QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    installCopyMenu(affinityDescriptionLabel, [affinityDescriptionLabel]()
+    installCopyMenu(m_affinityDescriptionLabel, [this]()
     {
-        return affinityDescriptionLabel->text();
+        return m_affinityDescriptionLabel != nullptr
+            ? m_affinityDescriptionLabel->text()
+            : QString();
     });
-    affinityGroupLayout->addWidget(affinityDescriptionLabel);
+    affinityGroupLayout->addWidget(m_affinityDescriptionLabel);
 
     m_affinityPersistenceCheckBox = new QCheckBox(
         ks::i18n::text(QStringLiteral("process.detail.affinity.persistence"), QString()),
@@ -3709,6 +3738,11 @@ void ProcessDetailWindow::initializeActionTab()
     affinityTopLayout->setContentsMargins(0, 0, 0, 0);
     affinityTopLayout->setSpacing(8);
     m_affinityStatusLabel = new QLabel(m_affinityActionGroup);
+    m_affinityStatusLabel->setWordWrap(true);
+    m_affinityStatusLabel->setMinimumWidth(0);
+    m_affinityStatusLabel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
     m_affinityStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusSecondaryColor(), 600));
     installCopyMenu(m_affinityStatusLabel, [this]()
@@ -3777,6 +3811,13 @@ void ProcessDetailWindow::initializeActionTab()
         {
             const QSignalBlocker signalBlocker(m_affinityPersistenceCheckBox);
             m_affinityPersistenceCheckBox->setChecked(!enabled);
+            kLogEvent persistenceEvent;
+            warn << persistenceEvent
+                << "[ProcessDetailWindow] CPU affinity persistence toggle failed, pid="
+                << m_baseRecord.pid
+                << ", enabled=" << (enabled ? "true" : "false")
+                << ", detail=" << detailText
+                << eol;
         }
         if (m_affinityStatusLabel != nullptr)
         {
@@ -3788,8 +3829,9 @@ void ProcessDetailWindow::initializeActionTab()
                             : QStringLiteral("process.detail.affinity.persistence.removed"),
                         QString())
                     : ks::i18n::text(
-                        QStringLiteral("process.detail.affinity.status.unavailable"),
-                        QString()).arg(QString::fromStdString(detailText)));
+                        QStringLiteral(
+                            "process.detail.affinity.persistence.update_failed"),
+                        QString()));
             m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(
                 persistenceOk ? statusIdleColor() : statusWarningColor(),
                 persistenceOk ? 600 : 700));
@@ -3828,6 +3870,11 @@ void ProcessDetailWindow::initializeActionTab()
     privilegeActionTopLayout->setContentsMargins(0, 0, 0, 0);
     privilegeActionTopLayout->setSpacing(8);
     m_actionPrivilegeStatusLabel = new QLabel(m_privilegeActionGroup);
+    m_actionPrivilegeStatusLabel->setWordWrap(true);
+    m_actionPrivilegeStatusLabel->setMinimumWidth(0);
+    m_actionPrivilegeStatusLabel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
     m_actionPrivilegeStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_actionPrivilegeStatusLabel->setStyleSheet(
         buildStateLabelStyle(statusSecondaryColor(), 600));
@@ -4369,6 +4416,11 @@ void ProcessDetailWindow::initializeTokenSwitchTab()
     m_refreshTokenAllInfoButton->setToolTip(QStringLiteral("刷新完整令牌信息（包含全部 TokenInformationClass 枚举）"));
     KswordTheme::ApplyStandardIconButtonMetrics(m_refreshTokenAllInfoButton);
     m_tokenSwitchStatusLabel = new QLabel(QStringLiteral("● 尚未刷新令牌开关"), tokenSwitchContent);
+    m_tokenSwitchStatusLabel->setWordWrap(true);
+    m_tokenSwitchStatusLabel->setMinimumWidth(0);
+    m_tokenSwitchStatusLabel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
     m_tokenSwitchStatusLabel->setStyleSheet(
         QStringLiteral("color:%1; font-weight:600;")
         .arg(KswordTheme::TextSecondaryHex()));

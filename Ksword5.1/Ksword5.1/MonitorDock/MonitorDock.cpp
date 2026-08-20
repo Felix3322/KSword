@@ -11018,20 +11018,29 @@ void MonitorDock::stopSelectedEtwSessions()
                 else
                 {
                     guardThis->m_etwSessionStatusLabel->setText(
-                        QStringLiteral("● 部分失败:%1").arg(failureTextList.join(QStringLiteral(" | "))));
+                        QStringLiteral(
+                            "● 已结束 %1 项，%2 项失败；详情已写入日志。")
+                            .arg(successCount)
+                            .arg(failureTextList.size()));
                     guardThis->m_etwSessionStatusLabel->setStyleSheet(buildStatusStyle(monitorWarningColorHex()));
                     kPro.set(guardThis->m_etwSessionRefreshProgressPid, "结束ETW会话部分失败", 0, 100.0f);
                 }
             }
 
             kLogEvent event;
-            info << event
+            (failureTextList.isEmpty() ? info : warn) << event
                 << "[MonitorDock] ETW会话停止完成, requestedCount="
                 << sessionNameList.size()
                 << ", successCount="
                 << successCount
                 << ", failureCount="
                 << failureTextList.size()
+                << ", failureDetails="
+                << (failureTextList.isEmpty()
+                    ? "none"
+                    : failureTextList
+                        .join(QStringLiteral(" | "))
+                        .toStdString())
                 << eol;
 
             guardThis->refreshEtwSessionsAsync();

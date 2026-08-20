@@ -1,5 +1,6 @@
 #include "HandleDock.h"
 #include "../UI/TableInteractionSupport.h"
+#include "../ksword/log/log.h"
 #include "../theme.h"
 
 // ============================================================
@@ -128,7 +129,13 @@ void HandleDock::applyHandleDetailRefreshResult(
     QString statusText = QStringLiteral("● 详情刷新完成 %1 ms").arg(refreshResult.elapsedMs);
     if (!refreshResult.diagnosticText.trimmed().isEmpty())
     {
-        statusText += QStringLiteral(" | %1").arg(refreshResult.diagnosticText);
+        statusText += QStringLiteral(" | 存在诊断；详情已写入日志。");
+        kLogEvent diagnosticEvent;
+        warn << diagnosticEvent
+            << "[HandleDock] detail refresh completed with diagnostics, fieldCount="
+            << refreshResult.fields.size()
+            << ", detail=" << refreshResult.diagnosticText.toStdString()
+            << eol;
     }
     if (m_handleDetailStatusLabel != nullptr)
     {

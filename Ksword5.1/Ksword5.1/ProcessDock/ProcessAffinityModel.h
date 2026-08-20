@@ -95,6 +95,52 @@ namespace ks::process
         bool unrestricted = false;
     };
 
+    // logicalProcessorGroupCount 作用：
+    // - 统计当前 UI 实际展示的唯一 processor group 数量；
+    // - 单组时允许省略重复的 Gx 前缀和分组标题，多组时仍保留无歧义身份。
+    inline std::size_t logicalProcessorGroupCount(
+        const std::vector<LogicalProcessorCoordinate>& coordinates)
+    {
+        std::vector<std::uint16_t> processorGroups;
+        processorGroups.reserve(coordinates.size());
+        for (const LogicalProcessorCoordinate& coordinate : coordinates)
+        {
+            processorGroups.push_back(coordinate.group);
+        }
+        std::sort(processorGroups.begin(), processorGroups.end());
+        processorGroups.erase(
+            std::unique(processorGroups.begin(), processorGroups.end()),
+            processorGroups.end());
+        return processorGroups.size();
+    }
+
+    inline std::size_t logicalProcessorGroupCount(
+        const std::vector<LogicalProcessorState>& processors)
+    {
+        std::vector<LogicalProcessorCoordinate> coordinates;
+        coordinates.reserve(processors.size());
+        for (const LogicalProcessorState& processor : processors)
+        {
+            coordinates.push_back(processor.coordinate);
+        }
+        return logicalProcessorGroupCount(coordinates);
+    }
+
+    // processorDisplayIdentityText 作用：
+    // - 日志与持久化继续使用完整 Gx:Ly 稳定身份；
+    // - 只有 UI 已确认存在多个 processor group 时才显示 Gx，单组简化为 Ly。
+    inline std::string processorDisplayIdentityText(
+        const LogicalProcessorCoordinate& coordinate,
+        const bool includeProcessorGroup)
+    {
+        const std::string logicalProcessorText =
+            "L" + std::to_string(coordinate.logicalIndex);
+        return includeProcessorGroup
+            ? "G" + std::to_string(coordinate.group) + ":" +
+                logicalProcessorText
+            : logicalProcessorText;
+    }
+
     // ProcessAffinityRule 作用：
     // - selectAllAvailable=true 表示清除进程默认 CPU Set 限制并跟随当前可用处理器；
     // - processors 保存显式选择时的稳定 group/index 坐标；

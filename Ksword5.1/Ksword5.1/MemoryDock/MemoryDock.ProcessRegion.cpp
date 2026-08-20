@@ -1206,7 +1206,8 @@ bool MemoryDock::refreshModuleListForPid(const std::uint32_t pid)
                             .arg(selfGuard->m_moduleTable->topLevelItemCount());
                         if (!diagnosticText.isEmpty())
                         {
-                            statusText += QString(" | %1").arg(diagnosticText);
+                            statusText += QStringLiteral(
+                                " | 存在诊断；详情已写入日志。");
                         }
                         selfGuard->m_moduleStatusLabel->setText(statusText);
                         selfGuard->m_moduleStatusLabel->setStyleSheet(

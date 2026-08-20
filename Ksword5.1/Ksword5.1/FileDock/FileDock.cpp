@@ -7127,7 +7127,15 @@ namespace
                                     .arg(scanSnapshot->matchedHandleCount);
                                 if (!scanSnapshot->diagnosticText.trimmed().isEmpty())
                                 {
-                                    statusText += QStringLiteral(" | %1").arg(scanSnapshot->diagnosticText);
+                                    statusText += QStringLiteral(
+                                        " | 存在诊断；详情已写入日志。");
+                                    kLogEvent diagnosticEvent;
+                                    warn << diagnosticEvent
+                                        << "[FileDetailDialog] usage scan completed with diagnostics, matchedHandleCount="
+                                        << scanSnapshot->matchedHandleCount
+                                        << ", diagnostic="
+                                        << scanSnapshot->diagnosticText.toStdString()
+                                        << eol;
                                 }
                                 statusGuard->setText(statusText);
                                 if (progressGuard != nullptr)

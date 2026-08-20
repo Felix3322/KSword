@@ -3,6 +3,7 @@
 
 #include "theme.h"
 #include "Internationalization/LanguageManager.h"
+#include "ksword/log/log.h"
 
 #include <QAbstractItemView>
 #include <QBrush>
@@ -41,6 +42,7 @@
 #include <QSaveFile>
 #include <QSettings>
 #include <QShowEvent>
+#include <QSizePolicy>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -2025,6 +2027,8 @@ namespace
 
             m_status = new QLabel(this);
             m_status->setWordWrap(true);
+            m_status->setMinimumWidth(0);
+            m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
             layout->addWidget(m_status);
             m_installProgress = new QProgressBar(this);
             m_installProgress->setTextVisible(true);
@@ -2069,7 +2073,13 @@ namespace
             m_pluginRoot.clear();
             if (!discoverPlugins(&result, &errorText))
             {
-                m_status->setText(QStringLiteral("插件目录不可用：%1").arg(errorText));
+                m_status->setText(
+                    QStringLiteral("插件目录不可用；详情已写入日志。"));
+                kLogEvent discoveryEvent;
+                warn << discoveryEvent
+                    << "[PluginHost] plugin discovery failed, detail="
+                    << errorText.toStdString()
+                    << eol;
                 m_openFolderButton->setEnabled(false);
                 return;
             }
@@ -2095,7 +2105,18 @@ namespace
                 .arg(QDir::toNativeSeparators(m_pluginRoot));
             if (!result.ignoredManifests.isEmpty())
             {
-                status += QStringLiteral("\n忽略的清单：%1").arg(result.ignoredManifests.join(QStringLiteral("；")));
+                status += QStringLiteral(
+                    "\n已忽略 %1 个清单；详情已写入日志。")
+                    .arg(result.ignoredManifests.size());
+                kLogEvent ignoredManifestEvent;
+                warn << ignoredManifestEvent
+                    << "[PluginHost] ignored plugin manifests, count="
+                    << result.ignoredManifests.size()
+                    << ", details="
+                    << result.ignoredManifests
+                        .join(QStringLiteral(" | "))
+                        .toStdString()
+                    << eol;
             }
             m_status->setText(status);
         }
@@ -2139,14 +2160,26 @@ namespace
                 reply->deleteLater();
                 if (!networkOk)
                 {
-                    m_status->setText(QStringLiteral("商城目录读取失败：%1").arg(networkError));
+                    m_status->setText(QStringLiteral(
+                        "商城目录读取失败；详情已写入日志。"));
+                    kLogEvent requestEvent;
+                    warn << requestEvent
+                        << "[PluginHost] marketplace catalog request failed, detail="
+                        << networkError.toStdString()
+                        << eol;
                     return;
                 }
                 QJsonParseError parseError;
                 const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
                 if (parseError.error != QJsonParseError::NoError || !document.isObject())
                 {
-                    m_status->setText(QStringLiteral("商城目录不是有效 JSON：%1").arg(parseError.errorString()));
+                    m_status->setText(QStringLiteral(
+                        "商城目录不是有效 JSON；详情已写入日志。"));
+                    kLogEvent parseEvent;
+                    warn << parseEvent
+                        << "[PluginHost] marketplace catalog parse failed, detail="
+                        << parseError.errorString().toStdString()
+                        << eol;
                     return;
                 }
                 const QJsonObject root = document.object();
@@ -2175,7 +2208,21 @@ namespace
                 QString status = QStringLiteral("插件商城已从 KSwordDEV/Plugins 刷新：%1 个可下载插件，%2 个插件可更新。")
                     .arg(m_marketplacePlugins.size())
                     .arg(updates.size());
-                if (!ignoredEntries.isEmpty()) status += QStringLiteral(" 已忽略 %1 个无效条目。").arg(ignoredEntries.size());
+                if (!ignoredEntries.isEmpty())
+                {
+                    status += QStringLiteral(
+                        " 已忽略 %1 个无效条目；详情已写入日志。")
+                        .arg(ignoredEntries.size());
+                    kLogEvent ignoredEntryEvent;
+                    warn << ignoredEntryEvent
+                        << "[PluginHost] ignored marketplace entries, count="
+                        << ignoredEntries.size()
+                        << ", details="
+                        << ignoredEntries
+                            .join(QStringLiteral(" | "))
+                            .toStdString()
+                        << eol;
+                }
                 m_status->setText(status);
                 if (checkForUpdates && !m_autoUpdateInProgress &&
                     m_autoUpdateCheck != nullptr && m_autoUpdateCheck->isChecked())
@@ -2390,10 +2437,21 @@ namespace
                 }
                 else
                 {
-                    m_status->setText(QStringLiteral("自动更新完成：%1 个成功，%2 个失败。%3")
+                    m_status->setText(QStringLiteral(
+                        "自动更新完成：%1 个成功，%2 个失败；详情已写入日志。")
                         .arg(m_autoUpdateCompleted - m_autoUpdateFailures.size())
-                        .arg(m_autoUpdateFailures.size())
-                        .arg(m_autoUpdateFailures.join(QStringLiteral("；"))));
+                        .arg(m_autoUpdateFailures.size()));
+                    kLogEvent autoUpdateEvent;
+                    warn << autoUpdateEvent
+                        << "[PluginHost] automatic update completed with failures, completed="
+                        << m_autoUpdateCompleted
+                        << ", failureCount="
+                        << m_autoUpdateFailures.size()
+                        << ", failureDetails="
+                        << m_autoUpdateFailures
+                            .join(QStringLiteral(" | "))
+                            .toStdString()
+                        << eol;
                 }
                 finishInstallProgress();
                 return;
