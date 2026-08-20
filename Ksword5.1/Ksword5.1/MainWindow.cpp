@@ -9521,17 +9521,11 @@ QWidget* MainWindow::createDockPlaceholderWidget(const QString& titleText) const
     placeholderLayout->setContentsMargins(24, 24, 24, 24);
     placeholderLayout->setSpacing(8);
 
-    QLabel* titleLabel = new QLabel(QStringLiteral("%1 页面正在延迟初始化...").arg(titleText), placeholderWidget);
+    QLabel* titleLabel = new QLabel(QStringLiteral("%1 页面正在初始化...").arg(titleText), placeholderWidget);
     titleLabel->setStyleSheet(QStringLiteral("font-size:16px;font-weight:700;"));
     titleLabel->setAlignment(Qt::AlignCenter);
     placeholderLayout->addStretch(1);
     placeholderLayout->addWidget(titleLabel);
-
-    QLabel* hintLabel = new QLabel(QStringLiteral("主窗口已优先完成首屏加载，页面内容将在首次打开时加载。"), placeholderWidget);
-    hintLabel->setWordWrap(true);
-    hintLabel->setAlignment(Qt::AlignCenter);
-    hintLabel->setStyleSheet(QStringLiteral("font-size:12px;color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    placeholderLayout->addWidget(hintLabel);
 
     // 阶段文案与进度条：初始化各阶段由 updateLazyDockPlaceholderProgress 同步刷新。
     // 首次创建时留空/归零，页面尚未开始加载，不该显示任何进度。
