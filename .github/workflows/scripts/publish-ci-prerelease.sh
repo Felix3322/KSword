@@ -61,19 +61,18 @@ if [[ -z "$driver_run_id" || "$driver_run_id" == '0' || "$driver_status" != 'com
   exit 1
 fi
 
-release_assets="$RUNNER_TEMP/ksword-ci-release-assets"
+artifact_download_root="$RUNNER_TEMP/ksword-ci-artifacts"
+release_stage_root="$RUNNER_TEMP/ksword-ci-release-stage"
+release_output_root="$RUNNER_TEMP/ksword-ci-release-output"
 release_notes="$RUNNER_TEMP/ksword-ci-release-notes.md"
-provenance_file="$release_assets/artifact-provenance.md"
-mkdir -p "$release_assets"
+short_sha="${GITHUB_SHA:0:8}"
+mkdir -p "$artifact_download_root" "$release_stage_root" "$release_output_root"
 
-{
-  echo '# Automatic CI release artifact provenance'
-  echo
-  echo "Release commit: \`$GITHUB_SHA\`"
-  echo
-  echo '| Artifact | Source commit | Actions run | Created at |'
-  echo '| --- | --- | ---: | --- |'
-} > "$provenance_file"
+declare -A artifact_directories=()
+declare -A artifact_run_ids=()
+declare -A artifact_source_shas=()
+declare -A artifact_created_times=()
+declare -a module_archives=()
 
 # Range-based CI may skip unchanged projects. For each named component, select
 # the current run's artifact when that project was affected. Only unchanged,
@@ -161,7 +160,7 @@ for artifact_name in "${expected_artifacts[@]}"; do
     exit 1
   fi
 
-  artifact_archive="$release_assets/$artifact_name.zip"
+  artifact_archive="$artifact_download_root/$artifact_name.zip"
   gh api \
     -H 'Accept: application/vnd.github+json' \
     "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
@@ -171,10 +170,179 @@ for artifact_name in "${expected_artifacts[@]}"; do
     exit 1
   fi
 
-  printf '| `%s` | `%s` | `%s` | %s |\n' \
-    "$artifact_name" "$artifact_sha" "$artifact_run_id" "$artifact_created_at" \
-    >> "$provenance_file"
+  artifact_directory="$artifact_download_root/$artifact_name"
+  mkdir -p "$artifact_directory"
+  python3 -m zipfile -e "$artifact_archive" "$artifact_directory"
+  artifact_directories["$artifact_name"]="$artifact_directory"
+  artifact_run_ids["$artifact_name"]="$artifact_run_id"
+  artifact_source_shas["$artifact_name"]="$artifact_sha"
+  artifact_created_times["$artifact_name"]="$artifact_created_at"
+  module_archives+=("$artifact_archive")
 done
+
+# Use the newest non-automatic manual 7z release as the dependency/profile
+# template. CI then overlays every current core binary and unsigned driver while
+# preserving the same single Release/ directory layout users already receive.
+manual_release_candidates="$({
+  gh api --paginate \
+    -H 'Accept: application/vnd.github+json' \
+    "/repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+    --jq '.[] | select(.draft == false and ((.tag_name | startswith("ci-build-")) | not) and (((.name // "") | startswith("[CI Build] ")) | not)) as $release | $release.assets[] | select(.name | endswith(".7z")) | [$release.published_at, $release.tag_name, .id, .name] | @tsv'
+} 2>&1)" || {
+  echo "Unable to query the manual release template: $manual_release_candidates" >&2
+  exit 1
+}
+manual_release_record="$(printf '%s\n' "$manual_release_candidates" | sort -r | sed -n '1p')"
+IFS=$'\t' read -r manual_published_at manual_tag manual_asset_id manual_asset_name <<< "$manual_release_record"
+if [[ -z "$manual_asset_id" || -z "$manual_asset_name" ]]; then
+  echo 'No non-automatic manual .7z release is available as a packaging template.' >&2
+  exit 1
+fi
+
+manual_archive="$RUNNER_TEMP/manual-release-template.7z"
+gh api \
+  -H 'Accept: application/octet-stream' \
+  "/repos/$GITHUB_REPOSITORY/releases/assets/$manual_asset_id" \
+  > "$manual_archive"
+if [[ ! -s "$manual_archive" ]]; then
+  echo "Downloaded manual release template is empty: $manual_asset_name" >&2
+  exit 1
+fi
+
+seven_zip="$(command -v 7z || command -v 7zz || true)"
+if [[ -z "$seven_zip" ]]; then
+  sudo apt-get update
+  sudo apt-get install -y p7zip-full || sudo apt-get install -y 7zip
+  seven_zip="$(command -v 7z || command -v 7zz || true)"
+fi
+if [[ -z "$seven_zip" ]]; then
+  echo '7-Zip is unavailable on the runner.' >&2
+  exit 1
+fi
+
+"$seven_zip" x -y "-o$release_stage_root" "$manual_archive"
+release_root="$release_stage_root/Release"
+if [[ ! -d "$release_root" ]]; then
+  echo "Manual release template does not contain the required Release/ root: $manual_asset_name" >&2
+  exit 1
+fi
+if [[ -n "$(find "$release_root" -type l -print -quit)" ]]; then
+  echo "Manual release template contains a symbolic link and cannot be overlaid safely: $manual_asset_name" >&2
+  exit 1
+fi
+if [[ -n "$(find "$artifact_download_root" -type l -print -quit)" ]]; then
+  echo 'A downloaded module artifact contains a symbolic link and cannot be overlaid safely.' >&2
+  exit 1
+fi
+
+usermode_main="$(find "${artifact_directories[KswordUserMode-unsigned-Release]}" -type f -name 'Ksword5.1.exe' -print -quit)"
+if [[ -z "$usermode_main" ]]; then
+  echo 'User-mode artifact does not contain Ksword5.1.exe.' >&2
+  exit 1
+fi
+usermode_root="$(dirname "$usermode_main")"
+cp -a "$usermode_root/." "$release_root/"
+
+arklight_exe="$(find "${artifact_directories[KswordARKLight-unsigned-Release]}" -type f -name 'KswordARKLight.exe' -print -quit)"
+if [[ -z "$arklight_exe" ]]; then
+  echo 'ARKLight artifact does not contain KswordARKLight.exe.' >&2
+  exit 1
+fi
+cp -f "$arklight_exe" "$release_root/KswordARKLight.exe"
+
+driver_root_sys="$(find "${artifact_directories[KswordARKDriver-unsigned-Release]}" -type f -path '*/Ksword5.1/x64/Release/KswordARK.sys' -print -quit)"
+if [[ -z "$driver_root_sys" ]]; then
+  echo 'Driver artifact does not contain the main KswordARK.sys.' >&2
+  exit 1
+fi
+driver_release_root="$(dirname "$driver_root_sys")"
+for driver_file in KswordARK.sys KswordARKDriver.inf; do
+  if [[ ! -f "$driver_release_root/$driver_file" ]]; then
+    echo "Driver artifact is missing $driver_file." >&2
+    exit 1
+  fi
+done
+cp -f "$driver_release_root/KswordARK.sys" "$release_root/KswordARK.sys"
+cp -f "$driver_release_root/KswordARKDriver.inf" "$release_root/KswordARKDriver.inf"
+mkdir -p "$release_root/KswordARKDriver"
+cp -f "$driver_release_root/KswordARK.sys" "$release_root/KswordARKDriver/KswordARK.sys"
+cp -f "$driver_release_root/KswordARKDriver.inf" "$release_root/KswordARKDriver/KswordARKDriver.inf"
+
+# Module ZIPs retain PDBs for debugging, while the manual-style aggregate is a
+# runtime package. Remove symbols only from the validated temporary Release/.
+while IFS= read -r -d '' symbol_file; do
+  rm -f "$symbol_file"
+done < <(find "$release_root" -type f -iname '*.pdb' -print0)
+
+# The automatic driver is unsigned, so a catalog inherited from the signed
+# manual template would be stale and misleading. Remove only those exact files.
+rm -f \
+  "$release_root/KswordARKDriver/kswordarkdriver.cat" \
+  "$release_root/KswordARKDriver/KswordARKDriver.cat"
+
+# Current runtime accepts the v4 profile pack only. Keep the reviewed v4 pack
+# and related assets from the manual template, but do not carry legacy packs.
+for legacy_version in 1 2 3; do
+  rm -f \
+    "$release_root/profiles/ark_dyndata_pack_v${legacy_version}.json" \
+    "$release_root/profiles/ark_dyndata_pack_v${legacy_version}.json.qz"
+done
+
+provenance_file="$release_root/CI_ARTIFACT_PROVENANCE.md"
+{
+  echo '# Automatic CI release artifact provenance'
+  echo
+  echo "Release commit: \`$GITHUB_SHA\`"
+  echo "Manual template: \`$manual_tag\` / \`$manual_asset_name\` / $manual_published_at"
+  echo
+  echo '| Artifact | Source commit | Actions run | Created at |'
+  echo '| --- | --- | ---: | --- |'
+  for artifact_name in "${expected_artifacts[@]}"; do
+    printf '| `%s` | `%s` | `%s` | %s |\n' \
+      "$artifact_name" \
+      "${artifact_source_shas[$artifact_name]}" \
+      "${artifact_run_ids[$artifact_name]}" \
+      "${artifact_created_times[$artifact_name]}"
+  done
+} > "$provenance_file"
+
+readonly -a required_release_paths=(
+  'Ksword5.1.exe'
+  'Launcher.exe'
+  'Taskbar.exe'
+  'KswordHUD.exe'
+  'KswordCLI.exe'
+  'APIMonitor_x64.dll'
+  'KswordARKLight.exe'
+  'KswordARK.sys'
+  'KswordARKDriver.inf'
+  'KswordARKDriver/KswordARK.sys'
+  'KswordARKDriver/KswordARKDriver.inf'
+  'LICENSE'
+  'COMMUNITY_COVENANT.md'
+  'languages/zh-CN.json'
+  'languages/en-US.json'
+  'platforms/qwindows.dll'
+  'profiles/ark_dyndata_pack_v4.json.qz'
+  'profiles/launcher_support_manifest.json'
+)
+for required_path in "${required_release_paths[@]}"; do
+  if [[ ! -f "$release_root/$required_path" ]]; then
+    echo "Aggregated Release/ package is missing $required_path." >&2
+    exit 1
+  fi
+done
+
+aggregate_archive="$release_output_root/KswordARK-CI-$short_sha.7z"
+(
+  cd "$release_stage_root"
+  "$seven_zip" a -t7z -mx=9 -mmt=on "$aggregate_archive" Release
+)
+"$seven_zip" t "$aggregate_archive"
+if [[ ! -s "$aggregate_archive" ]]; then
+  echo 'Aggregated automatic release archive is empty.' >&2
+  exit 1
+fi
 
 push_text="$({
   gh api \
@@ -189,24 +357,29 @@ if [[ -z "$push_text" ]]; then
   push_text='(no commit text)'
 fi
 
-short_sha="${GITHUB_SHA:0:8}"
-release_title="[CI Build] $short_sha:$push_text"
+release_title="[CI Build] $short_sha $push_text"
 release_tag="${automatic_tag_prefix}${short_sha}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
 
 {
   echo '> [!WARNING]'
   echo "> $warning_text"
   echo
-  echo '此预发行版由 GitHub Actions 自动生成，包含未经签名的 CI 构建产物。'
+  echo '此预发行版由 GitHub Actions 自动生成，其中包含未经签名的 CI 构建产物。'
+  echo
+  echo '## 下载说明'
+  echo
+  echo "- \`$(basename "$aggregate_archive")\` 是以 \`Release/\` 为根目录的完整聚合包，布局与手工发行版一致。"
+  echo '- 各个 `.zip` 是主程序、Setup、ARKLight、Cheat Engine 插件/Launcher 和 Driver 模块分别构建的原始 CI 产物。'
   echo
   echo "- 提交：\`$GITHUB_SHA\`"
   echo "- CI：https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
   echo "- Driver CI：https://github.com/$GITHUB_REPOSITORY/actions/runs/$driver_run_id"
-  echo '- 资产来源详见 `artifact-provenance.md`。'
+  echo "- 手工发行模板：\`$manual_tag\` / \`$manual_asset_name\`"
+  echo '- 资产来源详见压缩包内的 `Release/CI_ARTIFACT_PROVENANCE.md`。'
 } > "$release_notes"
 
 release_url="$({
-  gh release create "$release_tag" "$release_assets"/* \
+  gh release create "$release_tag" "$aggregate_archive" "${module_archives[@]}" \
     --repo "$GITHUB_REPOSITORY" \
     --target "$GITHUB_SHA" \
     --title "$release_title" \
@@ -243,5 +416,7 @@ done
   echo
   echo "- Release: $release_url"
   echo "- Title: $release_title"
+  echo "- Aggregate asset: $(basename "$aggregate_archive")"
+  echo "- Module ZIP assets: ${#module_archives[@]}"
   echo "- Retention: newest $retained_release_count automatic prereleases"
 } >> "$GITHUB_STEP_SUMMARY"
