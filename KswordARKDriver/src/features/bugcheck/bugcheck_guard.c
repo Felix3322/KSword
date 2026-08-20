@@ -652,12 +652,16 @@ KswordARKBugcheckGuardInitialize(
     VOID
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    return;
+#else
     RtlZeroMemory(&g_KswordArkBugcheckGuard, sizeof(g_KswordArkBugcheckGuard));
     ExInitializeFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
     InterlockedExchange(
         &g_KswordArkBugcheckGuard.HvciEnabled,
         KswordARKBugcheckGuardHvciEnabled() ? 1L : 0L);
     g_KswordArkBugcheckGuard.LastStatus = STATUS_SUCCESS;
+#endif
 }
 
 VOID
@@ -665,12 +669,16 @@ KswordARKBugcheckGuardUninitialize(
     VOID
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    return;
+#else
     NTSTATUS status;
 
     ExAcquireFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
     status = KswordARKBugcheckGuardReleaseMappingLocked();
     g_KswordArkBugcheckGuard.LastStatus = status;
     ExReleaseFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
+#endif
 }
 
 NTSTATUS
@@ -682,6 +690,16 @@ KswordARKBugcheckGuardIoctlConfigure(
     _Out_ size_t* BytesReturned
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    UNREFERENCED_PARAMETER(Device);
+    UNREFERENCED_PARAMETER(Request);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    if (BytesReturned != NULL) {
+        *BytesReturned = 0;
+    }
+    return STATUS_NOT_SUPPORTED;
+#else
     KSWORD_ARK_BUGCHECK_GUARD_REQUEST* input = NULL;
     KSWORD_ARK_BUGCHECK_GUARD_RESPONSE* output = NULL;
     NTSTATUS status;
@@ -792,4 +810,5 @@ KswordARKBugcheckGuardIoctlConfigure(
     ExReleaseFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
     *BytesReturned = sizeof(*output);
     return STATUS_SUCCESS;
+#endif
 }

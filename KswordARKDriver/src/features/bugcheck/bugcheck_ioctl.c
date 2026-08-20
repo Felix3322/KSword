@@ -22,6 +22,16 @@ KswordARKBugcheckIoctlSetBitmap(
     _Out_ size_t* BytesReturned
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    UNREFERENCED_PARAMETER(Device);
+    UNREFERENCED_PARAMETER(Request);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    if (BytesReturned != NULL) {
+        *BytesReturned = 0;
+    }
+    return STATUS_NOT_SUPPORTED;
+#else
     KSWORD_ARK_BUGCHECK_BITMAP_HEADER* header;
     ULONGLONG expectedStride;
     ULONGLONG expectedBytes;
@@ -100,6 +110,7 @@ KswordARKBugcheckIoctlSetBitmap(
     InterlockedExchange(&g_KswordArkBugcheckState.Bitmap.Valid, 1);
     InterlockedExchange(&g_KswordArkBugcheckState.Bitmap.Uploading, 0);
     return STATUS_SUCCESS;
+#endif
 }
 
 NTSTATUS
@@ -111,6 +122,16 @@ KswordARKBugcheckIoctlSetVerdictResources(
     _Out_ size_t* BytesReturned
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    UNREFERENCED_PARAMETER(Device);
+    UNREFERENCED_PARAMETER(Request);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    if (BytesReturned != NULL) {
+        *BytesReturned = 0;
+    }
+    return STATUS_NOT_SUPPORTED;
+#else
     PVOID packet;
     NTSTATUS status;
 
@@ -141,4 +162,5 @@ KswordARKBugcheckIoctlSetVerdictResources(
     return KswordARKBugcheckPanelInstallVerdictResources(
         packet,
         (ULONG)InputBufferLength);
+#endif
 }

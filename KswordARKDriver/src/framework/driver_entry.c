@@ -223,10 +223,18 @@ Return Value:
         TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKFileMonitorInitialize recorded failure %!STATUS!", status);
     }
 
+#if KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
     // VMware bugcheck diagnostics are strictly optional. The initializer
     // returns without registering callbacks on every unsupported environment.
     (void)KswordARKBugcheckInitialize(DriverObject, controlDevice);
     KswordARKBugcheckGuardInitialize();
+#else
+    // Fail closed while the crash-time renderer and guard are disabled.
+    TraceEvents(
+        TRACE_LEVEL_INFORMATION,
+        TRACE_DRIVER,
+        "KswordARK: driver-side bugcheck diagnostics disabled at build time");
+#endif
 
     // 所有运行时都已建立后才让控制设备对用户态可见。
     KswordArkStartupStage(KswordArkStartStageControlDevicePublish);
@@ -285,11 +293,13 @@ Return Value:
     // 目录枚举可能缓存了一个用于续扫的目录句柄，卸载前必须关闭。
     KswordARKDriverResetDirectoryScanCache();
 
+#if KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
     // Stop crash callbacks before any other teardown can invalidate state used
     // by the nonpaged diagnostic path.
     // Restore the one-shot KeBugCheckEx entry before the driver image can unload.
     KswordARKBugcheckGuardUninitialize();
     KswordARKBugcheckUninitialize();
+#endif
 
     // 必须先注销内核调试回调，防止后续卸载阶段再次进入本驱动代码。
     KswordARKDebugOutputUninitialize();

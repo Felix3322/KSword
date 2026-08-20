@@ -7,6 +7,10 @@
 
 EXTERN_C_START
 
+// Temporary fail-closed build gate for the complete driver-side blue screen
+// diagnostic path. This does not affect the rest of the driver or user-mode UI.
+#define KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED 0
+
 // Resolve the physical-machine BGP backend, prepare every crash-time rectangle
 // at PASSIVE_LEVEL, and register dump-preserving bugcheck callbacks. Missing
 // private features leave the renderer fail-closed without blocking diagnostics.

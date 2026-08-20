@@ -995,6 +995,11 @@ KswordARKBugcheckInitialize(
     _In_ WDFDEVICE ControlDevice
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    UNREFERENCED_PARAMETER(DriverObject);
+    UNREFERENCED_PARAMETER(ControlDevice);
+    return STATUS_NOT_SUPPORTED;
+#else
     NTSTATUS bgpStatus;
     NTSTATUS callbackStatus;
     NTSTATUS logStatus;
@@ -1093,6 +1098,7 @@ KswordARKBugcheckInitialize(
     }
 
     return STATUS_SUCCESS;
+#endif
 }
 
 VOID
@@ -1100,6 +1106,9 @@ KswordARKBugcheckUninitialize(
     VOID
     )
 {
+#if !KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
+    return;
+#else
     InterlockedExchange(&g_KswordArkBugcheckState.TrackingReady, 0);
     KeMemoryBarrier();
     InterlockedExchange(&g_KswordArkBugcheckState.Active, 0);
@@ -1128,4 +1137,5 @@ KswordARKBugcheckUninitialize(
 
     KswordARKBugcheckPanelShutdown();
     KswordARKBugcheckBgpShutdown();
+#endif
 }
