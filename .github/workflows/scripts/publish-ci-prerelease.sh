@@ -359,23 +359,38 @@ fi
 
 release_title="[CI Build] $short_sha $push_text"
 release_tag="${automatic_tag_prefix}${short_sha}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
+aggregate_asset_name="$(basename "$aggregate_archive")"
+setup_asset_name='KswordSetup-unsigned-Release.zip'
+aggregate_download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$release_tag/$aggregate_asset_name"
+setup_download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$release_tag/$setup_asset_name"
+aggregate_badge_url='https://img.shields.io/badge/Download-Full%207z-2ea44f?style=for-the-badge&logo=github'
+setup_badge_url='https://img.shields.io/badge/Download-Setup%20ZIP-0969da?style=for-the-badge&logo=github'
 
 {
-  echo '> [!WARNING]'
+  echo '> [!CAUTION]'
   echo "> $warning_text"
   echo
-  echo '此预发行版由 GitHub Actions 自动生成，其中包含未经签名的 CI 构建产物。'
+  echo '> [!IMPORTANT]'
+  echo '> 此预发行版由 GitHub Actions 自动生成，其中包含未经签名的 CI 构建产物。'
   echo
   echo '## 下载说明'
   echo
-  echo "- \`$(basename "$aggregate_archive")\` 是以 \`Release/\` 为根目录的完整聚合包，布局与手工发行版一致。"
-  echo '- 各个 `.zip` 是主程序、Setup、ARKLight、Cheat Engine 插件/Launcher 和 Driver 模块分别构建的原始 CI 产物。'
+  echo '> [!TIP]'
+  echo '> 普通使用请下载完整 7z 整包；仅需要安装器时可单独下载 Setup ZIP。'
+  echo
+  echo "[![下载完整 7z 整包]($aggregate_badge_url)]($aggregate_download_url) [![下载 Setup ZIP]($setup_badge_url)]($setup_download_url)"
+  echo
+  echo '> [!NOTE]'
+  echo "> \`$aggregate_asset_name\` 是以 \`Release/\` 为根目录的完整聚合包，布局与手工发行版一致。"
+  echo '> 其余 `.zip` 是主程序、Setup、ARKLight、Cheat Engine 插件/Launcher 和 Driver 模块分别构建的原始 CI 产物。'
   echo
   echo "- 提交：\`$GITHUB_SHA\`"
   echo "- CI：https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
   echo "- Driver CI：https://github.com/$GITHUB_REPOSITORY/actions/runs/$driver_run_id"
   echo "- 手工发行模板：\`$manual_tag\` / \`$manual_asset_name\`"
-  echo '- 资产来源详见压缩包内的 `Release/CI_ARTIFACT_PROVENANCE.md`。'
+  echo
+  echo '> [!IMPORTANT]'
+  echo '> 各资产的提交与工作流来源详见压缩包内的 `Release/CI_ARTIFACT_PROVENANCE.md`。'
 } > "$release_notes"
 
 release_url="$({
