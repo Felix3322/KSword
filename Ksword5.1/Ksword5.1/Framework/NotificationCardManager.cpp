@@ -8,6 +8,7 @@
 #include <QClipboard>
 #include <QCursor>
 #include <QDateTime>
+#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <utility>
 
 namespace
@@ -108,9 +110,10 @@ namespace ks::ui
             Progress
         };
 
-        explicit NotificationCard(const Kind kind)
+        explicit NotificationCard(const Kind kind, std::function<void()> layoutChangedCallback = {})
             : QWidget(nullptr)
             , m_kind(kind)
+            , m_layoutChangedCallback(std::move(layoutChangedCallback))
         {
             setAttribute(Qt::WA_TranslucentBackground, true);
             setAttribute(Qt::WA_ShowWithoutActivating, true);
@@ -145,6 +148,14 @@ namespace ks::ui
             m_copyButton->setAutoRaise(true);
             m_copyButton->setFocusPolicy(Qt::NoFocus);
             titleLayout->addWidget(m_copyButton, 0, Qt::AlignTop);
+            m_expandButton = new QToolButton(m_frame);
+            m_expandButton->setObjectName(QStringLiteral("ksNotificationCardExpand"));
+            m_expandButton->setArrowType(Qt::DownArrow);
+            m_expandButton->setToolTip(ks::i18n::text(QStringLiteral("notification.expand"), QStringLiteral("展开完整日志")));
+            m_expandButton->setAutoRaise(true);
+            m_expandButton->setFocusPolicy(Qt::NoFocus);
+            m_expandButton->hide();
+            titleLayout->addWidget(m_expandButton, 0, Qt::AlignTop);
             frameLayout->addLayout(titleLayout);
 
             m_bodyLabel = new QLabel(m_frame);
@@ -176,11 +187,22 @@ namespace ks::ui
                         ks::i18n::text(QStringLiteral("notification.copy.done"), QStringLiteral("已复制")));
                 }
             });
+            connect(m_expandButton, &QToolButton::clicked, this, [this]() {
+                m_logExpanded = !m_logExpanded;
+                updateLogHeightLimit();
+                if (m_layoutChangedCallback)
+                {
+                    m_layoutChangedCallback();
+                }
+            });
 
             refreshVisuals();
         }
 
-        void setLogEvent(const kEvent& eventItem)
+        void setLogEvent(
+            const kEvent& eventItem,
+            const bool heightLimitEnabled,
+            const int maximumLines)
         {
             m_titleLabel->setText(
                 QStringLiteral("%1  %2")
@@ -189,8 +211,26 @@ namespace ks::ui
             m_bodyLabel->setText(toUiText(eventItem.content));
             m_copyText = logCopyText(eventItem);
             m_accentColor = levelColor(eventItem.level);
+            m_logHeightLimitEnabled = heightLimitEnabled;
+            m_logMaximumLines = std::max(1, maximumLines);
+            m_logExpanded = false;
             refreshVisuals();
             adjustToContent();
+        }
+
+        void setLogHeightLimit(const bool heightLimitEnabled, const int maximumLines)
+        {
+            if (m_kind != Kind::Log)
+            {
+                return;
+            }
+            m_logHeightLimitEnabled = heightLimitEnabled;
+            m_logMaximumLines = std::max(1, maximumLines);
+            if (!m_logHeightLimitEnabled)
+            {
+                m_logExpanded = false;
+            }
+            updateLogHeightLimit();
         }
 
         void setProgressTask(const kProgressTask& taskItem)
@@ -222,6 +262,8 @@ namespace ks::ui
                 "#ksNotificationCardBody{color:%4;}"
                 "#ksNotificationCardCopy{color:%3;border:1px solid transparent;border-radius:4px;padding:2px 5px;}"
                 "#ksNotificationCardCopy:hover{background:%5;border-color:%3;}"
+                "#ksNotificationCardExpand{color:%3;border:1px solid transparent;border-radius:4px;padding:2px;}"
+                "#ksNotificationCardExpand:hover{background:%5;border-color:%3;}"
                 "#ksNotificationCardProgress{border:1px solid %2;border-radius:4px;text-align:center;color:%4;background:%6;height:16px;}"
                 "#ksNotificationCardProgress::chunk{background:%3;border-radius:3px;}")
                 .arg(backgroundColor.name(QColor::HexArgb))
@@ -290,10 +332,12 @@ namespace ks::ui
                 // - 避免直接使用 Win32 物理坐标导致高 DPI 下命中区域偏移；
                 // - 避免把嵌套在 m_frame 中的按钮矩形误当作卡片坐标。
                 const QPoint cardPosition = mapFromGlobal(QCursor::pos());
-                const bool copyButtonHit = m_copyButton != nullptr
-                    && m_copyButton->isVisible()
-                    && m_copyButton->rect().contains(m_copyButton->mapFrom(this, cardPosition));
-                if (!copyButtonHit)
+                const auto controlHit = [this, &cardPosition](const QToolButton* const button) {
+                    return button != nullptr
+                        && button->isVisible()
+                        && button->rect().contains(button->mapFrom(this, cardPosition));
+                };
+                if (!controlHit(m_copyButton) && !controlHit(m_expandButton))
                 {
                     *result = HTTRANSPARENT;
                     return true;
@@ -307,10 +351,31 @@ namespace ks::ui
         {
             const int bodyWidth = kCardWidth - 42;
             m_bodyLabel->setMaximumWidth(bodyWidth);
+            updateLogHeightLimit();
+            setFixedWidth(kCardWidth);
+        }
+
+        void updateLogHeightLimit()
+        {
+            m_bodyLabel->setMaximumHeight(QWIDGETSIZE_MAX);
             m_bodyLabel->adjustSize();
+            const int naturalHeight = m_bodyLabel->sizeHint().height();
+            const int maximumHeight = QFontMetrics(m_bodyLabel->font()).lineSpacing()
+                * std::max(1, m_logMaximumLines);
+            const bool canExpand = m_kind == Kind::Log
+                && m_logHeightLimitEnabled
+                && naturalHeight > maximumHeight;
+            m_expandButton->setVisible(canExpand);
+            if (canExpand && !m_logExpanded)
+            {
+                m_bodyLabel->setMaximumHeight(maximumHeight);
+            }
+            m_expandButton->setArrowType(m_logExpanded ? Qt::UpArrow : Qt::DownArrow);
+            m_expandButton->setToolTip(ks::i18n::text(
+                m_logExpanded ? QStringLiteral("notification.collapse") : QStringLiteral("notification.expand"),
+                m_logExpanded ? QStringLiteral("收起日志") : QStringLiteral("展开完整日志")));
             layout()->activate();
             adjustSize();
-            setFixedWidth(kCardWidth);
         }
 
         Kind m_kind;
@@ -319,8 +384,13 @@ namespace ks::ui
         QLabel* m_bodyLabel = nullptr;
         QProgressBar* m_progressBar = nullptr;
         QToolButton* m_copyButton = nullptr;
+        QToolButton* m_expandButton = nullptr;
         QColor m_accentColor;
         QString m_copyText;
+        std::function<void()> m_layoutChangedCallback;
+        bool m_logHeightLimitEnabled = true;
+        int m_logMaximumLines = 5;
+        bool m_logExpanded = false;
     };
 
     struct NotificationCardRecord
@@ -374,6 +444,16 @@ namespace ks::ui
             m_knownLogCount = KswordARKEventEntry.Snapshot().size();
             m_lastProgressRevision = 0;
         }
+        for (const std::unique_ptr<NotificationCardRecord>& record : m_cards)
+        {
+            if (record != nullptr && record->kind == NotificationCard::Kind::Log && record->card != nullptr)
+            {
+                record->card->setLogHeightLimit(
+                    m_settings.notificationLogHeightLimitEnabled,
+                    m_settings.notificationLogMaximumLines);
+            }
+        }
+        trimLogCardsToMaximum(true);
         reflowCards(true);
     }
 
@@ -528,14 +608,24 @@ namespace ks::ui
     {
         auto record = std::make_unique<NotificationCardRecord>();
         record->kind = NotificationCard::Kind::Log;
-        record->card = new NotificationCard(NotificationCard::Kind::Log);
-        record->card->setLogEvent(eventItem);
+        const QPointer<NotificationCardManager> managerGuard(this);
+        record->card = new NotificationCard(NotificationCard::Kind::Log, [managerGuard]() {
+            if (managerGuard != nullptr)
+            {
+                managerGuard->reflowCards(true);
+            }
+        });
+        record->card->setLogEvent(
+            eventItem,
+            m_settings.notificationLogHeightLimitEnabled,
+            m_settings.notificationLogMaximumLines);
         if (m_settings.notificationLogDisplaySeconds > 0)
         {
             record->expiresAtMs = QDateTime::currentMSecsSinceEpoch()
                 + static_cast<qint64>(m_settings.notificationLogDisplaySeconds) * 1000;
         }
         m_cards.push_back(std::move(record));
+        trimLogCardsToMaximum(true);
     }
 
     void NotificationCardManager::appendProgressCard(const kProgressTask& taskItem)
@@ -559,6 +649,40 @@ namespace ks::ui
             m_cards[index]->card->dismiss(animate);
         }
         m_cards.erase(m_cards.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+
+    void NotificationCardManager::trimLogCardsToMaximum(const bool animate)
+    {
+        const int maximumLogCards = m_settings.notificationMaximumVisibleLogCards;
+        if (maximumLogCards <= 0)
+        {
+            return;
+        }
+        int logCardCount = 0;
+        for (const std::unique_ptr<NotificationCardRecord>& record : m_cards)
+        {
+            if (record != nullptr && record->kind == NotificationCard::Kind::Log)
+            {
+                ++logCardCount;
+            }
+        }
+        while (logCardCount > maximumLogCards)
+        {
+            const auto oldestLogIterator = std::find_if(
+                m_cards.cbegin(),
+                m_cards.cend(),
+                [](const std::unique_ptr<NotificationCardRecord>& record) {
+                    return record != nullptr && record->kind == NotificationCard::Kind::Log;
+                });
+            if (oldestLogIterator == m_cards.cend())
+            {
+                return;
+            }
+            removeRecordAt(
+                static_cast<std::size_t>(std::distance(m_cards.cbegin(), oldestLogIterator)),
+                animate);
+            --logCardCount;
+        }
     }
 
     void NotificationCardManager::reflowCards(const bool animate)

@@ -271,6 +271,16 @@ namespace
         return std::clamp(rawSeconds, 0, 60);
     }
 
+    int clampNotificationMaximumVisibleLogCards(const int rawCount)
+    {
+        return std::clamp(rawCount, 0, 100);
+    }
+
+    int clampNotificationLogMaximumLines(const int rawLines)
+    {
+        return std::clamp(rawLines, 1, 50);
+    }
+
     // normalizeCustomRgbColor 作用：只接受完整的 RGB 色值，避免无效配置进入配色计算。
     // 空值代表使用对应颜色角色的产品默认值。
     QString normalizeCustomRgbColor(const QString& rawColorText)
@@ -401,6 +411,9 @@ namespace
         defaultSettings.notificationCardsEnabled = true;
         defaultSettings.notificationMinimumLevel = 2;
         defaultSettings.notificationLogDisplaySeconds = 10;
+        defaultSettings.notificationMaximumVisibleLogCards = 0;
+        defaultSettings.notificationLogHeightLimitEnabled = true;
+        defaultSettings.notificationLogMaximumLines = 5;
         defaultSettings.notificationDisplayPlacement = ks::settings::NotificationDisplayPlacement::Screen;
         defaultSettings.notificationStackDirection = ks::settings::NotificationStackDirection::BottomUp;
         defaultSettings.dumpAutoCheckEnabled = true;
@@ -687,6 +700,15 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.notificationLogDisplaySeconds = clampNotificationDisplaySeconds(
         rootObject.value(QStringLiteral("notification_log_display_seconds"))
         .toInt(loadedSettings.notificationLogDisplaySeconds));
+    loadedSettings.notificationMaximumVisibleLogCards = clampNotificationMaximumVisibleLogCards(
+        rootObject.value(QStringLiteral("notification_maximum_visible_log_cards"))
+        .toInt(loadedSettings.notificationMaximumVisibleLogCards));
+    loadedSettings.notificationLogHeightLimitEnabled = rootObject
+        .value(QStringLiteral("notification_log_height_limit_enabled"))
+        .toBool(loadedSettings.notificationLogHeightLimitEnabled);
+    loadedSettings.notificationLogMaximumLines = clampNotificationLogMaximumLines(
+        rootObject.value(QStringLiteral("notification_log_maximum_lines"))
+        .toInt(loadedSettings.notificationLogMaximumLines));
     loadedSettings.notificationDisplayPlacement =
         rootObject.value(QStringLiteral("notification_display_placement")).toString()
         == QStringLiteral("main_window")
@@ -826,6 +848,15 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(
         QStringLiteral("notification_log_display_seconds"),
         clampNotificationDisplaySeconds(settings.notificationLogDisplaySeconds));
+    rootObject.insert(
+        QStringLiteral("notification_maximum_visible_log_cards"),
+        clampNotificationMaximumVisibleLogCards(settings.notificationMaximumVisibleLogCards));
+    rootObject.insert(
+        QStringLiteral("notification_log_height_limit_enabled"),
+        settings.notificationLogHeightLimitEnabled);
+    rootObject.insert(
+        QStringLiteral("notification_log_maximum_lines"),
+        clampNotificationLogMaximumLines(settings.notificationLogMaximumLines));
     rootObject.insert(
         QStringLiteral("notification_display_placement"),
         settings.notificationDisplayPlacement == NotificationDisplayPlacement::MainWindow

@@ -945,6 +945,34 @@ void SettingsDock::initializeAppearanceTab()
     notificationDurationLayout->addWidget(m_notificationLogDisplaySecondsSpin, 1);
     notificationLayout->addLayout(notificationDurationLayout);
 
+    QHBoxLayout* notificationMaximumCountLayout = new QHBoxLayout();
+    QLabel* notificationMaximumCountLabel = new QLabel(QStringLiteral("同时显示最多日志条数"), notificationGroupBox);
+    languageManager.bindText(notificationMaximumCountLabel, QStringLiteral("settings.notification.maximum_count"), QStringLiteral("同时显示最多日志条数"));
+    notificationMaximumCountLayout->addWidget(notificationMaximumCountLabel, 0);
+    m_notificationMaximumVisibleLogCardsSpin = new QSpinBox(notificationGroupBox);
+    m_notificationMaximumVisibleLogCardsSpin->setRange(0, 100);
+    m_notificationMaximumVisibleLogCardsSpin->setToolTip(QStringLiteral("0 表示不限制，仍会在可用空间不足时按现有逻辑替换最旧日志。"));
+    languageManager.bindToolTip(m_notificationMaximumVisibleLogCardsSpin, QStringLiteral("settings.notification.maximum_count.tooltip"), QStringLiteral("0 表示不限制，仍会在可用空间不足时按现有逻辑替换最旧日志。"));
+    notificationMaximumCountLayout->addWidget(m_notificationMaximumVisibleLogCardsSpin, 1);
+    notificationLayout->addLayout(notificationMaximumCountLayout);
+
+    m_notificationLogHeightLimitCheckBox = new QCheckBox(QStringLiteral("限制单条日志卡片高度"), notificationGroupBox);
+    languageManager.bindText(m_notificationLogHeightLimitCheckBox, QStringLiteral("settings.notification.height_limit.enabled"), QStringLiteral("限制单条日志卡片高度"));
+    notificationLayout->addWidget(m_notificationLogHeightLimitCheckBox);
+
+    QHBoxLayout* notificationMaximumLinesLayout = new QHBoxLayout();
+    QLabel* notificationMaximumLinesLabel = new QLabel(QStringLiteral("最高文字行数"), notificationGroupBox);
+    languageManager.bindText(notificationMaximumLinesLabel, QStringLiteral("settings.notification.height_limit.lines"), QStringLiteral("最高文字行数"));
+    notificationMaximumLinesLayout->addWidget(notificationMaximumLinesLabel, 0);
+    m_notificationLogMaximumLinesSpin = new QSpinBox(notificationGroupBox);
+    m_notificationLogMaximumLinesSpin->setRange(1, 50);
+    m_notificationLogMaximumLinesSpin->setSuffix(QStringLiteral(" 行"));
+    languageManager.bindSuffix(m_notificationLogMaximumLinesSpin, QStringLiteral("settings.notification.height_limit.lines.suffix"), QStringLiteral(" 行"));
+    m_notificationLogMaximumLinesSpin->setToolTip(QStringLiteral("超出时可通过卡片标题栏的小箭头展开完整日志。"));
+    languageManager.bindToolTip(m_notificationLogMaximumLinesSpin, QStringLiteral("settings.notification.height_limit.lines.tooltip"), QStringLiteral("超出时可通过卡片标题栏的小箭头展开完整日志。"));
+    notificationMaximumLinesLayout->addWidget(m_notificationLogMaximumLinesSpin, 1);
+    notificationLayout->addLayout(notificationMaximumLinesLayout);
+
     QHBoxLayout* notificationPlacementLayout = new QHBoxLayout();
     QLabel* notificationPlacementLabel = new QLabel(QStringLiteral("显示位置"), notificationGroupBox);
     languageManager.bindText(notificationPlacementLabel, QStringLiteral("settings.notification.placement"), QStringLiteral("显示位置"));
@@ -1241,6 +1269,19 @@ void SettingsDock::bindAppearanceSignals()
     connect(m_notificationLogDisplaySecondsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
         markPendingChanges(QStringLiteral("通知日志展示秒数切换"));
         });
+    connect(m_notificationMaximumVisibleLogCardsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        markPendingChanges(QStringLiteral("通知同时显示日志条数切换"));
+        });
+    connect(m_notificationLogHeightLimitCheckBox, &QCheckBox::toggled, this, [this](const bool checked) {
+        if (m_notificationLogMaximumLinesSpin != nullptr)
+        {
+            m_notificationLogMaximumLinesSpin->setEnabled(checked);
+        }
+        markPendingChanges(QStringLiteral("通知日志卡片高度限制切换"));
+        });
+    connect(m_notificationLogMaximumLinesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        markPendingChanges(QStringLiteral("通知日志卡片最高文字行数切换"));
+        });
     connect(m_notificationDisplayPlacementCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         markPendingChanges(QStringLiteral("通知显示位置切换"));
         });
@@ -1420,6 +1461,21 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_notificationLogDisplaySecondsSpin->setValue(settings.notificationLogDisplaySeconds);
     }
+    if (m_notificationMaximumVisibleLogCardsSpin != nullptr)
+    {
+        m_notificationMaximumVisibleLogCardsSpin->setValue(settings.notificationMaximumVisibleLogCards);
+    }
+    if (m_notificationLogHeightLimitCheckBox != nullptr)
+    {
+        m_notificationLogHeightLimitCheckBox->setChecked(settings.notificationLogHeightLimitEnabled);
+    }
+    if (m_notificationLogMaximumLinesSpin != nullptr)
+    {
+        m_notificationLogMaximumLinesSpin->setValue(settings.notificationLogMaximumLines);
+        m_notificationLogMaximumLinesSpin->setEnabled(
+            m_notificationLogHeightLimitCheckBox != nullptr
+            && m_notificationLogHeightLimitCheckBox->isChecked());
+    }
     if (m_notificationDisplayPlacementCombo != nullptr)
     {
         const int index = m_notificationDisplayPlacementCombo->findData(
@@ -1596,6 +1652,17 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         m_notificationLogDisplaySecondsSpin != nullptr
         ? m_notificationLogDisplaySecondsSpin->value()
         : m_currentAppearanceSettings.notificationLogDisplaySeconds;
+    collectedSettings.notificationMaximumVisibleLogCards =
+        m_notificationMaximumVisibleLogCardsSpin != nullptr
+        ? m_notificationMaximumVisibleLogCardsSpin->value()
+        : m_currentAppearanceSettings.notificationMaximumVisibleLogCards;
+    collectedSettings.notificationLogHeightLimitEnabled =
+        (m_notificationLogHeightLimitCheckBox != nullptr)
+        && m_notificationLogHeightLimitCheckBox->isChecked();
+    collectedSettings.notificationLogMaximumLines =
+        m_notificationLogMaximumLinesSpin != nullptr
+        ? m_notificationLogMaximumLinesSpin->value()
+        : m_currentAppearanceSettings.notificationLogMaximumLines;
     collectedSettings.notificationDisplayPlacement =
         m_notificationDisplayPlacementCombo != nullptr
         ? static_cast<ks::settings::NotificationDisplayPlacement>(m_notificationDisplayPlacementCombo->currentData().toInt())
@@ -1850,6 +1917,9 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.notificationCardsEnabled == m_currentAppearanceSettings.notificationCardsEnabled
         && nextSettings.notificationMinimumLevel == m_currentAppearanceSettings.notificationMinimumLevel
         && nextSettings.notificationLogDisplaySeconds == m_currentAppearanceSettings.notificationLogDisplaySeconds
+        && nextSettings.notificationMaximumVisibleLogCards == m_currentAppearanceSettings.notificationMaximumVisibleLogCards
+        && nextSettings.notificationLogHeightLimitEnabled == m_currentAppearanceSettings.notificationLogHeightLimitEnabled
+        && nextSettings.notificationLogMaximumLines == m_currentAppearanceSettings.notificationLogMaximumLines
         && nextSettings.notificationDisplayPlacement == m_currentAppearanceSettings.notificationDisplayPlacement
         && nextSettings.notificationStackDirection == m_currentAppearanceSettings.notificationStackDirection
         && nextSettings.virusTotalApiKey == m_currentAppearanceSettings.virusTotalApiKey

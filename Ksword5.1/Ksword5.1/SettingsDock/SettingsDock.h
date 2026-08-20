@@ -295,6 +295,9 @@ private:
     QCheckBox* m_notificationCardsEnabledCheckBox = nullptr;
     QComboBox* m_notificationMinimumLevelCombo = nullptr;
     QSpinBox* m_notificationLogDisplaySecondsSpin = nullptr;
+    QSpinBox* m_notificationMaximumVisibleLogCardsSpin = nullptr;
+    QCheckBox* m_notificationLogHeightLimitCheckBox = nullptr;
+    QSpinBox* m_notificationLogMaximumLinesSpin = nullptr;
     QComboBox* m_notificationDisplayPlacementCombo = nullptr;
     QComboBox* m_notificationStackDirectionCombo = nullptr;
 

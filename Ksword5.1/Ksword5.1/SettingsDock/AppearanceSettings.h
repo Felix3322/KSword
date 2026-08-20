@@ -117,6 +117,9 @@ namespace ks::settings
         bool notificationCardsEnabled = true;
         int notificationMinimumLevel = 2; // Warn，数值与 kLogLevel 的严重度顺序保持一致。
         int notificationLogDisplaySeconds = 10;
+        int notificationMaximumVisibleLogCards = 0; // 0 表示不限制，由可用显示空间决定。
+        bool notificationLogHeightLimitEnabled = true;
+        int notificationLogMaximumLines = 5;
         NotificationDisplayPlacement notificationDisplayPlacement = NotificationDisplayPlacement::Screen;
         NotificationStackDirection notificationStackDirection = NotificationStackDirection::BottomUp;
         bool dumpAutoCheckEnabled = true;

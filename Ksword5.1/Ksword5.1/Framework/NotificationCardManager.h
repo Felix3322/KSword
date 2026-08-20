@@ -52,6 +52,7 @@ namespace ks::ui
         void refreshProgressCards();
         void removeExpiredLogCards();
         void reflowCards(bool animate);
+        void trimLogCardsToMaximum(bool animate);
 
         void appendLogCard(const kEvent& eventItem);
         void appendProgressCard(const kProgressTask& taskItem);
