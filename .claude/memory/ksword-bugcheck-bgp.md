@@ -12,6 +12,8 @@
   验证的私有入口；适配器的最终反汇编不得出现 `__guard_dispatch_icall_fptr`。
 - Windows 10 19042 的 BGP 私有 `GetBpp` 在驱动加载期尚未调用 `InbvAcquireDisplayOwnership` 时可能返回 `1`，同时分辨率返回 `0×0`。这是未取得显示所有权的延迟探测状态，不能直接判定为不支持。
 - 加载期仍需在 `PASSIVE_LEVEL` 完成全部资源准备。当前实现同时生成并解析 24 BPP、32 BPP 的 Logo 与黑色/蓝色 ASCII 字形矩形。
+- BGP 私有函数解析必须先用故障封装读取器校验 DOS/NT/节表，再分块复制候选节后扫描；所有 `IMAGE_SCN_MEM_DISCARDABLE` 节（即使同时带 `IMAGE_SCN_MEM_EXECUTE`）都必须在读取前排除。节 RVA、签名范围、入口回退和 `rel32` 目标均使用减法式边界与显式溢出检查；任一窗口无法完整读取就 fail-closed。
+- 解析结果只有在全部私有入口、唯一性、Clear/Draw→BPP 语义关系和崩溃期常驻属性同时通过后，才能一次性发布到非分页全局快照。BugCheck 回调只消费该快照和预生成矩形，不得重新扫描 `ntoskrnl` 或现场解析指令。驱动侧蓝屏诊断保持编译期显式 opt-in、默认关闭，Windows 原生蓝屏与转储不受影响。
 - 崩溃回调中的顺序保持为 `InbvAcquireDisplayOwnership → BgpFwAcquireLock → 重新读取分辨率/BPP → BgpClearScreen → BgpGxDrawRectangle → BgpFwReleaseLock`。
 - 取得显示所有权后只接受实际 BPP 为 24 或 32。分辨率、BPP、私有特征或节属性不满足时，在清屏前释放锁并退出，保留 Windows 原蓝屏。
 - VMware 的 Windows 10 19042 蓝屏显示模式可能固定回落到 `640×480×32`，即使桌面分辨率更高。面板必须保留 `640×480` 紧凑布局；`1024×768` 只能作为完整布局阈值，不能作为 BGP 可用性的最低门槛。

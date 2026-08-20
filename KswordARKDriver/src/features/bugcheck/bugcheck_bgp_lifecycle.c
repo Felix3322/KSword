@@ -92,6 +92,18 @@ KswordARKBugcheckBgpShutdown(
         g_KswordArkBgp.Release != NULL) {
         KswordARKBugcheckBgpInvokeRelease();
     }
+    KeMemoryBarrier();
+    InterlockedExchange(&g_KswordArkBgp.ResolvedSnapshotReady, 0);
+    g_KswordArkBgp.Clear = NULL;
+    g_KswordArkBgp.Draw = NULL;
+    g_KswordArkBgp.Acquire = NULL;
+    g_KswordArkBgp.Release = NULL;
+    g_KswordArkBgp.GetResolution = NULL;
+    g_KswordArkBgp.GetBpp = NULL;
+    g_KswordArkBgp.ParseBitmap = NULL;
+    g_KswordArkBgp.DestroyRectangle = NULL;
+    g_KswordArkBgp.AcquireOwnership = NULL;
+    g_KswordArkBgp.FeatureMask = 0UL;
     g_KswordArkBgp.RequiredWidth = 0;
     g_KswordArkBgp.RequiredHeight = 0;
 }
@@ -142,6 +154,10 @@ KswordARKBugcheckBgpParseBitmap(
              &g_KswordArkBgp.ResourceUpdateActive,
              0,
              0) == 0) ||
+        InterlockedCompareExchange(
+            &g_KswordArkBgp.ResolvedSnapshotReady,
+            0,
+            0) == 0 ||
         g_KswordArkBgp.ParseBitmap == NULL) {
         return STATUS_DEVICE_NOT_READY;
     }
@@ -209,7 +225,12 @@ KswordARKBugcheckBgpDestroyRectangle(
     _In_opt_ PVOID Rectangle
     )
 {
-    if (Rectangle != NULL && g_KswordArkBgp.DestroyRectangle != NULL) {
+    if (Rectangle != NULL &&
+        InterlockedCompareExchange(
+            &g_KswordArkBgp.ResolvedSnapshotReady,
+            0,
+            0) != 0 &&
+        g_KswordArkBgp.DestroyRectangle != NULL) {
         (VOID)KswordARKBugcheckBgpInvokeDestroyRectangle(Rectangle);
     }
 }
@@ -221,6 +242,10 @@ KswordARKBugcheckBgpArm(
     )
 {
     if (InterlockedCompareExchange(
+            &g_KswordArkBgp.ResolvedSnapshotReady,
+            0,
+            0) == 0 ||
+        InterlockedCompareExchange(
             &g_KswordArkBgp.State,
             0,
             0) != KswordArkBgpStateReady ||

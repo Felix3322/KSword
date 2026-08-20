@@ -87,6 +87,7 @@ typedef struct _KSWORD_ARK_BGP_CONTEXT
     PKSWORD_ARK_BGP_PARSE_BITMAP ParseBitmap;
     PKSWORD_ARK_BGP_DESTROY_RECTANGLE DestroyRectangle;
     PKSWORD_ARK_INBV_ACQUIRE_DISPLAY_OWNERSHIP AcquireOwnership;
+    volatile LONG ResolvedSnapshotReady;
     ULONG FeatureMask;
     ULONG SignatureFamily[KSWORD_ARK_BGP_SIGNATURE_COUNT];
     KSWORD_ARK_BGP_SCREEN_INFO Screen;

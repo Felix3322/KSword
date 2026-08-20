@@ -7,9 +7,18 @@
 
 EXTERN_C_START
 
-// Temporary fail-closed build gate for the complete driver-side blue screen
-// diagnostic path. This does not affect the rest of the driver or user-mode UI.
+// Fail-closed opt-in build gate for the complete driver-side blue screen
+// diagnostic path. Release builds leave it disabled unless an explicit build
+// definition enables a controlled test image. This does not affect the rest of
+// the driver, Windows' native blue screen, dump creation, or user-mode dump UI.
+#ifndef KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED
 #define KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED 0
+#endif
+
+#if KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED != 0 && \
+    KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED != 1
+#error KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED must be 0 or 1
+#endif
 
 // Resolve the physical-machine BGP backend, prepare every crash-time rectangle
 // at PASSIVE_LEVEL, and register dump-preserving bugcheck callbacks. Missing

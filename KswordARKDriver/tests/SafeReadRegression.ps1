@@ -100,4 +100,64 @@ Assert-DoesNotMatch `
     -Pattern '\b(?:RtlCopyMemory|memcpy|memmove)\s*\(' `
     -FailureMessage 'KswordARKRuntimeReadMemory must not regress to a direct copy.'
 
-Write-Host 'safe-read regression passed: fallback readers use fault-contained, complete MmCopyMemory reads.'
+$bgpSource = Join-Path $RepositoryRoot 'KswordARKDriver\src\features\bugcheck\bugcheck_bgp.c'
+$bgpViewBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpInitializeImageView'
+$bgpAddressBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpAddressInSection'
+$bgpScanBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpScanSignatures'
+$bgpDecodeBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpDecodeRelativeCallAt'
+
+Assert-Matches `
+    -Text $bgpViewBody `
+    -Pattern '\bKswordARKRuntimeReadMemory\s*\(' `
+    -FailureMessage 'The BGP PE parser must read live kernel headers through the fault-contained reader.'
+Assert-Matches `
+    -Text $bgpAddressBody `
+    -Pattern '\bIMAGE_SCN_MEM_DISCARDABLE\b' `
+    -FailureMessage 'BGP target validation must reject discardable executable sections.'
+Assert-Matches `
+    -Text $bgpScanBody `
+    -Pattern '\bIMAGE_SCN_MEM_DISCARDABLE\b' `
+    -FailureMessage 'The BGP scanner must skip discardable executable sections before reading them.'
+Assert-Matches `
+    -Text $bgpScanBody `
+    -Pattern '\bKswordARKRuntimeReadMemory\s*\(' `
+    -FailureMessage 'The BGP scanner must snapshot each bounded window with the fault-contained reader.'
+$discardableCheck = $bgpScanBody.IndexOf('IMAGE_SCN_MEM_DISCARDABLE', [StringComparison]::Ordinal)
+$snapshotRead = $bgpScanBody.IndexOf('KswordARKRuntimeReadMemory(', [StringComparison]::Ordinal)
+if ($discardableCheck -lt 0 -or $snapshotRead -lt 0 -or $discardableCheck -gt $snapshotRead) {
+    throw 'The BGP scanner must reject discardable sections before its first snapshot read.'
+}
+Assert-Matches `
+    -Text $bgpDecodeBody `
+    -Pattern '\bMAXULONG_PTR\b' `
+    -FailureMessage 'BGP relative-call decoding must reject pointer addition overflow.'
+Assert-Matches `
+    -Text $bgpDecodeBody `
+    -Pattern '-\(LONGLONG\)displacement' `
+    -FailureMessage 'BGP relative-call decoding must handle LONG_MIN without signed overflow.'
+
+$bgpResolveBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpResolveFunctions'
+$bgpBeginDrawBody = Get-CFunctionBody -Path $bgpSource -Name 'KswordARKBugcheckBgpBeginDraw'
+Assert-Matches `
+    -Text $bgpResolveBody `
+    -Pattern '\bInterlockedExchange\s*\(\s*&g_KswordArkBgp\.ResolvedSnapshotReady\s*,\s*1\s*\)' `
+    -FailureMessage 'The BGP resolver must publish an explicit ready snapshot only after validation.'
+Assert-Matches `
+    -Text $bgpBeginDrawBody `
+    -Pattern '\bResolvedSnapshotReady\b' `
+    -FailureMessage 'The crash-time BGP draw path must reject an unpublished resolver snapshot.'
+
+$bugcheckRuntime = Join-Path $RepositoryRoot 'KswordARKDriver\src\features\bugcheck\bugcheck_runtime.c'
+$bugcheckCallbackBody = Get-CFunctionBody -Path $bugcheckRuntime -Name 'KswordARKBugcheckReasonCallback'
+Assert-DoesNotMatch `
+    -Text $bugcheckCallbackBody `
+    -Pattern '\b(?:KswordARKBugcheckBgpScanSignatures|KswordARKBugcheckBgpResolveFunctions|KswordARKRuntimeReadMemory)\s*\(' `
+    -FailureMessage 'The bugcheck callback must consume only prepared state and never scan or read the live kernel image.'
+
+$bugcheckHeader = Get-Content -LiteralPath (Join-Path $RepositoryRoot 'KswordARKDriver\include\ark\ark_bugcheck.h') -Raw
+Assert-Matches `
+    -Text $bugcheckHeader `
+    -Pattern '(?s)#ifndef\s+KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED.*?#define\s+KSWORD_ARK_BUGCHECK_DIAGNOSTICS_ENABLED\s+0' `
+    -FailureMessage 'Driver-side bugcheck diagnostics must remain an explicit opt-in and default to disabled.'
+
+Write-Host 'safe-read regression passed: fallback and BGP scanners use fault-contained reads; discardable sections and crash-time rescans stay blocked.'

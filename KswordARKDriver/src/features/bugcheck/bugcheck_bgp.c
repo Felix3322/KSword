@@ -14,6 +14,7 @@ Abstract:
 #include "bugcheck_bgp.h"
 #include "bugcheck_bgp_internal.h"
 #include "../../platform/pool_compat.h"
+#include "../../platform/runtime_signature_scan.h"
 
 #include <aux_klib.h>
 #include <ntimage.h>
@@ -21,20 +22,32 @@ Abstract:
 #include "Generated/BgpSignatures.h"
 
 #define KSWORD_ARK_BGP_POOL_TAG 'pBgK'
+#define KSWORD_ARK_BGP_SCAN_POOL_TAG 'sBgK'
+#define KSWORD_ARK_BGP_MAX_IMAGE_SECTIONS 96UL
+#define KSWORD_ARK_BGP_SCAN_ANCHOR_STRIDE (64UL * 1024UL)
 #define KSWORD_ARK_BGP_ALL_PRIVATE_FEATURES \
     (KSWORD_ARK_BGP_FEATURE_CLEAR | KSWORD_ARK_BGP_FEATURE_DRAW | \
      KSWORD_ARK_BGP_FEATURE_ACQUIRE | KSWORD_ARK_BGP_FEATURE_RELEASE | \
      KSWORD_ARK_BGP_FEATURE_RESOLUTION | KSWORD_ARK_BGP_FEATURE_BPP | \
      KSWORD_ARK_BGP_FEATURE_PARSE | KSWORD_ARK_BGP_FEATURE_DESTROY)
 
-KSWORD_ARK_BGP_CONTEXT g_KswordArkBgp;
+typedef struct _KSWORD_ARK_BGP_IMAGE_SECTION
+{
+    UCHAR Name[IMAGE_SIZEOF_SHORT_NAME];
+    ULONG VirtualAddress;
+    ULONG VirtualSize;
+    ULONG Characteristics;
+} KSWORD_ARK_BGP_IMAGE_SECTION, *PKSWORD_ARK_BGP_IMAGE_SECTION;
 
-NTSYSAPI
-PIMAGE_NT_HEADERS
-NTAPI
-RtlImageNtHeader(
-    _In_ PVOID Base
-    );
+typedef struct _KSWORD_ARK_BGP_IMAGE_VIEW
+{
+    PUCHAR ImageBase;
+    ULONG ImageSize;
+    ULONG SectionCount;
+    KSWORD_ARK_BGP_IMAGE_SECTION Sections[KSWORD_ARK_BGP_MAX_IMAGE_SECTIONS];
+} KSWORD_ARK_BGP_IMAGE_VIEW, *PKSWORD_ARK_BGP_IMAGE_VIEW;
+
+KSWORD_ARK_BGP_CONTEXT g_KswordArkBgp;
 
 VOID
 KswordARKBugcheckBgpRecordStage(
@@ -69,46 +82,254 @@ KswordARKBugcheckBgpGetExport(
 }
 
 static BOOLEAN
-KswordARKBugcheckBgpAddressInSection(
+KswordARKBugcheckBgpRvaRangeValid(
+    _In_ ULONG ImageSize,
+    _In_ ULONG Rva,
+    _In_ SIZE_T RequiredBytes
+    )
+{
+    return ImageSize != 0UL &&
+        RequiredBytes != 0U &&
+        Rva < ImageSize &&
+        RequiredBytes <= (SIZE_T)(ImageSize - Rva);
+}
+
+static BOOLEAN
+KswordARKBugcheckBgpAddressForRva(
+    _In_ const KSWORD_ARK_BGP_IMAGE_VIEW* View,
+    _In_ ULONG Rva,
+    _In_ SIZE_T RequiredBytes,
+    _Out_ PUCHAR* AddressOut
+    )
+{
+    ULONG_PTR base;
+
+    if (View == NULL || AddressOut == NULL || View->ImageBase == NULL ||
+        !KswordARKBugcheckBgpRvaRangeValid(
+            View->ImageSize,
+            Rva,
+            RequiredBytes)) {
+        return FALSE;
+    }
+
+    base = (ULONG_PTR)View->ImageBase;
+    if (base > MAXULONG_PTR - Rva) {
+        return FALSE;
+    }
+    *AddressOut = (PUCHAR)(base + Rva);
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKBugcheckBgpInitializeImageView(
     _In_reads_bytes_(ImageSize) PUCHAR ImageBase,
     _In_ ULONG ImageSize,
+    _Out_ PKSWORD_ARK_BGP_IMAGE_VIEW View
+    )
+{
+    IMAGE_DOS_HEADER dosHeader;
+    IMAGE_NT_HEADERS64 ntHeaders;
+    ULONG ntHeadersRva;
+    ULONG sectionHeadersRva;
+    ULONG sectionHeadersBytes;
+    ULONG sectionIndex;
+    ULONG_PTR base;
+    PUCHAR ntHeadersAddress;
+
+    if (View == NULL) {
+        return FALSE;
+    }
+    RtlZeroMemory(View, sizeof(*View));
+    if (ImageBase == NULL || ImageSize < sizeof(dosHeader) ||
+        !KswordARKRuntimeReadMemory(
+            ImageBase,
+            &dosHeader,
+            sizeof(dosHeader)) ||
+        dosHeader.e_magic != IMAGE_DOS_SIGNATURE ||
+        dosHeader.e_lfanew <= 0) {
+        return FALSE;
+    }
+
+    base = (ULONG_PTR)ImageBase;
+    ntHeadersRva = (ULONG)dosHeader.e_lfanew;
+    if (!KswordARKBugcheckBgpRvaRangeValid(
+            ImageSize,
+            ntHeadersRva,
+            sizeof(ntHeaders)) ||
+        base > MAXULONG_PTR - ntHeadersRva) {
+        return FALSE;
+    }
+    ntHeadersAddress = (PUCHAR)(base + ntHeadersRva);
+    if (!KswordARKRuntimeReadMemory(
+            ntHeadersAddress,
+            &ntHeaders,
+            sizeof(ntHeaders)) ||
+        ntHeaders.Signature != IMAGE_NT_SIGNATURE ||
+        ntHeaders.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        ntHeaders.FileHeader.SizeOfOptionalHeader <
+            sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        ntHeaders.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        ntHeaders.OptionalHeader.SizeOfImage == 0UL ||
+        ntHeaders.OptionalHeader.SizeOfImage > ImageSize ||
+        ntHeaders.FileHeader.NumberOfSections == 0U ||
+        ntHeaders.FileHeader.NumberOfSections >
+            KSWORD_ARK_BGP_MAX_IMAGE_SECTIONS) {
+        return FALSE;
+    }
+
+    if (ntHeadersRva >
+            MAXULONG - FIELD_OFFSET(IMAGE_NT_HEADERS64, OptionalHeader) ||
+        ntHeadersRva + FIELD_OFFSET(IMAGE_NT_HEADERS64, OptionalHeader) >
+            MAXULONG - ntHeaders.FileHeader.SizeOfOptionalHeader) {
+        return FALSE;
+    }
+    sectionHeadersRva =
+        ntHeadersRva +
+        FIELD_OFFSET(IMAGE_NT_HEADERS64, OptionalHeader) +
+        ntHeaders.FileHeader.SizeOfOptionalHeader;
+    sectionHeadersBytes =
+        (ULONG)ntHeaders.FileHeader.NumberOfSections *
+        (ULONG)sizeof(IMAGE_SECTION_HEADER);
+    if (!KswordARKBugcheckBgpRvaRangeValid(
+            ntHeaders.OptionalHeader.SizeOfImage,
+            sectionHeadersRva,
+            sectionHeadersBytes)) {
+        return FALSE;
+    }
+
+    if (base > MAXULONG_PTR - ntHeaders.OptionalHeader.SizeOfImage) {
+        return FALSE;
+    }
+    View->ImageBase = ImageBase;
+    View->ImageSize = ntHeaders.OptionalHeader.SizeOfImage;
+
+    for (sectionIndex = 0;
+         sectionIndex < ntHeaders.FileHeader.NumberOfSections;
+         ++sectionIndex) {
+        IMAGE_SECTION_HEADER sectionHeader;
+        PKSWORD_ARK_BGP_IMAGE_SECTION section;
+        ULONG sectionHeaderRva;
+        ULONG sectionSize;
+        ULONG priorIndex;
+        PUCHAR sectionHeaderAddress;
+
+        sectionHeaderRva = sectionHeadersRva +
+            sectionIndex * (ULONG)sizeof(sectionHeader);
+        if (!KswordARKBugcheckBgpRvaRangeValid(
+                View->ImageSize,
+                sectionHeaderRva,
+                sizeof(sectionHeader)) ||
+            !KswordARKBugcheckBgpAddressForRva(
+                View,
+                sectionHeaderRva,
+                sizeof(sectionHeader),
+                &sectionHeaderAddress) ||
+            !KswordARKRuntimeReadMemory(
+                sectionHeaderAddress,
+                &sectionHeader,
+                sizeof(sectionHeader))) {
+            RtlZeroMemory(View, sizeof(*View));
+            return FALSE;
+        }
+
+        sectionSize = max(
+            sectionHeader.Misc.VirtualSize,
+            sectionHeader.SizeOfRawData);
+        if (sectionSize == 0UL) {
+            continue;
+        }
+        if (!KswordARKBugcheckBgpRvaRangeValid(
+                View->ImageSize,
+                sectionHeader.VirtualAddress,
+                sectionSize)) {
+            RtlZeroMemory(View, sizeof(*View));
+            return FALSE;
+        }
+
+        for (priorIndex = 0;
+             priorIndex < View->SectionCount;
+             ++priorIndex) {
+            const KSWORD_ARK_BGP_IMAGE_SECTION* prior;
+            ULONG priorEnd;
+            ULONG sectionEnd;
+
+            prior = &View->Sections[priorIndex];
+            priorEnd = prior->VirtualAddress + prior->VirtualSize;
+            sectionEnd = sectionHeader.VirtualAddress + sectionSize;
+            if (sectionHeader.VirtualAddress < priorEnd &&
+                prior->VirtualAddress < sectionEnd) {
+                RtlZeroMemory(View, sizeof(*View));
+                return FALSE;
+            }
+        }
+
+        section = &View->Sections[View->SectionCount++];
+        RtlCopyMemory(
+            section->Name,
+            sectionHeader.Name,
+            sizeof(section->Name));
+        section->VirtualAddress = sectionHeader.VirtualAddress;
+        section->VirtualSize = sectionSize;
+        section->Characteristics = sectionHeader.Characteristics;
+    }
+
+    if (View->SectionCount == 0UL) {
+        RtlZeroMemory(View, sizeof(*View));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKBugcheckBgpAddressInSection(
+    _In_ const KSWORD_ARK_BGP_IMAGE_VIEW* View,
     _In_opt_ PVOID Address,
+    _In_ SIZE_T RequiredBytes,
     _In_ BOOLEAN AllowPaged
     )
 {
-    PIMAGE_NT_HEADERS64 ntHeaders;
-    PIMAGE_SECTION_HEADER section;
-    ULONG sectionIndex;
+    ULONG_PTR addressValue;
+    ULONG_PTR imageBase;
     ULONG_PTR addressRva;
+    ULONG sectionIndex;
 
-    if (Address == NULL ||
-        (PUCHAR)Address < ImageBase ||
-        (PUCHAR)Address >= ImageBase + ImageSize) {
+    if (View == NULL || View->ImageBase == NULL || Address == NULL ||
+        RequiredBytes == 0U) {
+        return FALSE;
+    }
+    addressValue = (ULONG_PTR)Address;
+    imageBase = (ULONG_PTR)View->ImageBase;
+    if (addressValue < imageBase) {
+        return FALSE;
+    }
+    addressRva = addressValue - imageBase;
+    if (addressRva > MAXULONG ||
+        !KswordARKBugcheckBgpRvaRangeValid(
+            View->ImageSize,
+            (ULONG)addressRva,
+            RequiredBytes)) {
         return FALSE;
     }
 
-    ntHeaders = (PIMAGE_NT_HEADERS64)RtlImageNtHeader(ImageBase);
-    if (ntHeaders == NULL || ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
-        return FALSE;
-    }
-
-    addressRva = (ULONG_PTR)((PUCHAR)Address - ImageBase);
-    section = IMAGE_FIRST_SECTION(ntHeaders);
     for (sectionIndex = 0;
-         sectionIndex < ntHeaders->FileHeader.NumberOfSections;
-         ++sectionIndex, ++section) {
-        ULONG sectionSize;
+         sectionIndex < View->SectionCount;
+         ++sectionIndex) {
+        const KSWORD_ARK_BGP_IMAGE_SECTION* section;
+        ULONG offsetInSection;
 
-        sectionSize = max(section->Misc.VirtualSize, section->SizeOfRawData);
-        if (addressRva < section->VirtualAddress ||
-            addressRva >= section->VirtualAddress + sectionSize) {
+        section = &View->Sections[sectionIndex];
+        if ((ULONG)addressRva < section->VirtualAddress ||
+            (ULONG)addressRva >=
+                section->VirtualAddress + section->VirtualSize) {
             continue;
         }
-        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
-            return FALSE;
-        }
-        if (!AllowPaged &&
-            (section->Characteristics & IMAGE_SCN_MEM_NOT_PAGED) == 0) {
+        offsetInSection = (ULONG)addressRva - section->VirtualAddress;
+        if (RequiredBytes >
+                (SIZE_T)(section->VirtualSize - offsetInSection) ||
+            (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0UL ||
+            (section->Characteristics & IMAGE_SCN_MEM_DISCARDABLE) != 0UL ||
+            (!AllowPaged &&
+             (section->Characteristics & IMAGE_SCN_MEM_NOT_PAGED) == 0UL)) {
             return FALSE;
         }
         return TRUE;
@@ -157,226 +378,414 @@ KswordARKBugcheckBgpSectionNameMatches(
     return Expected[IMAGE_SIZEOF_SHORT_NAME] == '\0';
 }
 
-static PVOID
+static BOOLEAN
 KswordARKBugcheckBgpDecodeRelativeCallAt(
-    _In_reads_bytes_(Length) const UCHAR* Address,
+    _In_reads_bytes_(Length) const UCHAR* Bytes,
     _In_ ULONG Length,
-    _In_ ULONG Offset
+    _In_ ULONG Offset,
+    _In_ ULONG_PTR OriginalAddress,
+    _Out_ PVOID* TargetOut
     )
 {
     LONG displacement;
+    ULONG_PTR nextInstruction;
+    ULONG_PTR target;
+    ULONG_PTR magnitude;
 
-    if (Offset > Length || Length - Offset < 5UL || Address[Offset] != 0xE8U) {
-        return NULL;
+    if (Bytes == NULL || TargetOut == NULL || Offset > Length ||
+        Length - Offset < 5UL || Bytes[Offset] != 0xE8U ||
+        OriginalAddress > MAXULONG_PTR - Offset) {
+        return FALSE;
     }
+    *TargetOut = NULL;
 
-    RtlCopyMemory(&displacement, Address + Offset + 1UL, sizeof(displacement));
-    return (PVOID)(Address + Offset + 5UL + displacement);
-}
-
-static const BGP_SIGNATURE*
-KswordARKBugcheckBgpFindSignatureForEntry(
-    _In_reads_bytes_(ImageSize) PUCHAR ImageBase,
-    _In_ ULONG ImageSize,
-    _In_ ULONG Target,
-    _In_ PVOID Entry
-    )
-{
-    PIMAGE_NT_HEADERS64 ntHeaders;
-    PIMAGE_SECTION_HEADER section;
-    ULONG sectionIndex;
-    ULONG signatureIndex;
-    ULONG_PTR entryRva;
-
-    if (Target >= BgpSignatureCount ||
-        (PUCHAR)Entry < ImageBase ||
-        (PUCHAR)Entry >= ImageBase + ImageSize) {
-        return NULL;
+    nextInstruction = OriginalAddress + Offset;
+    if (nextInstruction > MAXULONG_PTR - 5UL) {
+        return FALSE;
     }
+    nextInstruction += 5UL;
+    RtlCopyMemory(&displacement, Bytes + Offset + 1UL, sizeof(displacement));
 
-    ntHeaders = (PIMAGE_NT_HEADERS64)RtlImageNtHeader(ImageBase);
-    if (ntHeaders == NULL || ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
-        return NULL;
-    }
-
-    entryRva = (ULONG_PTR)((PUCHAR)Entry - ImageBase);
-    section = IMAGE_FIRST_SECTION(ntHeaders);
-    for (sectionIndex = 0;
-         sectionIndex < ntHeaders->FileHeader.NumberOfSections;
-         ++sectionIndex, ++section) {
-        ULONG sectionSize;
-
-        sectionSize = min(
-            section->Misc.VirtualSize,
-            ImageSize - min(section->VirtualAddress, ImageSize));
-        if (entryRva < section->VirtualAddress ||
-            entryRva >= section->VirtualAddress + sectionSize ||
-            (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) {
-            continue;
+    if (displacement >= 0) {
+        if (nextInstruction > MAXULONG_PTR - (ULONG)displacement) {
+            return FALSE;
         }
-
-        for (signatureIndex = 0;
-             signatureIndex < BGP_SIGNATURE_TABLE_COUNT;
-             ++signatureIndex) {
-            const BGP_SIGNATURE* signature;
-            ULONG_PTR matchRva;
-
-            signature = &g_BgpSignatures[signatureIndex];
-            if (signature->Target != Target ||
-                signature->Section == NULL ||
-                !KswordARKBugcheckBgpSectionNameMatches(
-                    section->Name,
-                    signature->Section) ||
-                (!signature->AllowPaged &&
-                 (section->Characteristics & IMAGE_SCN_MEM_NOT_PAGED) == 0)) {
-                continue;
-            }
-
-            matchRva = entryRva + signature->EntryOffset;
-            if (matchRva < entryRva ||
-                matchRva < section->VirtualAddress ||
-                matchRva > section->VirtualAddress + sectionSize ||
-                signature->Length >
-                    section->VirtualAddress + sectionSize - matchRva) {
-                continue;
-            }
-
-            if (KswordARKBugcheckBgpMatches(ImageBase + matchRva, signature)) {
-                return signature;
-            }
+        target = nextInstruction + (ULONG)displacement;
+    } else {
+        magnitude = (ULONG_PTR)(-(LONGLONG)displacement);
+        if (nextInstruction < magnitude) {
+            return FALSE;
         }
-        break;
+        target = nextInstruction - magnitude;
     }
 
-    return NULL;
+    *TargetOut = (PVOID)target;
+    return TRUE;
 }
 
 static VOID
 KswordARKBugcheckBgpAcceptSignatureMatch(
-    _In_reads_bytes_(ImageSize) PUCHAR ImageBase,
-    _In_ ULONG ImageSize,
+    _In_ const KSWORD_ARK_BGP_IMAGE_VIEW* View,
     _In_ const BGP_SIGNATURE* Signature,
-    _In_ PUCHAR Match,
+    _In_ PUCHAR OriginalMatch,
+    _In_reads_bytes_(Signature->Length) const UCHAR* SnapshotMatch,
     _Inout_updates_(BgpSignatureCount) PVOID* Addresses,
     _Inout_updates_(BgpSignatureCount) const BGP_SIGNATURE** MatchedSignatures,
+    _Inout_updates_(BgpSignatureCount) PVOID* DirectCallTargets,
     _Inout_updates_(BgpSignatureCount) BOOLEAN* Ambiguous
     )
 {
+    PVOID directCallTarget;
     PVOID resolvedAddress;
+    ULONG_PTR matchAddress;
     ULONG targetIndex;
 
-    resolvedAddress = Match - Signature->EntryOffset;
-    targetIndex = Signature->Target;
-    if (targetIndex >= BgpSignatureCount) {
+    if (View == NULL || Signature == NULL || OriginalMatch == NULL ||
+        SnapshotMatch == NULL || Addresses == NULL ||
+        MatchedSignatures == NULL || DirectCallTargets == NULL ||
+        Ambiguous == NULL) {
         return;
     }
-    if ((Signature->SemanticFlags & BGP_SEMANTIC_REQUIRE_DIRECT_CALL) != 0 &&
-        (Signature->DirectCallOffset == MAXULONG ||
-         !KswordARKBugcheckBgpAddressInSection(
-             ImageBase,
-             ImageSize,
-             KswordARKBugcheckBgpDecodeRelativeCallAt(
-                 Match,
-                 Signature->Length,
-                 Signature->DirectCallOffset),
-             TRUE))) {
+
+    targetIndex = Signature->Target;
+    matchAddress = (ULONG_PTR)OriginalMatch;
+    if (targetIndex >= BgpSignatureCount ||
+        matchAddress < Signature->EntryOffset) {
+        return;
+    }
+    resolvedAddress = (PVOID)(matchAddress - Signature->EntryOffset);
+    if (!KswordARKBugcheckBgpAddressInSection(
+            View,
+            resolvedAddress,
+            1U,
+            Signature->AllowPaged)) {
+        return;
+    }
+
+    directCallTarget = NULL;
+    if (Signature->DirectCallOffset != MAXULONG) {
+        if (!KswordARKBugcheckBgpDecodeRelativeCallAt(
+                SnapshotMatch,
+                Signature->Length,
+                Signature->DirectCallOffset,
+                matchAddress,
+                &directCallTarget) ||
+            !KswordARKBugcheckBgpAddressInSection(
+                View,
+                directCallTarget,
+                1U,
+                TRUE)) {
+            return;
+        }
+    } else if ((Signature->SemanticFlags &
+                BGP_SEMANTIC_REQUIRE_DIRECT_CALL) != 0UL) {
         return;
     }
 
     if (Addresses[targetIndex] == NULL) {
         Addresses[targetIndex] = resolvedAddress;
         MatchedSignatures[targetIndex] = Signature;
-        g_KswordArkBgp.SignatureFamily[targetIndex] = Signature->Family;
-    } else if (Addresses[targetIndex] != resolvedAddress) {
+        DirectCallTargets[targetIndex] = directCallTarget;
+    } else if (Addresses[targetIndex] != resolvedAddress ||
+               DirectCallTargets[targetIndex] != directCallTarget) {
         Ambiguous[targetIndex] = TRUE;
     }
 }
 
 static NTSTATUS
-KswordARKBugcheckBgpScanSignatures(
-    _In_reads_bytes_(ImageSize) PUCHAR ImageBase,
-    _In_ ULONG ImageSize,
-    _Inout_updates_(BgpSignatureCount) PVOID* Addresses,
-    _Inout_updates_(BgpSignatureCount) const BGP_SIGNATURE** MatchedSignatures,
-    _Inout_updates_(BgpSignatureCount) BOOLEAN* Ambiguous
+KswordARKBugcheckBgpValidateSignatureTable(
+    _Out_ PULONG MaximumAnchorPrefix,
+    _Out_ PULONG MaximumAnchorSuffix
     )
 {
-    PIMAGE_NT_HEADERS64 ntHeaders;
-    PIMAGE_SECTION_HEADER section;
-    ULONG sectionIndex;
+    ULONG bucketIndex;
+    ULONG signatureIndex;
 
-    ntHeaders = (PIMAGE_NT_HEADERS64)RtlImageNtHeader(ImageBase);
-    if (ntHeaders == NULL || ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
+    if (MaximumAnchorPrefix == NULL || MaximumAnchorSuffix == NULL ||
+        BGP_SIGNATURE_ANCHOR_BUCKETS == 0UL ||
+        (BGP_SIGNATURE_ANCHOR_BUCKETS &
+         (BGP_SIGNATURE_ANCHOR_BUCKETS - 1UL)) != 0UL ||
+        g_BgpSignatureAnchorBuckets[0] != 0UL ||
+        g_BgpSignatureAnchorBuckets[BGP_SIGNATURE_ANCHOR_BUCKETS] !=
+            BGP_SIGNATURE_TABLE_COUNT) {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
-    section = IMAGE_FIRST_SECTION(ntHeaders);
-    for (sectionIndex = 0;
-         sectionIndex < ntHeaders->FileHeader.NumberOfSections;
-         ++sectionIndex, ++section) {
-        ULONG offset;
-        ULONG sectionSize;
-        PUCHAR sectionBase;
-
-        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 ||
-            section->VirtualAddress >= ImageSize) {
-            continue;
-        }
-
-        sectionSize = min(
-            section->Misc.VirtualSize,
-            ImageSize - section->VirtualAddress);
-        if (sectionSize < sizeof(ULONG)) {
-            continue;
-        }
-
-        sectionBase = ImageBase + section->VirtualAddress;
-        for (offset = 0;
-             offset <= sectionSize - sizeof(ULONG);
-             ++offset) {
-            ULONG anchor;
-            ULONG bucket;
-            ULONG signatureIndex;
-
-            RtlCopyMemory(&anchor, sectionBase + offset, sizeof(anchor));
-            bucket = anchor & (BGP_SIGNATURE_ANCHOR_BUCKETS - 1UL);
-            for (signatureIndex = g_BgpSignatureAnchorBuckets[bucket];
-                 signatureIndex < g_BgpSignatureAnchorBuckets[bucket + 1UL];
-                 ++signatureIndex) {
-                const BGP_SIGNATURE* signature;
-                PUCHAR candidate;
-
-                signature = &g_BgpSignatures[signatureIndex];
-                if (signature->AnchorValue != anchor ||
-                    signature->AnchorOffset > offset ||
-                    signature->EntryOffset > offset - signature->AnchorOffset ||
-                    signature->Length >
-                        sectionSize - (offset - signature->AnchorOffset) ||
-                    (!signature->AllowPaged &&
-                     (section->Characteristics & IMAGE_SCN_MEM_NOT_PAGED) == 0) ||
-                    signature->Section == NULL ||
-                    !KswordARKBugcheckBgpSectionNameMatches(
-                        section->Name,
-                        signature->Section)) {
-                    continue;
-                }
-
-                candidate = sectionBase + offset - signature->AnchorOffset;
-                if (KswordARKBugcheckBgpMatches(candidate, signature)) {
-                    KswordARKBugcheckBgpAcceptSignatureMatch(
-                        ImageBase,
-                        ImageSize,
-                        signature,
-                        candidate,
-                        Addresses,
-                        MatchedSignatures,
-                        Ambiguous);
-                }
-            }
+    *MaximumAnchorPrefix = 0UL;
+    *MaximumAnchorSuffix = 0UL;
+    for (bucketIndex = 0;
+         bucketIndex < BGP_SIGNATURE_ANCHOR_BUCKETS;
+         ++bucketIndex) {
+        if (g_BgpSignatureAnchorBuckets[bucketIndex] >
+                g_BgpSignatureAnchorBuckets[bucketIndex + 1UL] ||
+            g_BgpSignatureAnchorBuckets[bucketIndex + 1UL] >
+                BGP_SIGNATURE_TABLE_COUNT) {
+            return STATUS_INVALID_IMAGE_FORMAT;
         }
     }
 
+    for (signatureIndex = 0;
+         signatureIndex < BGP_SIGNATURE_TABLE_COUNT;
+         ++signatureIndex) {
+        const BGP_SIGNATURE* signature;
+        ULONG nameIndex;
+        ULONG anchorSuffix;
+        BOOLEAN sectionNameTerminated;
+
+        signature = &g_BgpSignatures[signatureIndex];
+        sectionNameTerminated = FALSE;
+        if (signature->Section != NULL) {
+            for (nameIndex = 0;
+                 nameIndex <= IMAGE_SIZEOF_SHORT_NAME;
+                 ++nameIndex) {
+                if (signature->Section[nameIndex] == '\0') {
+                    sectionNameTerminated = TRUE;
+                    break;
+                }
+            }
+        }
+
+        if (signature->Bytes == NULL || signature->Mask == NULL ||
+            !sectionNameTerminated || signature->Length < sizeof(ULONG) ||
+            signature->AnchorOffset >
+                signature->Length - sizeof(ULONG) ||
+            signature->Target >= BgpSignatureCount ||
+            (signature->DirectCallOffset != MAXULONG &&
+             (signature->DirectCallOffset > signature->Length ||
+              signature->Length - signature->DirectCallOffset < 5UL)) ||
+            ((signature->SemanticFlags &
+              BGP_SEMANTIC_REQUIRE_DIRECT_CALL) != 0UL &&
+             signature->DirectCallOffset == MAXULONG)) {
+            return STATUS_INVALID_IMAGE_FORMAT;
+        }
+
+        anchorSuffix = signature->Length - signature->AnchorOffset;
+        *MaximumAnchorPrefix = max(
+            *MaximumAnchorPrefix,
+            signature->AnchorOffset);
+        *MaximumAnchorSuffix = max(
+            *MaximumAnchorSuffix,
+            anchorSuffix);
+    }
+
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswordARKBugcheckBgpScanSignatures(
+    _In_ const KSWORD_ARK_BGP_IMAGE_VIEW* View,
+    _Inout_updates_(BgpSignatureCount) PVOID* Addresses,
+    _Inout_updates_(BgpSignatureCount) const BGP_SIGNATURE** MatchedSignatures,
+    _Inout_updates_(BgpSignatureCount) PVOID* DirectCallTargets,
+    _Inout_updates_(BgpSignatureCount) BOOLEAN* Ambiguous
+    )
+{
+    PUCHAR snapshot;
+    ULONG maximumAnchorPrefix;
+    ULONG maximumAnchorSuffix;
+    ULONG snapshotCapacity;
+    ULONG sectionIndex;
+    NTSTATUS status;
+
+    if (View == NULL || Addresses == NULL || MatchedSignatures == NULL ||
+        DirectCallTargets == NULL || Ambiguous == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    maximumAnchorPrefix = 0UL;
+    maximumAnchorSuffix = 0UL;
+    status = KswordARKBugcheckBgpValidateSignatureTable(
+        &maximumAnchorPrefix,
+        &maximumAnchorSuffix);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (KSWORD_ARK_BGP_SCAN_ANCHOR_STRIDE >
+            MAXULONG - maximumAnchorPrefix ||
+        KSWORD_ARK_BGP_SCAN_ANCHOR_STRIDE + maximumAnchorPrefix >
+            MAXULONG - maximumAnchorSuffix) {
+        return STATUS_INTEGER_OVERFLOW;
+    }
+    snapshotCapacity =
+        KSWORD_ARK_BGP_SCAN_ANCHOR_STRIDE +
+        maximumAnchorPrefix +
+        maximumAnchorSuffix;
+    snapshot = (PUCHAR)KswordARKAllocateNonPagedPool(
+        snapshotCapacity,
+        KSWORD_ARK_BGP_SCAN_POOL_TAG);
+    if (snapshot == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    status = STATUS_SUCCESS;
+    for (sectionIndex = 0;
+         sectionIndex < View->SectionCount;
+         ++sectionIndex) {
+        const KSWORD_ARK_BGP_IMAGE_SECTION* section;
+        ULONG scanLimit;
+        ULONG scanStart;
+        ULONG signatureIndex;
+        BOOLEAN relevantSection;
+
+        section = &View->Sections[sectionIndex];
+        if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0UL ||
+            (section->Characteristics & IMAGE_SCN_MEM_DISCARDABLE) != 0UL ||
+            section->VirtualSize < sizeof(ULONG)) {
+            continue;
+        }
+
+        relevantSection = FALSE;
+        for (signatureIndex = 0;
+             signatureIndex < BGP_SIGNATURE_TABLE_COUNT;
+             ++signatureIndex) {
+            if (KswordARKBugcheckBgpSectionNameMatches(
+                    section->Name,
+                    g_BgpSignatures[signatureIndex].Section)) {
+                relevantSection = TRUE;
+                break;
+            }
+        }
+        if (!relevantSection) {
+            continue;
+        }
+
+        scanLimit = section->VirtualSize - sizeof(ULONG) + 1UL;
+        scanStart = 0UL;
+        while (scanStart < scanLimit) {
+            PUCHAR sourceAddress;
+            ULONG scanEnd;
+            ULONG readStart;
+            ULONG readEnd;
+            ULONG readBytes;
+            ULONG anchorPosition;
+
+            scanEnd = scanStart + min(
+                KSWORD_ARK_BGP_SCAN_ANCHOR_STRIDE,
+                scanLimit - scanStart);
+            readStart = scanStart > maximumAnchorPrefix
+                ? scanStart - maximumAnchorPrefix
+                : 0UL;
+            readEnd = scanEnd;
+            if (maximumAnchorSuffix > section->VirtualSize - readEnd) {
+                readEnd = section->VirtualSize;
+            } else {
+                readEnd += maximumAnchorSuffix;
+            }
+            readBytes = readEnd - readStart;
+            if (readBytes == 0UL || readBytes > snapshotCapacity ||
+                section->VirtualAddress > MAXULONG - readStart ||
+                !KswordARKBugcheckBgpAddressForRva(
+                    View,
+                    section->VirtualAddress + readStart,
+                    readBytes,
+                    &sourceAddress)) {
+                status = STATUS_INVALID_IMAGE_FORMAT;
+                goto Exit;
+            }
+            if (!KswordARKRuntimeReadMemory(
+                    sourceAddress,
+                    snapshot,
+                    readBytes)) {
+                status = STATUS_PARTIAL_COPY;
+                goto Exit;
+            }
+
+            for (anchorPosition = scanStart;
+                 anchorPosition < scanEnd;
+                 ++anchorPosition) {
+                ULONG anchor;
+                ULONG anchorSnapshotOffset;
+                ULONG bucket;
+                ULONG bucketEnd;
+
+                anchorSnapshotOffset = anchorPosition - readStart;
+                if (anchorSnapshotOffset > readBytes ||
+                    readBytes - anchorSnapshotOffset < sizeof(anchor)) {
+                    status = STATUS_INVALID_IMAGE_FORMAT;
+                    goto Exit;
+                }
+                RtlCopyMemory(
+                    &anchor,
+                    snapshot + anchorSnapshotOffset,
+                    sizeof(anchor));
+                bucket = anchor & (BGP_SIGNATURE_ANCHOR_BUCKETS - 1UL);
+                signatureIndex = g_BgpSignatureAnchorBuckets[bucket];
+                bucketEnd = g_BgpSignatureAnchorBuckets[bucket + 1UL];
+                for (;
+                     signatureIndex < bucketEnd;
+                     ++signatureIndex) {
+                    const BGP_SIGNATURE* signature;
+                    PUCHAR originalCandidate;
+                    const UCHAR* snapshotCandidate;
+                    ULONG candidatePosition;
+                    ULONG candidateSnapshotOffset;
+                    ULONG candidateRva;
+
+                    signature = &g_BgpSignatures[signatureIndex];
+                    if (signature->AnchorValue != anchor ||
+                        signature->AnchorOffset > anchorPosition) {
+                        continue;
+                    }
+                    candidatePosition =
+                        anchorPosition - signature->AnchorOffset;
+                    if (signature->EntryOffset > candidatePosition ||
+                        signature->Length >
+                            section->VirtualSize - candidatePosition ||
+                        (!signature->AllowPaged &&
+                         (section->Characteristics &
+                          IMAGE_SCN_MEM_NOT_PAGED) == 0UL) ||
+                        !KswordARKBugcheckBgpSectionNameMatches(
+                            section->Name,
+                            signature->Section) ||
+                        candidatePosition < readStart) {
+                        continue;
+                    }
+
+                    candidateSnapshotOffset =
+                        candidatePosition - readStart;
+                    if (candidateSnapshotOffset > readBytes ||
+                        signature->Length >
+                            readBytes - candidateSnapshotOffset ||
+                        section->VirtualAddress >
+                            MAXULONG - candidatePosition) {
+                        status = STATUS_INVALID_IMAGE_FORMAT;
+                        goto Exit;
+                    }
+                    candidateRva =
+                        section->VirtualAddress + candidatePosition;
+                    if (!KswordARKBugcheckBgpAddressForRva(
+                            View,
+                            candidateRva,
+                            signature->Length,
+                            &originalCandidate)) {
+                        status = STATUS_INVALID_IMAGE_FORMAT;
+                        goto Exit;
+                    }
+
+                    snapshotCandidate =
+                        snapshot + candidateSnapshotOffset;
+                    if (KswordARKBugcheckBgpMatches(
+                            snapshotCandidate,
+                            signature)) {
+                        KswordARKBugcheckBgpAcceptSignatureMatch(
+                            View,
+                            signature,
+                            originalCandidate,
+                            snapshotCandidate,
+                            Addresses,
+                            MatchedSignatures,
+                            DirectCallTargets,
+                            Ambiguous);
+                    }
+                }
+            }
+            scanStart = scanEnd;
+        }
+    }
+
+Exit:
+    ExFreePoolWithTag(snapshot, KSWORD_ARK_BGP_SCAN_POOL_TAG);
+    return status;
 }
 
 static NTSTATUS
@@ -428,8 +837,7 @@ KswordARKBugcheckBgpGetKernelImage(
 
 static BOOLEAN
 KswordARKBugcheckBgpCrashTargetsAreNonPaged(
-    _In_reads_bytes_(ImageSize) PUCHAR ImageBase,
-    _In_ ULONG ImageSize,
+    _In_ const KSWORD_ARK_BGP_IMAGE_VIEW* View,
     _In_reads_(BgpSignatureCount) PVOID* Addresses
     )
 {
@@ -450,9 +858,9 @@ KswordARKBugcheckBgpCrashTargetsAreNonPaged(
 
         signatureTarget = crashTargets[targetIndex];
         if (!KswordARKBugcheckBgpAddressInSection(
-                ImageBase,
-                ImageSize,
+                View,
                 Addresses[signatureTarget],
+                1U,
                 FALSE)) {
             return FALSE;
         }
@@ -466,61 +874,47 @@ KswordARKBugcheckBgpResolveFunctions(
     VOID
     )
 {
+    KSWORD_ARK_BGP_IMAGE_VIEW imageView;
     PUCHAR imageBase;
     ULONG imageSize;
     PVOID addresses[BgpSignatureCount] = { NULL };
     const BGP_SIGNATURE* matchedSignatures[BgpSignatureCount] = { NULL };
+    PVOID directCallTargets[BgpSignatureCount] = { NULL };
     BOOLEAN ambiguous[BgpSignatureCount] = { FALSE };
+    PKSWORD_ARK_INBV_ACQUIRE_DISPLAY_OWNERSHIP acquireOwnership;
     PVOID semanticBpp;
     NTSTATUS status;
     ULONG targetIndex;
 
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    RtlZeroMemory(&imageView, sizeof(imageView));
     imageBase = NULL;
     imageSize = 0;
     semanticBpp = NULL;
+    InterlockedExchange(&g_KswordArkBgp.ResolvedSnapshotReady, 0);
+    KeMemoryBarrier();
     status = KswordARKBugcheckBgpGetKernelImage(&imageBase, &imageSize);
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    if (!KswordARKBugcheckBgpInitializeImageView(
+            imageBase,
+            imageSize,
+            &imageView)) {
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
 
     status = KswordARKBugcheckBgpScanSignatures(
-        imageBase,
-        imageSize,
+        &imageView,
         addresses,
         matchedSignatures,
+        directCallTargets,
         ambiguous);
     if (!NT_SUCCESS(status)) {
         return status;
-    }
-
-    if (!ambiguous[BgpSignatureClear] &&
-        !ambiguous[BgpSignatureDraw] &&
-        addresses[BgpSignatureClear] != NULL &&
-        addresses[BgpSignatureDraw] != NULL &&
-        matchedSignatures[BgpSignatureClear] != NULL &&
-        matchedSignatures[BgpSignatureDraw] != NULL) {
-        PVOID clearBpp;
-        PVOID drawBpp;
-
-        clearBpp = KswordARKBugcheckBgpDecodeRelativeCallAt(
-            (PUCHAR)addresses[BgpSignatureClear] +
-                matchedSignatures[BgpSignatureClear]->EntryOffset,
-            matchedSignatures[BgpSignatureClear]->Length,
-            matchedSignatures[BgpSignatureClear]->DirectCallOffset);
-        drawBpp = KswordARKBugcheckBgpDecodeRelativeCallAt(
-            (PUCHAR)addresses[BgpSignatureDraw] +
-                matchedSignatures[BgpSignatureDraw]->EntryOffset,
-            matchedSignatures[BgpSignatureDraw]->Length,
-            matchedSignatures[BgpSignatureDraw]->DirectCallOffset);
-        if (clearBpp != NULL &&
-            clearBpp == drawBpp &&
-            KswordARKBugcheckBgpAddressInSection(
-                imageBase,
-                imageSize,
-                clearBpp,
-                FALSE)) {
-            semanticBpp = clearBpp;
-        }
     }
 
     for (targetIndex = 0;
@@ -529,68 +923,73 @@ KswordARKBugcheckBgpResolveFunctions(
         if (ambiguous[targetIndex]) {
             addresses[targetIndex] = NULL;
             matchedSignatures[targetIndex] = NULL;
-            g_KswordArkBgp.SignatureFamily[targetIndex] = 0;
+            directCallTargets[targetIndex] = NULL;
         }
     }
 
-    if (semanticBpp != NULL) {
-        const BGP_SIGNATURE* bppSignature;
-
-        bppSignature = KswordARKBugcheckBgpFindSignatureForEntry(
-            imageBase,
-            imageSize,
-            BgpSignatureBpp,
-            semanticBpp);
-        addresses[BgpSignatureBpp] = semanticBpp;
-        matchedSignatures[BgpSignatureBpp] = bppSignature;
-        ambiguous[BgpSignatureBpp] = FALSE;
-        g_KswordArkBgp.SignatureFamily[BgpSignatureBpp] =
-            bppSignature == NULL ? 0UL : bppSignature->Family;
+    if (addresses[BgpSignatureClear] != NULL &&
+        addresses[BgpSignatureDraw] != NULL &&
+        directCallTargets[BgpSignatureClear] != NULL &&
+        directCallTargets[BgpSignatureClear] ==
+            directCallTargets[BgpSignatureDraw] &&
+        KswordARKBugcheckBgpAddressInSection(
+            &imageView,
+            directCallTargets[BgpSignatureClear],
+            1U,
+            FALSE)) {
+        semanticBpp = directCallTargets[BgpSignatureClear];
     }
 
-    if (addresses[BgpSignatureBpp] != NULL) {
-        ULONG callerTarget;
-
-        for (callerTarget = BgpSignatureClear;
-             callerTarget <= BgpSignatureDraw;
-             ++callerTarget) {
-            const BGP_SIGNATURE* matchedSignature;
-
-            matchedSignature = matchedSignatures[callerTarget];
-            if (addresses[callerTarget] == NULL) {
-                continue;
-            }
-            if (matchedSignature == NULL ||
-                matchedSignature->DirectCallOffset == MAXULONG ||
-                KswordARKBugcheckBgpDecodeRelativeCallAt(
-                    (PUCHAR)addresses[callerTarget] +
-                        matchedSignature->EntryOffset,
-                    matchedSignature->Length,
-                    matchedSignature->DirectCallOffset) !=
-                    addresses[BgpSignatureBpp]) {
-                addresses[callerTarget] = NULL;
-                g_KswordArkBgp.SignatureFamily[callerTarget] = 0;
-            }
-        }
+    // Require the BPP entry to have its own unique signature in addition to
+    // being the common direct-call target of Clear and Draw.  This avoids a
+    // second live image read after the bounded scan snapshot is released.
+    if (semanticBpp == NULL ||
+        addresses[BgpSignatureBpp] != semanticBpp ||
+        matchedSignatures[BgpSignatureBpp] == NULL) {
+        addresses[BgpSignatureBpp] = NULL;
+        matchedSignatures[BgpSignatureBpp] = NULL;
     }
 
     if (!KswordARKBugcheckBgpCrashTargetsAreNonPaged(
-            imageBase,
-            imageSize,
+            &imageView,
             addresses) ||
         !KswordARKBugcheckBgpAddressInSection(
-            imageBase,
-            imageSize,
+            &imageView,
             addresses[BgpSignatureParse],
+            1U,
             TRUE) ||
         !KswordARKBugcheckBgpAddressInSection(
-            imageBase,
-            imageSize,
+            &imageView,
             addresses[BgpSignatureDestroy],
+            1U,
             TRUE)) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
+    for (targetIndex = 0;
+         targetIndex < RTL_NUMBER_OF(addresses);
+         ++targetIndex) {
+        if (addresses[targetIndex] == NULL ||
+            matchedSignatures[targetIndex] == NULL) {
+            return STATUS_PROCEDURE_NOT_FOUND;
+        }
+    }
+
+    acquireOwnership =
+        (PKSWORD_ARK_INBV_ACQUIRE_DISPLAY_OWNERSHIP)
+            KswordARKBugcheckBgpGetExport(L"InbvAcquireDisplayOwnership");
+    if (acquireOwnership == NULL ||
+        !KswordARKBugcheckBgpAddressInSection(
+            &imageView,
+            (PVOID)(ULONG_PTR)acquireOwnership,
+            1U,
+            FALSE)) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    // Publish only after every pointer and semantic relationship has passed.
+    // Bugcheck callbacks consume this fixed nonpaged context and never rescan
+    // ntoskrnl or decode live instructions at HIGH_LEVEL.
     g_KswordArkBgp.Clear =
         (PKSWORD_ARK_BGP_CLEAR_SCREEN)addresses[BgpSignatureClear];
     g_KswordArkBgp.Draw =
@@ -607,29 +1006,18 @@ KswordARKBugcheckBgpResolveFunctions(
         (PKSWORD_ARK_BGP_PARSE_BITMAP)addresses[BgpSignatureParse];
     g_KswordArkBgp.DestroyRectangle =
         (PKSWORD_ARK_BGP_DESTROY_RECTANGLE)addresses[BgpSignatureDestroy];
-    g_KswordArkBgp.AcquireOwnership =
-        (PKSWORD_ARK_INBV_ACQUIRE_DISPLAY_OWNERSHIP)
-            KswordARKBugcheckBgpGetExport(L"InbvAcquireDisplayOwnership");
-
-    g_KswordArkBgp.FeatureMask = KSWORD_ARK_BGP_ALL_PRIVATE_FEATURES;
-    if (g_KswordArkBgp.AcquireOwnership != NULL &&
-        KswordARKBugcheckBgpAddressInSection(
-            imageBase,
-            imageSize,
-            (PVOID)(ULONG_PTR)g_KswordArkBgp.AcquireOwnership,
-            FALSE)) {
-        g_KswordArkBgp.FeatureMask |= KSWORD_ARK_BGP_FEATURE_INBV;
-    } else {
-        g_KswordArkBgp.AcquireOwnership = NULL;
+    g_KswordArkBgp.AcquireOwnership = acquireOwnership;
+    for (targetIndex = 0;
+         targetIndex < RTL_NUMBER_OF(addresses);
+         ++targetIndex) {
+        g_KswordArkBgp.SignatureFamily[targetIndex] =
+            matchedSignatures[targetIndex]->Family;
     }
-
-    if ((g_KswordArkBgp.FeatureMask &
-         (KSWORD_ARK_BGP_ALL_PRIVATE_FEATURES |
-          KSWORD_ARK_BGP_FEATURE_INBV)) !=
-        (KSWORD_ARK_BGP_ALL_PRIVATE_FEATURES |
-         KSWORD_ARK_BGP_FEATURE_INBV)) {
-        return STATUS_PROCEDURE_NOT_FOUND;
-    }
+    g_KswordArkBgp.FeatureMask =
+        KSWORD_ARK_BGP_ALL_PRIVATE_FEATURES |
+        KSWORD_ARK_BGP_FEATURE_INBV;
+    KeMemoryBarrier();
+    InterlockedExchange(&g_KswordArkBgp.ResolvedSnapshotReady, 1);
 
     return STATUS_SUCCESS;
 }
@@ -751,7 +1139,11 @@ KswordARKBugcheckBgpReadScreen(
 
     RtlZeroMemory(resolution, sizeof(resolution));
     RtlZeroMemory(Screen, sizeof(*Screen));
-    if (g_KswordArkBgp.GetResolution == NULL ||
+    if (InterlockedCompareExchange(
+            &g_KswordArkBgp.ResolvedSnapshotReady,
+            0,
+            0) == 0 ||
+        g_KswordArkBgp.GetResolution == NULL ||
         g_KswordArkBgp.GetBpp == NULL) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
@@ -881,6 +1273,10 @@ KswordARKBugcheckBgpBeginDraw(
         KswordArkBgpStageCallbackEntered,
         STATUS_SUCCESS);
     if (InterlockedCompareExchange(
+            &g_KswordArkBgp.ResolvedSnapshotReady,
+            0,
+            0) == 0 ||
+        InterlockedCompareExchange(
             &g_KswordArkBgp.State,
             0,
             0) != KswordArkBgpStateArmed ||
