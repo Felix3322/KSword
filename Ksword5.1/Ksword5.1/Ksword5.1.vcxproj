@@ -379,7 +379,6 @@
     <ClCompile Include="ProcessDock\ProcessDetailWindow.Privilege.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.ExtendedActions.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.AdvancedInfo.cpp" />
-    <ClCompile Include="ProcessDock\ProcessTokenPrivilegeDialog.cpp" />
     <ClCompile Include="PluginHost.cpp" />
     <ClCompile Include="ProcessDock\ProcessDock.cpp" />
     <ClCompile Include="ProcessDock\ProcessDock.Icon.cpp" />
@@ -718,7 +717,6 @@
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />
-    <ClInclude Include="ProcessDock\ProcessTokenPrivilegeDialog.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityUtils.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityPersistence.h" />
     <ClInclude Include="ProcessDock\ProcessAffinityModel.h" />
