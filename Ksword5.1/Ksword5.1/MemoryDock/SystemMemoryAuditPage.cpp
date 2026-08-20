@@ -1086,8 +1086,11 @@ void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot, const std::uint64_t
     m_previousBigPoolBytes = std::move(currentBigPoolBytes);
 
     m_snapshot = std::move(snapshot);
-    if (!m_snapshot.errors.isEmpty())
+    const QString warningSignature = m_snapshot.errors.join(QChar(0x1F));
+    if (!warningSignature.isEmpty() &&
+        warningSignature != m_lastSnapshotWarningSignature)
     {
+        m_lastSnapshotWarningSignature = warningSignature;
         kLogEvent warningEvent;
         warn << warningEvent
             << "[SystemMemoryAuditPage] snapshot completed with warnings, warningCount="
@@ -1095,6 +1098,11 @@ void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot, const std::uint64_t
             << ", details="
             << m_snapshot.errors.join(QStringLiteral("; ")).toStdString()
             << eol;
+    }
+    else if (warningSignature.isEmpty())
+    {
+        // 清除后允许同一问题未来再次出现时重新产生一次 Warn 通知。
+        m_lastSnapshotWarningSignature.clear();
     }
     m_hasSnapshot = true;
     updateSummaryTiles();

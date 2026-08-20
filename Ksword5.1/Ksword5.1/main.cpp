@@ -48,6 +48,7 @@ namespace
     constexpr wchar_t kKswordMainWindowPropertyName[] = L"KswordARK.MainWindow.Singleton.Release";
     constexpr wchar_t kPrivilegeRestartArgument[] = L"--ksword-privilege-restart";
     constexpr ULONG_PTR kUnlockerCopyDataMessageId = 0x4B535755; // "KSWU"：Ksword shell unlocker IPC。
+    constexpr DWORD kRestartPredecessorWaitTimeoutMs = 35000;
 
     // localizedStartupText 作用：
     // - 让原生首启对话框、启动画面和 Qt 启动期弹窗共用 LanguageManager；
@@ -1280,7 +1281,8 @@ int main(int argc, char* argv[])
     crashConfiguration.preferLauncherReporter = true;
     ks::crash::InstallCrashHandler(crashConfiguration);
     const bool crashRestartWait =
-        ks::crash::WaitForCrashRestartTargetFromCommandLine();
+        ks::crash::WaitForCrashRestartTargetFromCommandLine(
+            kRestartPredecessorWaitTimeoutMs);
     startupTraceRaw("startup trace initialized without console binding");
     initializeProcessDpiAwareness();
     startupTraceRaw("initializeProcessDpiAwareness finished");

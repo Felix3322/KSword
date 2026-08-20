@@ -8,11 +8,15 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PR updates may discard superseded runs. Pushes to main must finish because
+  # a later metadata-only push can otherwise cancel the only affected build
+  # and then skip every project, leaving the resulting main HEAD unverified.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -39,10 +43,36 @@ jobs:
           EVENT_BEFORE: ${{ github.event.before }}
           EVENT_SHA: ${{ github.sha }}
           BASE_REF: ${{ github.base_ref }}
+          RUN_BRANCH: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
+          previous_run_id=0
+          previous_status='not_checked'
+          previous_conclusion='none'
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            if previous_run="$({
+              gh api --method GET \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+                -f branch="$RUN_BRANCH" \
+                -f per_page=20 \
+                --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] // {} | [(.id // 0), (.status // \"missing\"), (.conclusion // \"none\")] | @tsv"
+            } 2>&1)"; then
+              IFS=$'\t' read -r previous_run_id previous_status previous_conclusion <<< "$previous_run"
+            else
+              echo "Unable to query the previous CI run: $previous_run" >&2
+              previous_status='query_failed'
+            fi
+          fi
+
+          echo "Previous CI run for branch $RUN_BRANCH: id=$previous_run_id status=$previous_status conclusion=$previous_conclusion"
+
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            changed='__all__'
+          elif [[ "$previous_status" != "completed" || "$previous_conclusion" != "success" ]]; then
+            echo 'Previous CI run did not complete successfully; treating all projects as affected.' >&2
             changed='__all__'
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch --no-tags origin "$BASE_REF" --depth=1
@@ -335,6 +365,16 @@ jobs:
             throw "Expected Release artifact(s) missing: $($missing -join ', ')"
           }
 
+      - name: Upload user-mode artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: KswordUserMode-unsigned-Release
+          path: |
+            Ksword5.1/x64/Release/**
+            !Ksword5.1/x64/Release/profiles/ark_dyndata_pack_v4.json.qz
+            !Ksword5.1/x64/Release/profiles/launcher_support_manifest.json
+          if-no-files-found: error
+
   ksword-setup:
     name: KswordSetup Release build
     needs: changes
@@ -411,6 +451,18 @@ jobs:
           & $msbuild 'Ksword5.1/Ksword5.1/Ksword5.1.vcxproj' @properties
           if ($LASTEXITCODE -ne 0) {
             throw "MSBuild failed for Ksword5.1 payload prerequisite with exit code $LASTEXITCODE."
+          }
+
+          # Never embed compile-only empty DynData fixtures in an artifact that
+          # can be promoted to a public automatic prerelease.
+          $ciOnlyProfileOutputs = @(
+            'Ksword5.1/x64/Release/profiles/ark_dyndata_pack_v4.json.qz',
+            'Ksword5.1/x64/Release/profiles/launcher_support_manifest.json'
+          )
+          foreach ($profileOutput in $ciOnlyProfileOutputs) {
+            if (Test-Path -LiteralPath $profileOutput) {
+              Remove-Item -LiteralPath $profileOutput -Force
+            }
           }
 
           & $msbuild 'KswordSetup/KswordSetup.vcxproj' `
@@ -612,3 +664,44 @@ jobs:
             CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.exe
             CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.pdb
           if-no-files-found: error
+
+  auto-prerelease:
+    name: Publish automatic prerelease
+    needs:
+      - changes
+      - source-integrity
+      - usermode-release
+      - ksword-setup
+      - ksword-arklight
+      - ksword-ce-plugin
+      - ksword-ce-launcher
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.result == 'success' &&
+      (needs.source-integrity.result == 'success' || needs.source-integrity.result == 'skipped') &&
+      (needs.usermode-release.result == 'success' || needs.usermode-release.result == 'skipped') &&
+      (needs.ksword-setup.result == 'success' || needs.ksword-setup.result == 'skipped') &&
+      (needs.ksword-arklight.result == 'success' || needs.ksword-arklight.result == 'skipped') &&
+      (needs.ksword-ce-plugin.result == 'success' || needs.ksword-ce-plugin.result == 'skipped') &&
+      (needs.ksword-ce-launcher.result == 'success' || needs.ksword-ce-launcher.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out release automation
+        uses: actions/checkout@v5
+
+      - name: Publish prerelease and retain the latest three
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_USERMODE_REQUIRED: ${{ needs.changes.outputs.usermode }}
+          CURRENT_SETUP_REQUIRED: ${{ needs.changes.outputs.setup }}
+          CURRENT_ARKLIGHT_REQUIRED: ${{ needs.changes.outputs.arklight }}
+          CURRENT_CE_PLUGIN_REQUIRED: ${{ needs.changes.outputs.ce_plugin }}
+          CURRENT_CE_LAUNCHER_REQUIRED: ${{ needs.changes.outputs.ce_launcher }}
+        run: bash .github/workflows/scripts/publish-ci-prerelease.sh

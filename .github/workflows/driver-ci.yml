@@ -6,11 +6,14 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
   group: driver-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep main pushes serialized to completion. A later non-driver push must not
+  # cancel the driver build that provides evidence for the resulting HEAD.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -32,10 +35,36 @@ jobs:
           EVENT_BEFORE: ${{ github.event.before }}
           EVENT_SHA: ${{ github.sha }}
           BASE_REF: ${{ github.base_ref }}
+          RUN_BRANCH: ${{ github.head_ref || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
+          previous_run_id=0
+          previous_status='not_checked'
+          previous_conclusion='none'
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            if previous_run="$({
+              gh api --method GET \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/$GITHUB_REPOSITORY/actions/workflows/driver-ci.yml/runs" \
+                -f branch="$RUN_BRANCH" \
+                -f per_page=20 \
+                --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] // {} | [(.id // 0), (.status // \"missing\"), (.conclusion // \"none\")] | @tsv"
+            } 2>&1)"; then
+              IFS=$'\t' read -r previous_run_id previous_status previous_conclusion <<< "$previous_run"
+            else
+              echo "Unable to query the previous Driver CI run: $previous_run" >&2
+              previous_status='query_failed'
+            fi
+          fi
+
+          echo "Previous Driver CI run for branch $RUN_BRANCH: id=$previous_run_id status=$previous_status conclusion=$previous_conclusion"
+
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            changed='__all__'
+          elif [[ "$previous_status" != "completed" || "$previous_conclusion" != "success" ]]; then
+            echo 'Previous Driver CI run did not complete successfully; treating the driver as affected.' >&2
             changed='__all__'
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch --no-tags origin "$BASE_REF" --depth=1

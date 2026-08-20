@@ -102,6 +102,7 @@
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
 #include "ksword/process/process.h"
+#include "../../shared/crash/WinCrashHandler.h"
 #include "../../shared/KswordArkLogProtocol.h"
 // 驱动启动阶段记录的键名与阶段枚举，R0/R3 共用同一份定义。
 #include "../../shared/KswordArkStartupProtocol.h"
@@ -2974,6 +2975,44 @@ namespace
         {
             argumentList.push_back(markerText);
         }
+        return argumentList;
+    }
+
+    // argumentsWithPrivilegeRestartTakeover 作用：
+    // - 输入 argumentList：当前 Qt 参数；predecessorProcessId：即将退出的旧实例 PID；
+    // - 处理：替换可能由更早重启遗留的等待 PID，并附加本次权限切换接管参数；
+    // - 返回：新实例可用于等待同一可执行文件父进程退出的参数列表。
+    QStringList argumentsWithPrivilegeRestartTakeover(
+        QStringList argumentList,
+        const DWORD predecessorProcessId)
+    {
+        argumentList = argumentsWithPrivilegeRestartMarker(std::move(argumentList));
+        const QString waitPidArgument =
+            QString::fromWCharArray(ks::crash::kCrashRestartWaitPidArgument);
+        for (int index = 1; index < argumentList.size();)
+        {
+            if (QString::compare(
+                    argumentList.at(index),
+                    waitPidArgument,
+                    Qt::CaseInsensitive) != 0)
+            {
+                ++index;
+                continue;
+            }
+
+            argumentList.removeAt(index);
+            if (index < argumentList.size())
+            {
+                bool isProcessId = false;
+                (void)argumentList.at(index).toULongLong(&isProcessId);
+                if (isProcessId)
+                {
+                    argumentList.removeAt(index);
+                }
+            }
+        }
+        argumentList.push_back(waitPidArgument);
+        argumentList.push_back(QString::number(predecessorProcessId));
         return argumentList;
     }
 
@@ -7847,7 +7886,9 @@ void MainWindow::initPrivilegeStatusButtons()
             si.lpDesktop = desktop;          // 显示在交互式桌面
 
             // SYSTEM 权限切换必须携带内部重启标记，否则默认开启的防多开会让新实例立即退出。
-            const QStringList launchArgumentList = argumentsWithPrivilegeRestartMarker(QCoreApplication::arguments());
+            const QStringList launchArgumentList = argumentsWithPrivilegeRestartTakeover(
+                QCoreApplication::arguments(),
+                ::GetCurrentProcessId());
             QString commandLineText = quoteQStringCommandLineArgument(QString::fromStdWString(selfPath));
             for (int index = 1; index < launchArgumentList.size(); ++index)
             {
@@ -7874,6 +7915,7 @@ void MainWindow::initPrivilegeStatusButtons()
             CloseHandle(hNewToken);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
+            close();
         }
 
         // Qt ignores the slot return value, but early failure paths in this

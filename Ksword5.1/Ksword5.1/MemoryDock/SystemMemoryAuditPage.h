@@ -254,6 +254,7 @@ private:
     QHash<QString, std::int64_t> m_summaryDeltaBytes;
     QHash<std::uint32_t, TagMetadata> m_poolTagMetadata;
     QString m_poolTagMetadataSource;
+    QString m_lastSnapshotWarningSignature;
     std::atomic<std::uint64_t> m_snapshotRefreshTicket{ 0 };
     std::atomic<std::uint64_t> m_userResidencyScanTicket{ 0 };
     std::atomic_bool m_userResidencyScanInProgress{ false };
