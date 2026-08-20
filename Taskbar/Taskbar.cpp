@@ -214,18 +214,59 @@ QRect mapNativeAppBarRectToLogicalScreen(const QRect& nativeAppBarRect,
 
     return QRect(logicalLeft, logicalTop, logicalWidth, logicalHeight);
 }
+
+// 判断系统窗口管理命令：Taskbar 是固定的顶部 AppBar，不接受最小化、
+// 最大化、还原、移动或调整大小等外部窗口状态变更。
+bool isIgnoredTaskbarSystemCommand(WPARAM command)
+{
+    switch (static_cast<UINT_PTR>(command) & 0xFFF0U) {
+    case SC_MINIMIZE:
+    case SC_MAXIMIZE:
+    case SC_RESTORE:
+    case SC_MOVE:
+    case SC_SIZE:
+        return true;
+    default:
+        return false;
+    }
+}
 }
 
 bool Taskbar::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
 {
+    Q_UNUSED(eventType);
+
     MSG* msg = static_cast<MSG*>(message);
+    if (msg == nullptr) {
+        return QMainWindow::nativeEvent(eventType, message, result);
+    }
+
+    // Win+D 会通过 SC_MINIMIZE 让普通顶层窗口最小化。Taskbar 作为 AppBar
+    // 必须保持可见，因此忽略该命令及其它会改变窗口状态的系统命令。
+    if (msg->message == WM_SYSCOMMAND && isIgnoredTaskbarSystemCommand(msg->wParam)) {
+        if (result != nullptr) {
+            *result = 0;
+        }
+        return true;
+    }
+
+    // 与上面的系统命令配套处理，避免其它窗口管理路径将 AppBar 设为最小化。
+    if (msg->message == WM_SIZE && msg->wParam == SIZE_MINIMIZED) {
+        if (result != nullptr) {
+            *result = 0;
+        }
+        return true;
+    }
+
     if (msg->message == appBarMessageId) {
         // 处理应用栏通知。
         if (msg->wParam == ABN_POSCHANGED) {
             // 位置变化时重新调整。
             RegisterAsAppBar();
         }
-        *result = 0;
+        if (result != nullptr) {
+            *result = 0;
+        }
         return true;
     }
 
@@ -388,7 +429,7 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
         QLabel* bar = new QLabel(cpuBarContainer);
         bar->setAlignment(Qt::AlignBottom);
         cpuBars[index] = bar;
-        cpuBarLayout->addWidget(bar);
+        cpuBarLayout->addWidget(bar, 0, Qt::AlignBottom);
     }
     hLayout->addWidget(cpuBarContainer);
 
