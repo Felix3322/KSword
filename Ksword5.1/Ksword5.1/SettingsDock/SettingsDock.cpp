@@ -816,6 +816,14 @@ void SettingsDock::initializeAppearanceTab()
     languageManager.bindToolTip(m_startupAutoAdminCheckBox, QStringLiteral("settings.startup.admin.tooltip"), QStringLiteral("下次启动时请求管理员权限；若取消或失败，将以普通权限继续"));
     startupLayout->addWidget(m_startupAutoAdminCheckBox);
 
+    // m_preventMultipleInstancesCheckBox 作用：控制普通启动是否激活已有窗口并退出新进程。
+    m_preventMultipleInstancesCheckBox = new QCheckBox(QStringLiteral("防止多开"), startupGroupBox);
+    languageManager.bindText(m_preventMultipleInstancesCheckBox, QStringLiteral("settings.startup.prevent_multiple_instances"), QStringLiteral("防止多开"));
+    m_preventMultipleInstancesCheckBox->setToolTip(
+        QStringLiteral("开启时，普通启动会激活已有窗口；管理员和 SYSTEM 权限切换不受影响"));
+    languageManager.bindToolTip(m_preventMultipleInstancesCheckBox, QStringLiteral("settings.startup.prevent_multiple_instances.tooltip"), QStringLiteral("开启时，普通启动会激活已有窗口；管理员和 SYSTEM 权限切换不受影响"));
+    startupLayout->addWidget(m_preventMultipleInstancesCheckBox);
+
     // m_unlockerShellContextMenuCheckBox 作用：控制是否启用系统右键“文件解锁器”菜单。
     m_unlockerShellContextMenuCheckBox = new QCheckBox(QStringLiteral("启用系统右键“文件解锁器”菜单"), startupGroupBox);
     languageManager.bindText(m_unlockerShellContextMenuCheckBox, QStringLiteral("settings.startup.unlocker"), QStringLiteral("启用系统右键“文件解锁器”菜单"));
@@ -1228,6 +1236,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("启动时自动请求管理员权限开关切换"));
         });
 
+    connect(m_preventMultipleInstancesCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
+        markPendingChanges(QStringLiteral("防止多开开关切换"));
+        });
+
     connect(m_unlockerShellContextMenuCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
         markPendingChanges(QStringLiteral("系统右键文件解锁器开关切换"));
         });
@@ -1412,6 +1424,10 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     if (m_startupAutoAdminCheckBox != nullptr)
     {
         m_startupAutoAdminCheckBox->setChecked(settings.autoRequestAdminOnStartup);
+    }
+    if (m_preventMultipleInstancesCheckBox != nullptr)
+    {
+        m_preventMultipleInstancesCheckBox->setChecked(settings.preventMultipleInstances);
     }
     if (m_unlockerShellContextMenuCheckBox != nullptr)
     {
@@ -1604,6 +1620,8 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         (m_startupTopMostCheckBox != nullptr) && m_startupTopMostCheckBox->isChecked();
     collectedSettings.autoRequestAdminOnStartup =
         (m_startupAutoAdminCheckBox != nullptr) && m_startupAutoAdminCheckBox->isChecked();
+    collectedSettings.preventMultipleInstances =
+        (m_preventMultipleInstancesCheckBox == nullptr) || m_preventMultipleInstancesCheckBox->isChecked();
     collectedSettings.startupWindowScaleFactor = parseWindowScaleFactorFromUi();
     // 该开关来自启动前弹窗，不在设置页编辑；这里保留内存值，避免保存时被覆盖。
     collectedSettings.startupScaleRecommendPromptDisabled =
@@ -1903,6 +1921,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.launchMaximizedOnStartup == m_currentAppearanceSettings.launchMaximizedOnStartup
         && nextSettings.startupTopMostEnabled == m_currentAppearanceSettings.startupTopMostEnabled
         && nextSettings.autoRequestAdminOnStartup == m_currentAppearanceSettings.autoRequestAdminOnStartup
+        && nextSettings.preventMultipleInstances == m_currentAppearanceSettings.preventMultipleInstances
         && sameScaleFactor
         && nextSettings.startupScaleRecommendPromptDisabled == m_currentAppearanceSettings.startupScaleRecommendPromptDisabled
         && nextSettings.unlockerShellContextMenuEnabled == m_currentAppearanceSettings.unlockerShellContextMenuEnabled
@@ -2032,6 +2051,8 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << (m_currentAppearanceSettings.startupTopMostEnabled ? "true" : "false")
         << "，启动时自动请求管理员权限="
         << (m_currentAppearanceSettings.autoRequestAdminOnStartup ? "true" : "false")
+        << "，防止多开="
+        << (m_currentAppearanceSettings.preventMultipleInstances ? "true" : "false")
         << "，启动窗口缩放因子="
         << m_currentAppearanceSettings.startupWindowScaleFactor
         << "，小屏缩放提示不再弹出="

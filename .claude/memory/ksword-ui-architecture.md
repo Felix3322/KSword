@@ -39,6 +39,11 @@ KSword 主程序位于 `Ksword5.1/Ksword5.1`（Qt 6.9.3 Widgets + Qt Advanced Do
 - 主功能 Dock 一律 `DockWidgetClosable=false`（Tab 无关闭按钮）。曾实现过"Tab 关闭按钮=卸载内容"（CustomCloseHandling + unloadDockContent），最终整体撤销（23251d80）；若再有此需求注意：welcome 无懒加载工厂，kernel↔driver 有共享自驱动页 `attachKswordSelfDriverPage`，卸载会悬空。
 - 跨 Dock 的进程详情入口仍可调用 `ensureDockContentInitialized(m_dockProcess)` 来复用 `ProcessDock` 的详情窗口管理与 identity 校验，但不得随后 `raise()` 或 `setVisible(true)` 激活进程 Dock；`ProcessDetailWindow` 是独立顶层窗口，打开它时应保留用户当前页签。
 
+## 启动单实例与权限切换
+
+- `AppearanceSettings::preventMultipleInstances` 默认为 `true`，对应 JSON 字段 `prevent_multiple_instances`；只限制普通启动，关闭后新进程不再查找或激活旧主窗口。
+- Admin、SYSTEM、UIAccess 等权限切换重启必须携带 `--ksword-privilege-restart`，保证默认开启防多开时仍能启动接管实例。使用 `CreateProcessWithTokenW` / `CreateProcessAsUserW` 时不能把 `lpCommandLine` 留空，应通过 `argumentsWithPrivilegeRestartMarker` 组装命令行并保留当前参数。
+
 ## 通用表格交互
 
 - 周期性后台刷新（例如进程监视采样）不得注册为全局 `kPro` 任务；否则每轮采样都会进入“当前任务”和顶部进度通知。`kPro` 只用于有明确开始/结束、需要用户感知的有限操作，常驻监视状态应留在页面状态标签与诊断日志中。

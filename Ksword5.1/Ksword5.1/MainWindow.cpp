@@ -7846,7 +7846,17 @@ void MainWindow::initPrivilegeStatusButtons()
             wchar_t desktop[] = L"winsta0\\default";
             si.lpDesktop = desktop;          // 显示在交互式桌面
 
-            if (!CreateProcessWithTokenW(hNewToken, LOGON_NETCREDENTIALS_ONLY, selfPath.c_str(), NULL,
+            // SYSTEM 权限切换必须携带内部重启标记，否则默认开启的防多开会让新实例立即退出。
+            const QStringList launchArgumentList = argumentsWithPrivilegeRestartMarker(QCoreApplication::arguments());
+            QString commandLineText = quoteQStringCommandLineArgument(QString::fromStdWString(selfPath));
+            for (int index = 1; index < launchArgumentList.size(); ++index)
+            {
+                commandLineText += QLatin1Char(' ');
+                commandLineText += quoteQStringCommandLineArgument(launchArgumentList.at(index));
+            }
+            std::wstring commandLineWide = commandLineText.toStdWString();
+
+            if (!CreateProcessWithTokenW(hNewToken, LOGON_NETCREDENTIALS_ONLY, selfPath.c_str(), commandLineWide.data(),
                 NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi))
             {
                 kLogEvent logEvent;

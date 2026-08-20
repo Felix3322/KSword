@@ -69,6 +69,7 @@ namespace ks::settings
     // launchMaximizedOnStartup：下次启动时是否默认最大化显示；
     // startupTopMostEnabled：启动后是否自动启用最高级置顶，手动图钉切换会同步保存；
     // autoRequestAdminOnStartup：下次启动时是否在启动图出现前先尝试申请管理员权限；
+    // preventMultipleInstances：普通启动时是否防止多开；权限切换重启依然允许接管。
     // startupWindowScaleFactor：主窗口启动缩放因子（1.0=100%，重启后生效）；
     // startupScaleRecommendPromptDisabled：小屏推荐缩放提示是否不再弹出。
     // unlockerShellContextMenuEnabled：是否启用“系统右键-文件解锁器”菜单（下次启动生效）。
@@ -104,6 +105,7 @@ namespace ks::settings
         bool launchMaximizedOnStartup = true;
         bool startupTopMostEnabled = false;
         bool autoRequestAdminOnStartup = true;
+        bool preventMultipleInstances = true;
         double startupWindowScaleFactor = 1.0;
         bool startupScaleRecommendPromptDisabled = false;
         bool unlockerShellContextMenuEnabled = false;

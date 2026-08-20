@@ -399,6 +399,7 @@ namespace
         defaultSettings.launchMaximizedOnStartup = true;
         defaultSettings.startupTopMostEnabled = false;
         defaultSettings.autoRequestAdminOnStartup = true;
+        defaultSettings.preventMultipleInstances = true;
         defaultSettings.startupWindowScaleFactor = 1.0;
         defaultSettings.startupScaleRecommendPromptDisabled = false;
         defaultSettings.unlockerShellContextMenuEnabled = false;
@@ -648,6 +649,10 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.autoRequestAdminOnStartup = rootObject.value(QStringLiteral("startup_auto_request_admin"))
         .toBool(loadedSettings.autoRequestAdminOnStartup);
 
+    // preventMultipleInstances 作用：读取“防止多开”开关，缺失时默认开启以保持旧版行为。
+    loadedSettings.preventMultipleInstances = rootObject.value(QStringLiteral("prevent_multiple_instances"))
+        .toBool(loadedSettings.preventMultipleInstances);
+
     // startupWindowScaleFactor 作用：读取“启动窗口缩放因子”，兼容旧字段 window_scale_factor。
     double rawWindowScaleFactor = loadedSettings.startupWindowScaleFactor;
     if (rootObject.contains(QStringLiteral("startup_window_scale_factor")))
@@ -809,6 +814,7 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(QStringLiteral("startup_maximized"), settings.launchMaximizedOnStartup);
     rootObject.insert(QStringLiteral("startup_topmost_enabled"), settings.startupTopMostEnabled);
     rootObject.insert(QStringLiteral("startup_auto_request_admin"), settings.autoRequestAdminOnStartup);
+    rootObject.insert(QStringLiteral("prevent_multiple_instances"), settings.preventMultipleInstances);
     rootObject.insert(
         QStringLiteral("startup_window_scale_factor"),
         clampWindowScaleFactorInternal(settings.startupWindowScaleFactor));

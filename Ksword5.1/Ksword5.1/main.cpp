@@ -1286,9 +1286,11 @@ int main(int argc, char* argv[])
     startupTraceRaw("initializeProcessDpiAwareness finished");
 
     const std::vector<std::wstring> startupUnlockPathList = collectUnlockPathsFromCommandLine();
+    // startupSettings 需在防多开判定前读取：用户关闭“防止多开”后，新启动必须直接继续创建实例。
+    ks::settings::AppearanceSettings startupSettings = ks::settings::loadAppearanceSettings();
     const bool privilegeRestartLaunch = hasCommandLineArgument(kPrivilegeRestartArgument);
     const bool skipSingleInstanceLaunch = crashRestartWait;
-    if (!privilegeRestartLaunch && !skipSingleInstanceLaunch)
+    if (startupSettings.preventMultipleInstances && !privilegeRestartLaunch && !skipSingleInstanceLaunch)
     {
         if (HWND existingWindowHandle = findExistingKswordMainWindow())
         {
@@ -1333,6 +1335,10 @@ int main(int argc, char* argv[])
     else if (skipSingleInstanceLaunch)
     {
         startupTraceRaw("verified crash restart predecessor exited, skipping single-instance check");
+    }
+    else if (!startupSettings.preventMultipleInstances)
+    {
+        startupTraceRaw("prevent multiple instances disabled in settings, skipping single-instance check");
     }
 
     if (!startupUnlockPathList.empty() && !privilegeRestartLaunch && !isCurrentProcessElevated())
@@ -1383,7 +1389,6 @@ int main(int argc, char* argv[])
         + ", settings_exists="
         + (settingsFileExists ? "true" : "false"));
 
-    ks::settings::AppearanceSettings startupSettings = ks::settings::loadAppearanceSettings();
     QString preQtLanguageMessage;
     (void)ks::i18n::LanguageManager::instance().initialize(
         startupSettings.uiLanguage,
@@ -1396,7 +1401,9 @@ int main(int argc, char* argv[])
         + ", startup_maximized="
         + (startupSettings.launchMaximizedOnStartup ? "true" : "false")
         + ", auto_admin="
-        + (startupSettings.autoRequestAdminOnStartup ? "true" : "false"));
+        + (startupSettings.autoRequestAdminOnStartup ? "true" : "false")
+        + ", prevent_multiple_instances="
+        + (startupSettings.preventMultipleInstances ? "true" : "false"));
     {
         kLogEvent settingsEvent;
         info << settingsEvent
@@ -1406,6 +1413,8 @@ int main(int argc, char* argv[])
             << (startupSettings.launchMaximizedOnStartup ? "true" : "false")
             << ", auto_admin="
             << (startupSettings.autoRequestAdminOnStartup ? "true" : "false")
+            << ", prevent_multiple_instances="
+            << (startupSettings.preventMultipleInstances ? "true" : "false")
             << ", startup_scale_factor="
             << startupSettings.startupWindowScaleFactor
             << ", scale_prompt_disabled="
