@@ -1,10 +1,9 @@
 #include "DisplayRestartMonitor.h"
+#include "TaskbarRestartCoordinator.h"
 
 #include <windows.h>
 #include <QCoreApplication>
-#include <QFileInfo>
 #include <QGuiApplication>
-#include <QProcess>
 #include <QScreen>
 #include <QStringList>
 
@@ -144,13 +143,12 @@ void DisplayRestartMonitor::scheduleRestart()
 
 void DisplayRestartMonitor::restartProcess()
 {
-    // 使用当前 exe 与原参数启动新实例，再退出当前实例以重新申请每屏 AppBar。
-    const QString program = QCoreApplication::applicationFilePath();
-    QStringList arguments = QCoreApplication::arguments();
-    if (!arguments.isEmpty()) {
-        arguments.removeFirst();
+    // 接替实例等待本进程退出后才初始化，避免两个实例重叠注册每屏 AppBar。
+    if (TaskbarRestartCoordinator::scheduleAfterCurrentProcessExit()) {
+        QCoreApplication::quit();
+        return;
     }
 
-    QProcess::startDetached(program, arguments, QFileInfo(program).absolutePath());
-    QCoreApplication::quit();
+    // 调度失败时保留当前实例，并允许后续显示器变化再次尝试。
+    m_restartScheduled = false;
 }

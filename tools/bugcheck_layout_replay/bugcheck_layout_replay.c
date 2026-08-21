@@ -495,6 +495,18 @@ main(void)
     failures += ReplayCheckRole(0x000000D1, 0, 4, "INSTRUCTION");
     failures += ReplayCheckRole(0x0000009F, 3, 4, "BLOCKED IRP");
     failures += ReplayCheckRole(0x000000EA, 0, 3, "DRIVER NAME");
+    failures += ReplayCheckRole(0x000000C4, 0xFA, 2, "COMPLETION ROUTINE");
+    failures += ReplayCheckRole(0x000000C4, 0xFA, 3, "IRQL BEFORE");
+    failures += ReplayCheckRole(0x000000C4, 0xFA, 4, "IRQL AFTER");
+    failures += ReplayCheckRole(0x000000C4, 0xFB, 2, "COMPLETION ROUTINE");
+    failures += ReplayCheckRole(0x000000C4, 0xFB, 3, "APC DISABLE CURRENT");
+    failures += ReplayCheckRole(0x000000C4, 0xFB, 4, "APC DISABLE BEFORE");
+    failures += ReplayCheckRole(0x000000C4, 0x110, 2, "ISR ADDRESS");
+    failures += ReplayCheckRole(0x000000C4, 0x110, 3, "CONTEXT BEFORE");
+    failures += ReplayCheckRole(0x000000C4, 0x110, 4, "CONTEXT AFTER");
+    failures += ReplayCheckRole(0x000000C4, 0x111, 2, "ISR ADDRESS");
+    failures += ReplayCheckRole(0x000000C4, 0x111, 3, "IRQL BEFORE");
+    failures += ReplayCheckRole(0x000000C4, 0x111, 4, "IRQL AFTER");
 
     ReplayInitializeCriticalProcess(&diagnostics);
     failures += ReplayDrawScenario(

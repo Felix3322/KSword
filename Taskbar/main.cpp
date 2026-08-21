@@ -3,6 +3,7 @@
 #include "SosHotkeyLauncher.h"
 #include "TaskbarEarthquakeClient.h"
 #include "TaskbarNotificationService.h"
+#include "TaskbarRestartCoordinator.h"
 #include "TaskbarSharedState.h"
 
 #include <QtWidgets/QApplication>
@@ -60,6 +61,12 @@ int main(int argc, char* argv[])
 
     // QApplication 管理所有 Taskbar 窗口、屏幕事件和共享状态对象生命周期。
     QApplication app(argc, argv);
+
+    // PID 感知重启的接替实例必须在创建窗口、AppBar 和后台采样线程前等待旧进程退出。
+    if (!TaskbarRestartCoordinator::waitForPredecessorIfRequested())
+    {
+        return 2;
+    }
 
     // SOS 键盘钩子尽早启动：
     // - 独立高优先级线程安装 WH_KEYBOARD_LL；

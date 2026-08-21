@@ -1,52 +1,21 @@
 #include "TaskbarSettingsDialog.h"
 
 #include "TaskbarNotificationService.h"
+#include "TaskbarRestartCoordinator.h"
 
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDialogButtonBox>
-#include <QDir>
-#include <QFileInfo>
 #include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
-#include <QProcess>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
-
-namespace
-{
-    // scheduleTaskbarRestartAfterDelay：使用独立 cmd 等待一秒后拉起当前程序，返回调度是否成功。
-    bool scheduleTaskbarRestartAfterDelay()
-    {
-        // applicationFilePath 指向当前 Taskbar.exe，工作目录保持为 exe 所在目录以兼容发行包运行。
-        const QString programPath = QCoreApplication::applicationFilePath();
-        const QFileInfo programFileInfo(programPath);
-        if (programPath.isEmpty() || !programFileInfo.isFile())
-        {
-            return false;
-        }
-
-        // cmd 在旧进程退出后等待一秒，再由 start 拉起新实例，保证 AppBar 资源有释放窗口。
-        const QString command = QStringLiteral("timeout /t 1 /nobreak > NUL & start \"\" \"%1\"")
-            .arg(QDir::toNativeSeparators(programPath));
-        const QStringList arguments = {
-            QStringLiteral("/d"),
-            QStringLiteral("/c"),
-            command
-        };
-
-        return QProcess::startDetached(
-            QStringLiteral("cmd.exe"),
-            arguments,
-            programFileInfo.absolutePath());
-    }
-}
 
 TaskbarSettingsDialog::TaskbarSettingsDialog(TaskbarNotificationService* notificationService, QWidget* parent)
     : QDialog(parent)
@@ -275,8 +244,8 @@ void TaskbarSettingsDialog::refreshSourceDiagnostics()
 
 void TaskbarSettingsDialog::restartTaskbar()
 {
-    // 仅在 cmd 已成功接管延迟重启时退出，调度失败则保留当前 Taskbar 继续工作。
-    if (!scheduleTaskbarRestartAfterDelay())
+    // 仅在接替实例已成功启动时退出；接替实例会等待本进程完全释放 AppBar。
+    if (!TaskbarRestartCoordinator::scheduleAfterCurrentProcessExit())
     {
         return;
     }

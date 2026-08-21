@@ -58,6 +58,11 @@ KSword 主程序位于 `Ksword5.1/Ksword5.1`（Qt 6.9.3 Widgets + Qt Advanced Do
 - 句柄页等大型 `QTreeWidget` 结果必须先建立轻量摘要节点，展开分支时每批最多创建 300 个明细节点，并用末尾“继续加载”节点追加下一批。摘要始终保持业务配置顺序，表头排序只重排各摘要下已加载的明细；占位节点和“继续加载”节点固定在分支末尾。进程图标等异步资源只为已创建的明细解析，回填必须同时校验树重建代次，并允许同一源记录出现在多个规则分支。
 - `UI/DetailLayoutHost` 复用既有 `QSplitter` 时，必须确认表格与详情控件位于两个不同的 splitter 直接子面板；只判断“同属某个 splitter 祖先”会把整个页面面板误认成详情区，折叠后只剩箭头。页面仍在构造、详情面板尚未加入 splitter 时，统一布局接管应延迟到下一轮事件循环重试。
 - 行内详情不得向现有 `QTableWidget/QTreeWidget` 插入合成业务行或子节点，否则页面原有的行号到缓存映射、排序和右键逻辑会整体漂移。统一详情布局只在视图层扩展源行高度并覆盖只读文本框，以 `QPersistentModelIndex` 跟踪源项；大型树的 SVG 状态图标更新必须合并频繁的 `rowsInserted`，并按固定批次让出事件循环。
+- 行内详情展开后发生排序时，必须在模型的 `layoutAboutToBeChanged` 阶段清理详情：`QPersistentModelIndex` 会在布局完成后跟随数据项，但 `QHeaderView` 行高仍绑定排序前逻辑行；等 `layoutChanged` 后再恢复会留下旧行空白并裁剪新行编辑器。
+
+## Taskbar AppBar 重启
+
+- Taskbar 的设置重启与显示器变化重启统一走 PID 感知的接替路径：旧实例启动携带 `--restart-after-pid <oldPid>` 的同程序，新实例在创建窗口、AppBar 或后台采样线程前用 `OpenProcess(SYNCHRONIZE)` / `WaitForSingleObject` 等待旧实例真正退出。禁止用固定延时近似旧进程退出，否则同步线程清理和 AppBar 注销可能与新实例重叠。
 
 ## 踩坑记录
 

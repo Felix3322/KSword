@@ -248,12 +248,17 @@ KswordARKBugcheckDecodeVerifierRole(
         return ParameterIndex == 2 ? "HANDLE" :
             (ParameterIndex == 3 ? "PROCESS OBJECT" : "DRIVER ADDRESS");
     case 0xFA:
+        return ParameterIndex == 2 ? "COMPLETION ROUTINE" :
+            (ParameterIndex == 3 ? "IRQL BEFORE" : "IRQL AFTER");
     case 0xFB:
         return ParameterIndex == 2 ? "COMPLETION ROUTINE" :
-            (ParameterIndex == 3 ? "IRQL OR APC" : "CURRENT VALUE");
+            (ParameterIndex == 3 ? "APC DISABLE CURRENT" : "APC DISABLE BEFORE");
     case 0x110:
+        return ParameterIndex == 2 ? "ISR ADDRESS" :
+            (ParameterIndex == 3 ? "CONTEXT BEFORE" : "CONTEXT AFTER");
     case 0x111:
-        return ParameterIndex == 2 ? "ISR ADDRESS" : "ISR CONTEXT";
+        return ParameterIndex == 2 ? "ISR ADDRESS" :
+            (ParameterIndex == 3 ? "IRQL BEFORE" : "IRQL AFTER");
     case 0x2000:
     case 0x2001:
     case 0x2002:

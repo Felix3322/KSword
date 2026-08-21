@@ -324,6 +324,14 @@ void ks::ui::DetailLayoutHost::initializeConnections()
                     {
                         clearEmbeddedDetails();
                     });
+                connect(m_tableView->model(), &QAbstractItemModel::layoutAboutToBeChanged, this,
+                    [this]()
+                    {
+                        // QPersistentModelIndex 会在排序布局完成后跟随数据项移动，但
+                        // QHeaderView 的行高仍绑定排序前的逻辑行。必须在索引重映射前
+                        // 恢复原行高并移除覆盖编辑器，避免旧行残留空白、新行详情被裁剪。
+                        clearEmbeddedDetails();
+                    });
             }
         }
     }

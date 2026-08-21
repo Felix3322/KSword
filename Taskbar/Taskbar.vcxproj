@@ -127,6 +127,7 @@
     <ClCompile Include="TaskbarEarthquakeAudioPlayer.cpp" />
     <ClCompile Include="TaskbarEarthquakeClient.cpp" />
     <ClCompile Include="TaskbarNotificationService.cpp" />
+    <ClCompile Include="TaskbarRestartCoordinator.cpp" />
     <ClCompile Include="TaskbarSettingsDialog.cpp" />
     <ClCompile Include="TaskbarPresentationEffects.cpp" />
     <ClCompile Include="SpectrumWidget.cpp">
@@ -151,6 +152,7 @@
     <QtMoc Include="TaskbarNotificationService.h" />
     <QtMoc Include="TaskbarSettingsDialog.h" />
     <ClInclude Include="TaskbarEarthquakeAudioPlayer.h" />
+    <ClInclude Include="TaskbarRestartCoordinator.h" />
     <ClInclude Include="Function.h" />
     <ClInclude Include="SosHotkeyLauncher.h" />
   </ItemGroup>

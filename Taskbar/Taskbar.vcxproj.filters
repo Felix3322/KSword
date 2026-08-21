@@ -70,6 +70,9 @@
     <ClCompile Include="TaskbarNotificationService.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="TaskbarRestartCoordinator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="TaskbarSettingsDialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -103,6 +106,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="TaskbarEarthquakeAudioPlayer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TaskbarRestartCoordinator.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
