@@ -5,11 +5,7 @@
 
 <div align="center">
 
-<img
-  src="./Ksword5.1/Ksword5.1/Resource/Logo/KswordHome-En.png"
-  alt="KSword ARK Logo"
-  width="520"
-/>
+<img width="450" alt="image" src="https://github.com/user-attachments/assets/4f97086c-48d4-4fac-960e-47d381dec3bd" />
 
 <a href="https://github.com/user-attachments/assets/02085a90-af21-4880-b956-d059a655a4da">
 <img
